@@ -5211,7 +5211,7 @@ fn show_toast(
 pub fn build_desktop_window_configuration() -> dioxus::desktop::Config {
     let window = dioxus::desktop::WindowBuilder::new()
         .with_title("GREATER LONDON TRANSPORT NETWORK - PHYSICAL TRUTH ENGINE")
-        .with_maximized(true)
+        .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1200.0, 800.0))
         .with_resizable(true);
 
     dioxus::desktop::Config::new()
