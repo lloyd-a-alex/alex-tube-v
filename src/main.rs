@@ -809,6 +809,117 @@ const SNAP_DISTANCE: f64 = 500.0;
 const CATCHMENT_RADIUS: f64 = 800.0;
 
 // ============================================================================
+// EMBEDDED OFFLINE BASEMAP DATA
+// Real Greater London geometry baked into the binary so the map ALWAYS renders
+// (every TfL + National Rail line, all 700+ stations, and a representative
+// residential sample for catchment/AI) with zero dependency on live Overpass /
+// TfL endpoints. Live APIs, when reachable, layer additional detail on top.
+// ============================================================================
+static EMBEDDED_STATIONS_JSON: &str = include_str!("../data/london_stations.json");
+static EMBEDDED_LINES_JSON: &str = include_str!("../data/london_lines.json");
+static EMBEDDED_RESIDENTIAL_JSON: &str = include_str!("../data/london_residential.json");
+
+/// One coloured polyline segment of a rail line (matches the compact JSON keys
+/// in `london_lines.json`: c=colour, g=group/mode, n=name, p=[[lat,lon],...]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RailSegment {
+    pub c: String,
+    pub g: String,
+    pub n: String,
+    pub p: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmbeddedLinesFile {
+    pub tfl: Vec<RailSegment>,
+    pub nr: Vec<RailSegment>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmbeddedStation {
+    pub lat: f64,
+    pub lon: f64,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmbeddedResidential {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// All embedded rail segments (TfL first, then National Rail), parsed once.
+fn embedded_rail_segments() -> &'static Vec<RailSegment> {
+    static SEGMENTS: std::sync::OnceLock<Vec<RailSegment>> = std::sync::OnceLock::new();
+    SEGMENTS.get_or_init(|| {
+        match serde_json::from_str::<EmbeddedLinesFile>(EMBEDDED_LINES_JSON) {
+            Ok(f) => {
+                let mut all = f.tfl;
+                all.extend(f.nr);
+                log_info(&format!(
+                    "embedded_rail_segments - loaded {} baked rail segments",
+                    all.len()
+                ));
+                all
+            }
+            Err(e) => {
+                log_error(&format!("embedded_rail_segments - parse error: {}", e));
+                Vec::new()
+            }
+        }
+    })
+}
+
+/// All embedded stations as ready-to-serve `Station` records, parsed once. The
+/// originating mode is stored as the first entry of `lines` so the UI can pick
+/// the correct roundel / National Rail logo.
+fn embedded_stations() -> &'static Vec<Station> {
+    static STATIONS: std::sync::OnceLock<Vec<Station>> = std::sync::OnceLock::new();
+    STATIONS.get_or_init(|| {
+        match serde_json::from_str::<Vec<EmbeddedStation>>(EMBEDDED_STATIONS_JSON) {
+            Ok(list) => list
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let mut st = Station::new(
+                        format!("embedded_{}", i),
+                        s.name,
+                        Coordinate::new(s.lat, s.lon),
+                    );
+                    st.is_interchange = false;
+                    st.lines = vec![s.kind];
+                    st.zone = 1;
+                    st
+                })
+                .collect(),
+            Err(e) => {
+                log_error(&format!("embedded_stations - parse error: {}", e));
+                Vec::new()
+            }
+        }
+    })
+}
+
+/// Embedded residential demand points, parsed once. Used as a lossless offline
+/// fallback for catchment + AI planning when Overpass is unreachable.
+fn embedded_residential() -> &'static Vec<Coordinate> {
+    static RES: std::sync::OnceLock<Vec<Coordinate>> = std::sync::OnceLock::new();
+    RES.get_or_init(|| {
+        match serde_json::from_str::<Vec<EmbeddedResidential>>(EMBEDDED_RESIDENTIAL_JSON) {
+            Ok(list) => list
+                .into_iter()
+                .map(|r| Coordinate::new(r.lat, r.lon))
+                .collect(),
+            Err(e) => {
+                log_error(&format!("embedded_residential - parse error: {}", e));
+                Vec::new()
+            }
+        }
+    })
+}
+
+// ============================================================================
 // CONSOLE LOGGER WITH ROTATION
 // ============================================================================
 const DEFAULT_MAX_LOG_ENTRIES: usize = 10000;
@@ -3840,7 +3951,10 @@ impl AppState {
         log_debug(
             "AppState::fetch_residential_coordinates - cache miss, fetching from Overpass API",
         );
-        let data = self
+        // Overpass is best-effort: if it errors or times out we transparently
+        // fall back to the embedded residential sample so catchment + AI never
+        // break offline.
+        let data = match self
             .overpass_client
             .fetch_residential_areas(
                 bounds.min_lat,
@@ -3848,11 +3962,25 @@ impl AppState {
                 bounds.max_lat,
                 bounds.max_lon,
             )
-            .await?;
+            .await
+        {
+            Ok(d) => Some(d),
+            Err(e) => {
+                log_warn(&format!(
+                    "AppState::fetch_residential_coordinates - Overpass unavailable ({}); using embedded residential fallback",
+                    e
+                ));
+                None
+            }
+        };
 
         let mut raw_geometry_array = Vec::new();
         let mut elements_processed = 0usize;
-        if let Some(elements) = data.get("elements").and_then(|v| v.as_array()) {
+        if let Some(elements) = data
+            .as_ref()
+            .and_then(|d| d.get("elements"))
+            .and_then(|v| v.as_array())
+        {
             log_info(&format!("AppState::fetch_residential_coordinates - processing {} elements from Overpass response", elements.len()));
             for el in elements {
                 elements_processed += 1;
@@ -3872,6 +4000,25 @@ impl AppState {
             }
         }
         log_debug(&format!("AppState::fetch_residential_coordinates - extracted {} raw coordinates from {} elements", raw_geometry_array.len(), elements_processed));
+
+        // Fallback: no live data -> embedded residential points within bounds.
+        if raw_geometry_array.is_empty() {
+            let within: Vec<Coordinate> = embedded_residential()
+                .iter()
+                .filter(|c| {
+                    c.lat >= bounds.min_lat
+                        && c.lat <= bounds.max_lat
+                        && c.lon >= bounds.min_lon
+                        && c.lon <= bounds.max_lon
+                })
+                .copied()
+                .collect();
+            log_info(&format!(
+                "AppState::fetch_residential_coordinates - embedded fallback yielded {} residential points in bounds",
+                within.len()
+            ));
+            return Ok(within);
+        }
 
         log_debug("AppState::fetch_residential_coordinates - normalizing projections with Rayon parallel processing");
         use rayon::prelude::*;
@@ -4082,6 +4229,7 @@ async fn run_server(state: AppState, config: Config) -> Result<(), Box<dyn std::
         .route("/api/ai/link-stations", post(ai_link_stations))
         .route("/api/disruptions", get(get_disruptions))
         .route("/api/tracks", get(get_tracks))
+        .route("/api/basemap", get(get_basemap_lines))
         .route("/api/tracks/refresh", post(refresh_tracks))
         .route("/api/lines/delete/:id", post(delete_line))
         .route("/api/logs", get(get_logs))
@@ -4244,6 +4392,18 @@ async fn get_stations(State(state): State<AppState>) -> Json<ApiResponse<Vec<Sta
 async fn get_tracks(State(state): State<AppState>) -> Json<ApiResponse<Vec<RailwayTrack>>> {
     log_info("GET /api/tracks called - syncing infrastructure tracks");
     Json(ApiResponse::success((*state.tracks.load()).as_ref().clone()))
+}
+
+/// Serve the baked-in coloured rail network (every TfL line in its official
+/// colour + National Rail coloured by operator). This is the offline-first
+/// basemap that guarantees the lines always render.
+async fn get_basemap_lines() -> Json<ApiResponse<Vec<RailSegment>>> {
+    let segs = embedded_rail_segments();
+    log_info(&format!(
+        "GET /api/basemap called - returning {} embedded coloured rail segments",
+        segs.len()
+    ));
+    Json(ApiResponse::success(segs.clone()))
 }
 
 /// Fix #2: Manual "Refresh Tracks" endpoint to force a fresh Overpass query
@@ -4743,16 +4903,23 @@ fn main() {
         ));
         state.lines.store(Arc::new(custom_lines));
 
-        log_debug("main - loading free stations from database");
-        if let Ok(free_stations) = state.cache.load_free_stations() {
-            log_info(&format!(
-                "main - loaded {} free stations from database",
-                free_stations.len()
-            ));
-            state.stations.store(Arc::new(free_stations));
-        } else {
-            log_warn("main - failed to load free stations from database");
+        log_debug("main - seeding stations from embedded basemap + database free stations");
+        // Always start from the baked-in real London stations so the map renders
+        // instantly and offline; then append any user/AI free stations on top.
+        let mut seed_stations: Vec<Station> = embedded_stations().clone();
+        let embedded_count = seed_stations.len();
+        match state.cache.load_free_stations() {
+            Ok(free_stations) => {
+                log_info(&format!(
+                    "main - {} embedded stations + {} free stations from database",
+                    embedded_count,
+                    free_stations.len()
+                ));
+                seed_stations.extend(free_stations);
+            }
+            Err(_) => log_warn("main - failed to load free stations from database (using embedded only)"),
         }
+        state.stations.store(Arc::new(seed_stations));
 
         // CRITICAL: Build the routing graph FIRST so tracks / spatial index are
         // available when load_line_routes tries to snap stations to real track geometry.
@@ -5044,19 +5211,35 @@ while (true) {
             // zone 0 marks an AI-proposed station; render it as a glowing gold
             // ring so planned infrastructure stands out from real stations.
             let isProposed = st.zone === 0;
-            let html, size;
+            let kind = (st.lines && st.lines.length > 0) ? st.lines[0] : 'tube';
+            // Official-ish mode palette for the roundels.
+            let roundelColors = {
+                'tube': '#E32017', 'underground': '#E32017',
+                'elizabeth': '#6950A1', 'dlr': '#00A4A7',
+                'overground': '#EE7C0E', 'tram': '#84B817',
+                'sandbox': '#ff00ff', 'ai plan': '#ffd700'
+            };
+            let html, size, cls;
             if (isProposed) {
+                // AI-proposed station: glowing gold ring.
                 html = '<div style="background:radial-gradient(circle,#fff,#ffd700); width:14px; height:14px; border-radius:50%; border:2px solid #ff8c00; box-shadow:0 0 14px #ffd700;"></div>';
-                size = [18, 18];
-            } else if (st.is_interchange) {
-                html = '<div style="background:#ffcc00; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 10px #ffcc00;"></div>';
-                size = [16, 16];
+                size = [18, 18]; cls = 'proposed-icon';
+            } else if (kind === 'nationalrail') {
+                // National Rail double-arrow logo on its signature red.
+                html = '<div style="background:#C00000; width:16px; height:12px; border-radius:2px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 6px rgba(0,0,0,0.6);">' +
+                       '<svg width="14" height="10" viewBox="0 0 24 16"><g fill="none" stroke="#fff" stroke-width="2.4">' +
+                       '<path d="M2 5 H18 M14 1 L20 5 L14 9"></path>' +
+                       '<path d="M22 11 H6 M10 7 L4 11 L10 15"></path>' +
+                       '</g></svg></div>';
+                size = [18, 14]; cls = 'nr-icon';
             } else {
-                html = '<div style="background:#00bcd4; width:8px; height:8px; border-radius:50%; border:1px solid #fff; box-shadow:0 0 8px #00bcd4;"></div>';
-                size = [10, 10];
+                // TfL-style roundel: coloured ring with a white hub.
+                let col = roundelColors[kind] || '#0098D4';
+                html = '<div style="background:#fff; width:11px; height:11px; border-radius:50%; border:4px solid ' + col + '; box-sizing:border-box; box-shadow:0 0 7px ' + col + ';"></div>';
+                size = [15, 15]; cls = 'roundel-icon';
             }
             let icon = L.divIcon({
-                className: isProposed ? 'proposed-icon' : (st.is_interchange ? 'hub-icon' : 'station-icon'),
+                className: cls,
                 html: html,
                 iconSize: size,
                 iconAnchor: [size[0] / 2, size[1] / 2]
@@ -5106,6 +5289,30 @@ while (true) {
                 }).addTo(window.map);
                 window.trackLayers.push(poly);
             }
+        });
+    } else if (msg.type === "updateRailLines") {
+        // Offline-first coloured rail network: every TfL line in its official
+        // colour + National Rail coloured by operator, drawn along real track
+        // geometry. Rendered beneath the station roundels.
+        if (window.railLineLayers) {
+            window.railLineLayers.forEach(layer => window.map.removeLayer(layer));
+        }
+        window.railLineLayers = [];
+        let segments = msg.data;
+        segments.forEach(seg => {
+            let coords = seg.p.map(pt => [pt[0], pt[1]]);
+            if (coords.length < 2) return;
+            let isNR = seg.g === 'nationalrail';
+            let poly = L.polyline(coords, {
+                color: seg.c,
+                weight: isNR ? 2.0 : 3.4,
+                opacity: isNR ? 0.85 : 0.95,
+                lineJoin: 'round',
+                lineCap: 'round',
+                smoothFactor: 1.2
+            }).addTo(window.map);
+            poly.bindTooltip(seg.n, { className: 'tfl-tooltip', direction: 'top', sticky: true });
+            window.railLineLayers.push(poly);
         });
     } else if (msg.type === "updateDrawing") {
         let coords = msg.data.map(pt => [pt.lat, pt.lon]);
@@ -5353,6 +5560,7 @@ pub fn App() -> Element {
     let mut lines = use_signal::<Vec<Line>>(|| Vec::new());
     let mut stations = use_signal::<Vec<Station>>(|| Vec::new());
     let mut tracks = use_signal::<Vec<RailwayTrack>>(|| Vec::new());
+    let mut rail_segments = use_signal::<Vec<RailSegment>>(|| Vec::new());
     let mut selected_station = use_signal::<Option<Station>>(|| None);
 
     let mut catchment_enabled = use_signal::<bool>(|| false);
@@ -5453,6 +5661,20 @@ pub fn App() -> Element {
         }
         show_loading.set(false);
         data_timeout.set(false);
+    });
+
+    // One-time fetch of the baked-in coloured rail network (offline-first basemap).
+    use_future(move || async move {
+        for _ in 0..10 {
+            if let Some(segs) = fetch_api::<Vec<RailSegment>>("/api/basemap").await {
+                if !segs.is_empty() {
+                    log_info(&format!("App - loaded {} embedded rail segments for basemap", segs.len()));
+                    rail_segments.set(segs);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        }
     });
 
     // Logging refresh
@@ -5617,11 +5839,17 @@ pub fn App() -> Element {
         let deletions_val = permanent_deletions.read();
         let stations_val = stations.read();
         let tracks_val = tracks.read();
+        let rail_segments_val = rail_segments.read();
         let deserts_val = deserts.read();
         let catchment_on = catchment_enabled.read();
         let drawing_coords = custom_line_coords.read();
 
         if let Some(ev) = eval_handle.read().clone() {
+            let _ = ev.send(serde_json::json!({
+                "type": "updateRailLines",
+                "data": &*rail_segments_val
+            }));
+
             let active_lines: Vec<Line> = lines_val.iter()
                 .filter(|l| !deletions_val.contains(&l.id))
                 .cloned()
