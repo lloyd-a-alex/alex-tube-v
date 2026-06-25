@@ -1,2 +1,2 @@
 [build]
-target-dir = "C:\\rustbuild"
+target-dir = "/home/ubuntu/repos/alex-tube-v/target"
