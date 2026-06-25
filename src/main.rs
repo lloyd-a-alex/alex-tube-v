@@ -1277,11 +1277,13 @@ impl RTreeObject for SpatialPoint {
 
 impl PointDistance for SpatialPoint {
     fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        // `point` is already in Web-Mercator [x, y] space (the same space the
+        // envelope is built in). Re-projecting it through to_mercator would feed
+        // mercator metres back into tan()/ln() and produce NaN, which makes
+        // rstar's nearest-neighbour comparison panic. Compare in-space instead.
         let (my_y, my_x) = self.coord.to_mercator();
-        let other_coord = Coordinate::new(point[1], point[0]);
-        let (other_y, other_x) = other_coord.to_mercator();
-        let dx = my_x - other_x;
-        let dy = my_y - other_y;
+        let dx = my_x - point[0];
+        let dy = my_y - point[1];
         dx * dx + dy * dy
     }
 }
@@ -5107,8 +5109,102 @@ window.initMap = async function(dioxus) {
     window.lineLayers = {};
     window.stationLayers = {};
     window.trackLayers = [];
+    window.railLineLayers = [];
     window.desertLayer = null;
     window.drawingLayer = L.polyline([], { color: '#ff00ff', dashArray: '5, 5', weight: 4 }).addTo(window.map);
+
+    // Offline-first coloured rail network. Fetched directly by the WebView (not
+    // pushed through the eval channel) because it is ~43k segments / several MB
+    // — far too large for the message bus. Drawn on a dedicated canvas pane so
+    // it stays beneath the station roundels and keeps 60+ FPS.
+    if (!window.railPane) {
+        window.railPane = window.map.createPane('railPane');
+        window.railPane.style.zIndex = 350;
+    }
+    window.railRenderer = L.canvas({ padding: 0.5, pane: 'railPane' });
+    window.loadRailNetwork = async function() {
+        try {
+            let resp = await fetch('http://127.0.0.1:3000/api/basemap');
+            let body = await resp.json();
+            let segments = body.data || [];
+            window.railLineLayers.forEach(l => window.map.removeLayer(l));
+            window.railLineLayers = [];
+            segments.forEach(seg => {
+                if (!seg.p || seg.p.length < 2) return;
+                let isNR = seg.g === 'nationalrail';
+                let poly = L.polyline(seg.p, {
+                    pane: 'railPane',
+                    renderer: window.railRenderer,
+                    color: seg.c,
+                    weight: isNR ? 1.8 : 3.2,
+                    opacity: isNR ? 0.8 : 0.95,
+                    lineJoin: 'round',
+                    lineCap: 'round'
+                }).addTo(window.map);
+                window.railLineLayers.push(poly);
+            });
+            let widget = document.getElementById("fps-counter-widget");
+            console.log('Rail network rendered: ' + segments.length + ' segments');
+        } catch (err) {
+            console.log('Rail network fetch failed: ' + err);
+            // Retry shortly in case the local server is still warming up.
+            setTimeout(window.loadRailNetwork, 1200);
+        }
+    };
+    window.loadRailNetwork();
+
+    // Shared station renderer (TfL roundels + National Rail logos + AI-proposed
+    // gold rings). Used both by the direct initial fetch below and by live
+    // updates pushed over the message channel.
+    window.renderStations = function(stations) {
+        for (let id in window.stationLayers) {
+            window.map.removeLayer(window.stationLayers[id]);
+        }
+        window.stationLayers = {};
+        let roundelColors = {
+            'tube': '#E32017', 'underground': '#E32017',
+            'elizabeth': '#6950A1', 'dlr': '#00A4A7',
+            'overground': '#EE7C0E', 'tram': '#84B817',
+            'sandbox': '#ff00ff', 'ai plan': '#ffd700'
+        };
+        stations.forEach(st => {
+            let isProposed = st.zone === 0;
+            let kind = (st.lines && st.lines.length > 0) ? st.lines[0] : 'tube';
+            let html, size, cls;
+            if (isProposed) {
+                html = '<div style="background:radial-gradient(circle,#fff,#ffd700); width:14px; height:14px; border-radius:50%; border:2px solid #ff8c00; box-shadow:0 0 14px #ffd700;"></div>';
+                size = [18, 18]; cls = 'proposed-icon';
+            } else if (kind === 'nationalrail') {
+                html = '<div style="background:#C00000; width:16px; height:12px; border-radius:2px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 6px rgba(0,0,0,0.6);">' +
+                       '<svg width="14" height="10" viewBox="0 0 24 16"><g fill="none" stroke="white" stroke-width="2.4">' +
+                       '<path d="M2 5 H18 M14 1 L20 5 L14 9"></path>' +
+                       '<path d="M22 11 H6 M10 7 L4 11 L10 15"></path>' +
+                       '</g></svg></div>';
+                size = [18, 14]; cls = 'nr-icon';
+            } else {
+                let col = roundelColors[kind] || '#0098D4';
+                html = '<div style="background:#fff; width:11px; height:11px; border-radius:50%; border:4px solid ' + col + '; box-sizing:border-box; box-shadow:0 0 7px ' + col + ';"></div>';
+                size = [15, 15]; cls = 'roundel-icon';
+            }
+            let icon = L.divIcon({ className: cls, html: html, iconSize: size, iconAnchor: [size[0] / 2, size[1] / 2] });
+            let marker = L.marker([st.coord.lat, st.coord.lon], { icon: icon }).addTo(window.map);
+            marker.bindTooltip(st.name, { className: 'tfl-tooltip', direction: 'top', permanent: false });
+            marker.on('click', function() { dioxus.send({ "event": "station_click", "id": st.id }); });
+            window.stationLayers[st.id] = marker;
+        });
+    };
+    window.loadStations = async function() {
+        try {
+            let resp = await fetch('http://127.0.0.1:3000/api/stations');
+            let body = await resp.json();
+            window.renderStations(body.data || []);
+            console.log('Stations rendered: ' + (body.data ? body.data.length : 0));
+        } catch (err) {
+            console.log('Station fetch failed: ' + err);
+            setTimeout(window.loadStations, 1200);
+        }
+    };
+    window.loadStations();
 
     window.map.on('click', function(e) {
         dioxus.send({ "event": "map_click", "lat": e.latlng.lat, "lng": e.latlng.lng });
@@ -5201,56 +5297,7 @@ while (true) {
             }
         });
     } else if (msg.type === "updateStations") {
-        for (let id in window.stationLayers) {
-            window.map.removeLayer(window.stationLayers[id]);
-        }
-        window.stationLayers = {};
-
-        let stations = msg.data;
-        stations.forEach(st => {
-            // zone 0 marks an AI-proposed station; render it as a glowing gold
-            // ring so planned infrastructure stands out from real stations.
-            let isProposed = st.zone === 0;
-            let kind = (st.lines && st.lines.length > 0) ? st.lines[0] : 'tube';
-            // Official-ish mode palette for the roundels.
-            let roundelColors = {
-                'tube': '#E32017', 'underground': '#E32017',
-                'elizabeth': '#6950A1', 'dlr': '#00A4A7',
-                'overground': '#EE7C0E', 'tram': '#84B817',
-                'sandbox': '#ff00ff', 'ai plan': '#ffd700'
-            };
-            let html, size, cls;
-            if (isProposed) {
-                // AI-proposed station: glowing gold ring.
-                html = '<div style="background:radial-gradient(circle,#fff,#ffd700); width:14px; height:14px; border-radius:50%; border:2px solid #ff8c00; box-shadow:0 0 14px #ffd700;"></div>';
-                size = [18, 18]; cls = 'proposed-icon';
-            } else if (kind === 'nationalrail') {
-                // National Rail double-arrow logo on its signature red.
-                html = '<div style="background:#C00000; width:16px; height:12px; border-radius:2px; display:flex; align-items:center; justify-content:center; box-shadow:0 0 6px rgba(0,0,0,0.6);">' +
-                       '<svg width="14" height="10" viewBox="0 0 24 16"><g fill="none" stroke="#fff" stroke-width="2.4">' +
-                       '<path d="M2 5 H18 M14 1 L20 5 L14 9"></path>' +
-                       '<path d="M22 11 H6 M10 7 L4 11 L10 15"></path>' +
-                       '</g></svg></div>';
-                size = [18, 14]; cls = 'nr-icon';
-            } else {
-                // TfL-style roundel: coloured ring with a white hub.
-                let col = roundelColors[kind] || '#0098D4';
-                html = '<div style="background:#fff; width:11px; height:11px; border-radius:50%; border:4px solid ' + col + '; box-sizing:border-box; box-shadow:0 0 7px ' + col + ';"></div>';
-                size = [15, 15]; cls = 'roundel-icon';
-            }
-            let icon = L.divIcon({
-                className: cls,
-                html: html,
-                iconSize: size,
-                iconAnchor: [size[0] / 2, size[1] / 2]
-            });
-            let marker = L.marker([st.coord.lat, st.coord.lon], { icon: icon }).addTo(window.map);
-            marker.bindTooltip(st.name, { className: 'tfl-tooltip', direction: 'top', permanent: false });
-            marker.on('click', function() {
-                dioxus.send({ "event": "station_click", "id": st.id });
-            });
-            window.stationLayers[st.id] = marker;
-        });
+        if (window.renderStations) { window.renderStations(msg.data); }
     } else if (msg.type === "updateDeserts") {
         if (window.desertLayer) {
             window.map.removeLayer(window.desertLayer);
@@ -5289,30 +5336,6 @@ while (true) {
                 }).addTo(window.map);
                 window.trackLayers.push(poly);
             }
-        });
-    } else if (msg.type === "updateRailLines") {
-        // Offline-first coloured rail network: every TfL line in its official
-        // colour + National Rail coloured by operator, drawn along real track
-        // geometry. Rendered beneath the station roundels.
-        if (window.railLineLayers) {
-            window.railLineLayers.forEach(layer => window.map.removeLayer(layer));
-        }
-        window.railLineLayers = [];
-        let segments = msg.data;
-        segments.forEach(seg => {
-            let coords = seg.p.map(pt => [pt[0], pt[1]]);
-            if (coords.length < 2) return;
-            let isNR = seg.g === 'nationalrail';
-            let poly = L.polyline(coords, {
-                color: seg.c,
-                weight: isNR ? 2.0 : 3.4,
-                opacity: isNR ? 0.85 : 0.95,
-                lineJoin: 'round',
-                lineCap: 'round',
-                smoothFactor: 1.2
-            }).addTo(window.map);
-            poly.bindTooltip(seg.n, { className: 'tfl-tooltip', direction: 'top', sticky: true });
-            window.railLineLayers.push(poly);
         });
     } else if (msg.type === "updateDrawing") {
         let coords = msg.data.map(pt => [pt.lat, pt.lon]);
@@ -5560,7 +5583,6 @@ pub fn App() -> Element {
     let mut lines = use_signal::<Vec<Line>>(|| Vec::new());
     let mut stations = use_signal::<Vec<Station>>(|| Vec::new());
     let mut tracks = use_signal::<Vec<RailwayTrack>>(|| Vec::new());
-    let mut rail_segments = use_signal::<Vec<RailSegment>>(|| Vec::new());
     let mut selected_station = use_signal::<Option<Station>>(|| None);
 
     let mut catchment_enabled = use_signal::<bool>(|| false);
@@ -5661,20 +5683,6 @@ pub fn App() -> Element {
         }
         show_loading.set(false);
         data_timeout.set(false);
-    });
-
-    // One-time fetch of the baked-in coloured rail network (offline-first basemap).
-    use_future(move || async move {
-        for _ in 0..10 {
-            if let Some(segs) = fetch_api::<Vec<RailSegment>>("/api/basemap").await {
-                if !segs.is_empty() {
-                    log_info(&format!("App - loaded {} embedded rail segments for basemap", segs.len()));
-                    rail_segments.set(segs);
-                    break;
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        }
     });
 
     // Logging refresh
@@ -5839,17 +5847,11 @@ pub fn App() -> Element {
         let deletions_val = permanent_deletions.read();
         let stations_val = stations.read();
         let tracks_val = tracks.read();
-        let rail_segments_val = rail_segments.read();
         let deserts_val = deserts.read();
         let catchment_on = catchment_enabled.read();
         let drawing_coords = custom_line_coords.read();
 
         if let Some(ev) = eval_handle.read().clone() {
-            let _ = ev.send(serde_json::json!({
-                "type": "updateRailLines",
-                "data": &*rail_segments_val
-            }));
-
             let active_lines: Vec<Line> = lines_val.iter()
                 .filter(|l| !deletions_val.contains(&l.id))
                 .cloned()
