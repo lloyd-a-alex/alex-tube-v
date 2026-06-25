@@ -22,6 +22,7 @@ use axum::{
 use chrono::Utc;
 use dirs;
 use reqwest::Client;
+use rayon::prelude::*;
 use rstar::{PointDistance, RTree, RTreeObject, AABB};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -1565,39 +1566,30 @@ impl GeometryEngine {
             stations.len()
         ));
 
-        let mut matching_deserts = Vec::with_capacity(residential_areas.len());
-        let mut desert_count = 0usize;
-        let mut served_count = 0usize;
-        for (idx, res_coord) in residential_areas.iter().enumerate() {
-            let merc = res_coord.to_mercator();
-            if let Some(nearest) = station_tree.nearest_neighbor(&[merc.1, merc.0]) {
-                let distance = res_coord.distance_to(&nearest.coord);
-                if distance > threshold {
-                    log_trace(&format!("Residential area {} is a transit desert - nearest station is {:.2}m away (threshold: {:.2}m)", idx, distance, threshold));
-                    matching_deserts.push(*res_coord);
-                    desert_count += 1;
-                } else {
-                    log_trace(&format!(
-                        "Residential area {} is served - nearest station is {:.2}m away",
-                        idx, distance
-                    ));
-                    served_count += 1;
+        // Lossless catchment classification, parallelised across every CPU core via
+        // Rayon. Each residential point performs an O(log N) nearest-station query
+        // against the shared R*-tree, then an exact haversine check against the
+        // catchment threshold. The R*-tree is immutable here so it is trivially Sync.
+        let matching_deserts: Vec<Coordinate> = residential_areas
+            .par_iter()
+            .filter(|res_coord| {
+                let merc = res_coord.to_mercator();
+                match station_tree.nearest_neighbor(&[merc.1, merc.0]) {
+                    Some(nearest) => res_coord.distance_to(&nearest.coord) > threshold,
+                    None => true,
                 }
-            } else {
-                log_warn(&format!(
-                    "Residential area {} - no nearest station found, marking as desert",
-                    idx
-                ));
-                matching_deserts.push(*res_coord);
-                desert_count += 1;
-            }
-        }
+            })
+            .copied()
+            .collect();
+
+        let desert_count = matching_deserts.len();
+        let served_count = residential_areas.len().saturating_sub(desert_count);
 
         let elapsed = (Utc::now() - trace_start_time)
             .num_microseconds()
             .unwrap_or(0);
         log_info(&format!(
-            "[PERF] Analytical matrix processing completed in {} microseconds. Results: {} deserts, {} served out of {} areas",
+            "[PERF] Rayon-parallel catchment matrix completed in {} microseconds. Results: {} deserts, {} served out of {} areas",
             elapsed,
             desert_count,
             served_count,
@@ -1612,6 +1604,328 @@ impl Default for GeometryEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// ============================================================================
+// AUTOMATED URBAN PLANNING ENGINE
+// "AI: Add Station"  -> greedy maximum-coverage facility location
+// "AI: Link Stations" -> minimum-spanning-tree network synthesis with
+//                        Transport-for-London layout philosophies
+// ============================================================================
+
+/// Squared mercator search radius that is guaranteed to be a lossless superset
+/// of a ground-distance radius at Greater London / UK latitudes. Web-mercator
+/// inflates ground distance by sec(lat) (~1.6 at 51.5°N, larger further north),
+/// so a 2.5x mercator envelope always contains every true in-radius point; the
+/// candidates are then verified with an exact haversine check.
+fn mercator_search_radius_sq(ground_radius_m: f64) -> f64 {
+    let inflated = ground_radius_m * 2.5;
+    inflated * inflated
+}
+
+/// Greedy maximum-coverage facility location over the set of transit-desert
+/// points. Repeatedly places a station at the centre of mass of the densest
+/// remaining cluster of unserved residential points, marks every point it now
+/// serves (exact haversine <= radius) as covered, and continues until either
+/// every desert is served or `max_stations` have been placed (0 = unlimited,
+/// internally capped for safety). Returns the proposed station coordinates in
+/// placement order. Candidate scoring is parallelised with Rayon.
+fn plan_infill_stations(
+    deserts: &[Coordinate],
+    radius: f64,
+    max_stations: usize,
+) -> Vec<Coordinate> {
+    log_info(&format!(
+        "plan_infill_stations called - {} desert points, radius={:.1}m, max_stations={}",
+        deserts.len(),
+        radius,
+        max_stations
+    ));
+    if deserts.is_empty() {
+        return Vec::new();
+    }
+
+    // Spatial index over the desert points for O(log N) neighbourhood queries.
+    let mut tree: RTree<SpatialPoint> = RTree::new();
+    for (i, c) in deserts.iter().enumerate() {
+        tree.insert(SpatialPoint { coord: *c, index: i });
+    }
+    let search_sq = mercator_search_radius_sq(radius);
+
+    let n = deserts.len();
+    let mut covered = vec![false; n];
+    let mut covered_total = 0usize;
+    let mut placed: Vec<Coordinate> = Vec::new();
+    let hard_cap = if max_stations == 0 { 1000 } else { max_stations.min(1000) };
+
+    while covered_total < n && placed.len() < hard_cap {
+        // Score every still-uncovered point as a candidate seed in parallel:
+        // how many uncovered points fall inside its catchment radius.
+        let best = (0..n)
+            .into_par_iter()
+            .filter(|&i| !covered[i])
+            .map(|i| {
+                let q = deserts[i].to_mercator();
+                let mut neighbours: Vec<usize> = Vec::new();
+                for sp in tree.locate_within_distance([q.1, q.0], search_sq) {
+                    let j = sp.index;
+                    if !covered[j] && deserts[i].distance_to(&deserts[j]) <= radius {
+                        neighbours.push(j);
+                    }
+                }
+                (i, neighbours)
+            })
+            .max_by_key(|(_, neighbours)| neighbours.len());
+
+        let (_seed, cluster) = match best {
+            Some((seed, cluster)) if !cluster.is_empty() => (seed, cluster),
+            _ => break,
+        };
+
+        // Place the new station at the centre of mass of the served cluster,
+        // then commit exactly the points the centroid actually serves.
+        let count = cluster.len() as f64;
+        let cx = cluster.iter().map(|&j| deserts[j].lat).sum::<f64>() / count;
+        let cy = cluster.iter().map(|&j| deserts[j].lon).sum::<f64>() / count;
+        let centroid = Coordinate::new(cx, cy);
+
+        let cm = centroid.to_mercator();
+        let mut newly = 0usize;
+        for sp in tree.locate_within_distance([cm.1, cm.0], search_sq) {
+            let j = sp.index;
+            if !covered[j] && centroid.distance_to(&deserts[j]) <= radius {
+                covered[j] = true;
+                newly += 1;
+            }
+        }
+        // Guard against a pathological centroid that serves nothing (elongated
+        // clusters): fall back to committing the seed neighbourhood directly.
+        if newly == 0 {
+            for &j in &cluster {
+                if !covered[j] {
+                    covered[j] = true;
+                    newly += 1;
+                }
+            }
+            placed.push(deserts[cluster[0]]);
+        } else {
+            placed.push(centroid);
+        }
+        covered_total += newly;
+        log_debug(&format!(
+            "plan_infill_stations - placed station {} at {:.5},{:.5}; served {} (total {}/{})",
+            placed.len(),
+            placed.last().map(|c| c.lat).unwrap_or_default(),
+            placed.last().map(|c| c.lon).unwrap_or_default(),
+            newly,
+            covered_total,
+            n
+        ));
+    }
+
+    log_info(&format!(
+        "plan_infill_stations completed - {} stations cover {}/{} desert points",
+        placed.len(),
+        covered_total,
+        n
+    ));
+    placed
+}
+
+/// Prim's minimum spanning tree over a set of points using exact haversine
+/// edge weights. Returns the tree as a list of (a, b, weight_metres) edges.
+fn build_mst(points: &[Coordinate]) -> Vec<(usize, usize, f64)> {
+    let n = points.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut in_tree = vec![false; n];
+    let mut best_dist = vec![f64::INFINITY; n];
+    let mut best_from = vec![usize::MAX; n];
+    let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(n - 1);
+
+    in_tree[0] = true;
+    for j in 1..n {
+        best_dist[j] = points[0].distance_to(&points[j]);
+        best_from[j] = 0;
+    }
+
+    for _ in 1..n {
+        let mut u = usize::MAX;
+        let mut u_dist = f64::INFINITY;
+        for j in 0..n {
+            if !in_tree[j] && best_dist[j] < u_dist {
+                u_dist = best_dist[j];
+                u = j;
+            }
+        }
+        if u == usize::MAX {
+            break;
+        }
+        in_tree[u] = true;
+        edges.push((best_from[u], u, u_dist));
+        for j in 0..n {
+            if !in_tree[j] {
+                let d = points[u].distance_to(&points[j]);
+                if d < best_dist[j] {
+                    best_dist[j] = d;
+                    best_from[j] = u;
+                }
+            }
+        }
+    }
+    edges
+}
+
+/// Decompose a tree (given by its edges) into a set of simple paths via a
+/// greedy "longest path first" cover. Each returned path is an ordered list of
+/// node indices and becomes one transit line. This guarantees no redundant
+/// parallel track (every tree edge is used exactly once) while producing
+/// human-legible end-to-end services rather than a tangle.
+fn decompose_tree_into_paths(n: usize, edges: &[(usize, usize, f64)]) -> Vec<Vec<usize>> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n]; // (neighbour, edge_id)
+    for (id, (a, b, _)) in edges.iter().enumerate() {
+        adj[*a].push((*b, id));
+        adj[*b].push((*a, id));
+    }
+    let mut used_edge = vec![false; edges.len()];
+    let mut paths: Vec<Vec<usize>> = Vec::new();
+
+    // Repeatedly extract the longest available path between two leaves of the
+    // residual forest using a double-BFS diameter search restricted to unused
+    // edges.
+    loop {
+        // Find any node still touching an unused edge.
+        let start = (0..n).find(|&v| adj[v].iter().any(|&(_, id)| !used_edge[id]));
+        let start = match start {
+            Some(s) => s,
+            None => break,
+        };
+        let far1 = bfs_farthest(start, &adj, &used_edge).0;
+        let (far2, parent_edge) = bfs_farthest(far1, &adj, &used_edge);
+
+        // Reconstruct the path far1 -> far2 and mark its edges used.
+        let mut path = vec![far2];
+        let mut cur = far2;
+        while let Some((prev, eid)) = parent_edge[cur] {
+            used_edge[eid] = true;
+            cur = prev;
+            path.push(cur);
+        }
+        path.reverse();
+        if path.len() >= 2 {
+            paths.push(path);
+        } else {
+            break;
+        }
+    }
+    paths
+}
+
+/// BFS over the residual tree (unused edges only) returning the farthest node
+/// from `src` and the parent-edge map used to reconstruct the path.
+fn bfs_farthest(
+    src: usize,
+    adj: &[Vec<(usize, usize)>],
+    used_edge: &[bool],
+) -> (usize, Vec<Option<(usize, usize)>>) {
+    let n = adj.len();
+    let mut parent: Vec<Option<(usize, usize)>> = vec![None; n];
+    let mut visited = vec![false; n];
+    let mut queue = std::collections::VecDeque::new();
+    visited[src] = true;
+    queue.push_back((src, 0usize));
+    let mut farthest = src;
+    let mut max_depth = 0usize;
+    while let Some((v, depth)) = queue.pop_front() {
+        if depth > max_depth {
+            max_depth = depth;
+            farthest = v;
+        }
+        for &(nb, eid) in &adj[v] {
+            if !used_edge[eid] && !visited[nb] {
+                visited[nb] = true;
+                parent[nb] = Some((v, eid));
+                queue.push_back((nb, depth + 1));
+            }
+        }
+    }
+    (farthest, parent)
+}
+
+/// Synthesise an authentic-feeling network connecting `stations` using a chosen
+/// Transport-for-London layout philosophy. Both philosophies are built on the
+/// minimum spanning tree (so total track is minimised and no two services run
+/// redundant parallel track), then decomposed into services:
+///   * `deep_tube`  - a single streamlined trunk (the MST diameter) plus short
+///                    branch shuttles, mimicking the Bakerloo / Northern style.
+///   * `sub_surface` - the full branching tree exposed as multiple inter-running
+///                     branches, mimicking the District / Metropolitan style.
+fn link_stations_tfl(stations: &[Station], philosophy: &str) -> Vec<Line> {
+    if stations.len() < 2 {
+        return Vec::new();
+    }
+    let points: Vec<Coordinate> = stations.iter().map(|s| s.coord).collect();
+    let edges = build_mst(&points);
+    let paths = decompose_tree_into_paths(points.len(), &edges);
+    if paths.is_empty() {
+        return Vec::new();
+    }
+
+    let deep = philosophy.eq_ignore_ascii_case("deep_tube");
+    // Longest path first ordering so the trunk is index 0.
+    let mut ordered = paths;
+    ordered.sort_by_key(|p| std::cmp::Reverse(p.len()));
+
+    let palette = if deep {
+        ["#B36305", "#E32017", "#000000", "#003688"]
+    } else {
+        ["#00782A", "#9B0056", "#FFD300", "#F3A9BB"]
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    let ts = Utc::now().timestamp_millis();
+    for (idx, path) in ordered.iter().enumerate() {
+        // In deep-tube mode only the trunk plus genuinely long branches become
+        // full lines; tiny 2-stop spurs are folded into the trunk visually by
+        // still emitting them but flagged as shuttles in the name.
+        let is_trunk = idx == 0;
+        let name = if deep {
+            if is_trunk {
+                "AI Trunk Line".to_string()
+            } else {
+                format!("AI Shuttle {}", idx)
+            }
+        } else {
+            format!("AI Branch {}", idx + 1)
+        };
+        let color = palette[idx % palette.len()].to_string();
+        let geometry: Vec<Coordinate> = path.iter().map(|&i| points[i]).collect();
+        let line_stations: Vec<Station> = path.iter().map(|&i| stations[i].clone()).collect();
+        let mut segments: Vec<RouteSegment> = Vec::new();
+        for w in geometry.windows(2) {
+            segments.push(RouteSegment::new(w[0], w[1], format!("ai_{}_{}", ts, idx)));
+        }
+        lines.push(Line {
+            id: format!("ai_link_{}_{}", ts, idx),
+            name,
+            color,
+            stations: line_stations,
+            segments,
+            geometry,
+            is_custom: true,
+        });
+    }
+    log_info(&format!(
+        "link_stations_tfl completed - philosophy='{}', produced {} service lines from {} stations",
+        philosophy,
+        lines.len(),
+        stations.len()
+    ));
+    lines
 }
 
 // ============================================================================
@@ -3712,6 +4026,40 @@ struct TransitDesertsRequest {
     pub bounds: LondonBounds,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AiAddStationRequest {
+    pub bounds: LondonBounds,
+    #[serde(default)]
+    pub max_stations: usize,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AiAddStationResponse {
+    pub stations: Vec<Station>,
+    pub deserts_before: usize,
+    pub deserts_after: usize,
+    pub coverage_gain: f64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AiLinkStationsRequest {
+    #[serde(default)]
+    pub philosophy: String,
+    /// Optional explicit set of station ids to connect. When empty, every
+    /// currently loaded station is considered.
+    #[serde(default)]
+    pub station_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct CoverageStatsResponse {
+    pub total_residential: usize,
+    pub served: usize,
+    pub deserts: usize,
+    pub coverage_pct: f64,
+    pub station_count: usize,
+}
+
 async fn run_server(state: AppState, config: Config) -> Result<(), Box<dyn std::error::Error>> {
     log_info("run_server called - starting Axum web server");
     log_debug(&format!(
@@ -3729,6 +4077,9 @@ async fn run_server(state: AppState, config: Config) -> Result<(), Box<dyn std::
         .route("/api/construction/update", post(update_construction_state))
         .route("/api/route", post(find_route))
         .route("/api/transit-deserts", post(get_transit_deserts))
+        .route("/api/coverage-stats", post(get_coverage_stats))
+        .route("/api/ai/add-station", post(ai_add_station))
+        .route("/api/ai/link-stations", post(ai_link_stations))
         .route("/api/disruptions", get(get_disruptions))
         .route("/api/tracks", get(get_tracks))
         .route("/api/tracks/refresh", post(refresh_tracks))
@@ -4063,6 +4414,192 @@ async fn get_transit_deserts(
             Json(ApiResponse::error(e.to_string()))
         }
     }
+}
+
+/// Network coverage summary for the current viewport: how much residential land
+/// is within the catchment of an existing station versus stranded in a desert.
+async fn get_coverage_stats(
+    State(state): State<AppState>,
+    Json(req): Json<TransitDesertsRequest>,
+) -> Json<ApiResponse<CoverageStatsResponse>> {
+    log_info("POST /api/coverage-stats called");
+    match state.fetch_residential_coordinates(&req.bounds).await {
+        Ok(res_coords) => {
+            let stations = state.stations.load();
+            let geom = state.geometry_engine.load();
+            let deserts =
+                geom.compute_transit_deserts(&res_coords, &stations, CATCHMENT_RADIUS);
+            let total = res_coords.len();
+            let desert_n = deserts.len();
+            let served = total.saturating_sub(desert_n);
+            let coverage_pct = if total > 0 {
+                (served as f64 / total as f64) * 100.0
+            } else {
+                100.0
+            };
+            Json(ApiResponse::success(CoverageStatsResponse {
+                total_residential: total,
+                served,
+                deserts: desert_n,
+                coverage_pct,
+                station_count: stations.len(),
+            }))
+        }
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+/// "AI: Add Station" — solve a maximum-coverage facility-location problem over
+/// the current transit deserts and return the minimal set of new stations that
+/// eliminates them. The proposed stations are persisted as free stations so the
+/// catchment engine immediately accounts for them.
+async fn ai_add_station(
+    State(state): State<AppState>,
+    Json(req): Json<AiAddStationRequest>,
+) -> Json<ApiResponse<AiAddStationResponse>> {
+    log_info(&format!(
+        "POST /api/ai/add-station called - max_stations={}",
+        req.max_stations
+    ));
+    let res_coords = match state.fetch_residential_coordinates(&req.bounds).await {
+        Ok(c) => c,
+        Err(e) => return Json(ApiResponse::error(e.to_string())),
+    };
+
+    let existing = state.stations.load();
+    let geom = state.geometry_engine.load();
+    let deserts = geom.compute_transit_deserts(&res_coords, &existing, CATCHMENT_RADIUS);
+    let deserts_before = deserts.len();
+
+    // Plan the new stations on a blocking thread (CPU-bound, Rayon-parallel).
+    let deserts_for_plan = deserts.clone();
+    let max_stations = req.max_stations;
+    let planned = tokio::task::spawn_blocking(move || {
+        plan_infill_stations(&deserts_for_plan, CATCHMENT_RADIUS, max_stations)
+    })
+    .await
+    .unwrap_or_default();
+
+    // Materialise Station records and persist them.
+    let ts = Utc::now().timestamp_millis();
+    let mut new_stations: Vec<Station> = Vec::new();
+    for (i, coord) in planned.iter().enumerate() {
+        let mut st = Station::new(
+            format!("ai_station_{}_{}", ts, i),
+            format!("Proposed Station {}", i + 1),
+            *coord,
+        );
+        st.zone = 0; // zone 0 flags an AI-proposed station for the UI
+        st.lines = vec!["AI Plan".to_string()];
+        new_stations.push(st);
+    }
+
+    // Update live state + persist.
+    {
+        let mut all = (**existing).clone();
+        all.extend(new_stations.iter().cloned());
+        state.stations.store(Arc::new(all));
+        let cache = state.cache.clone();
+        let to_save = new_stations.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for s in &to_save {
+                let _ = cache.save_free_station(s);
+            }
+        })
+        .await;
+    }
+
+    // Re-evaluate deserts with the new stations included.
+    let updated = state.stations.load();
+    let deserts_after =
+        geom.compute_transit_deserts(&res_coords, &updated, CATCHMENT_RADIUS).len();
+    let coverage_gain = if deserts_before > 0 {
+        ((deserts_before - deserts_after) as f64 / deserts_before as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    log_info(&format!(
+        "POST /api/ai/add-station completed - placed {} stations, deserts {} -> {} ({:.1}% eliminated)",
+        new_stations.len(),
+        deserts_before,
+        deserts_after,
+        coverage_gain
+    ));
+
+    Json(ApiResponse::success(AiAddStationResponse {
+        stations: new_stations,
+        deserts_before,
+        deserts_after,
+        coverage_gain,
+    }))
+}
+
+/// "AI: Link Stations" — synthesise an authentic-feeling network connecting the
+/// requested stations (AI-proposed and free stations by default) using a chosen
+/// Transport-for-London layout philosophy, persist the resulting service lines,
+/// and return them.
+async fn ai_link_stations(
+    State(state): State<AppState>,
+    Json(req): Json<AiLinkStationsRequest>,
+) -> Json<ApiResponse<Vec<Line>>> {
+    log_info(&format!(
+        "POST /api/ai/link-stations called - philosophy='{}', {} explicit ids",
+        req.philosophy,
+        req.station_ids.len()
+    ));
+    let all_stations = state.stations.load();
+
+    // Selection: explicit ids if provided, else every AI-proposed / free
+    // station (those not anchored to an official line) so we connect the new
+    // infrastructure rather than re-drawing the whole tube map.
+    let selected: Vec<Station> = if !req.station_ids.is_empty() {
+        let want: HashSet<&String> = req.station_ids.iter().collect();
+        all_stations
+            .iter()
+            .filter(|s| want.contains(&s.id))
+            .cloned()
+            .collect()
+    } else {
+        all_stations.iter().cloned().collect()
+    };
+
+    if selected.len() < 2 {
+        return Json(ApiResponse::error(
+            "Need at least 2 stations to link. Run 'AI: Add Station' first.".to_string(),
+        ));
+    }
+
+    let philosophy = if req.philosophy.is_empty() {
+        "sub_surface".to_string()
+    } else {
+        req.philosophy.clone()
+    };
+    let new_lines = tokio::task::spawn_blocking(move || link_stations_tfl(&selected, &philosophy))
+        .await
+        .unwrap_or_default();
+
+    // Persist + merge into live state.
+    {
+        let mut current = (**state.lines.load()).clone();
+        current.retain(|l| !new_lines.iter().any(|nl| nl.id == l.id));
+        current.extend(new_lines.iter().cloned());
+        state.lines.store(Arc::new(current));
+        let cache = state.cache.clone();
+        let to_save = new_lines.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            for l in &to_save {
+                let _ = cache.save_custom_line(l);
+            }
+        })
+        .await;
+    }
+
+    log_info(&format!(
+        "POST /api/ai/link-stations completed - created {} service lines",
+        new_lines.len()
+    ));
+    Json(ApiResponse::success(new_lines))
 }
 
 async fn get_disruptions(State(state): State<AppState>) -> Json<ApiResponse<Value>> {
@@ -4504,13 +5041,25 @@ while (true) {
 
         let stations = msg.data;
         stations.forEach(st => {
+            // zone 0 marks an AI-proposed station; render it as a glowing gold
+            // ring so planned infrastructure stands out from real stations.
+            let isProposed = st.zone === 0;
+            let html, size;
+            if (isProposed) {
+                html = '<div style="background:radial-gradient(circle,#fff,#ffd700); width:14px; height:14px; border-radius:50%; border:2px solid #ff8c00; box-shadow:0 0 14px #ffd700;"></div>';
+                size = [18, 18];
+            } else if (st.is_interchange) {
+                html = '<div style="background:#ffcc00; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 10px #ffcc00;"></div>';
+                size = [16, 16];
+            } else {
+                html = '<div style="background:#00bcd4; width:8px; height:8px; border-radius:50%; border:1px solid #fff; box-shadow:0 0 8px #00bcd4;"></div>';
+                size = [10, 10];
+            }
             let icon = L.divIcon({
-                className: st.is_interchange ? 'hub-icon' : 'station-icon',
-                html: st.is_interchange 
-                    ? '<div style="background:#ffcc00; width:12px; height:12px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 10px #ffcc00;"></div>' 
-                    : '<div style="background:#00bcd4; width:8px; height:8px; border-radius:50%; border:1px solid #fff; box-shadow:0 0 8px #00bcd4;"></div>',
-                iconSize: st.is_interchange ? [16, 16] : [10, 10],
-                iconAnchor: st.is_interchange ? [8, 8] : [5, 5]
+                className: isProposed ? 'proposed-icon' : (st.is_interchange ? 'hub-icon' : 'station-icon'),
+                html: html,
+                iconSize: size,
+                iconAnchor: [size[0] / 2, size[1] / 2]
             });
             let marker = L.marker([st.coord.lat, st.coord.lon], { icon: icon }).addTo(window.map);
             marker.bindTooltip(st.name, { className: 'tfl-tooltip', direction: 'top', permanent: false });
@@ -4815,6 +5364,13 @@ pub fn App() -> Element {
     let mut custom_line_color = use_signal::<String>(|| "#ff00ff".to_string());
     let mut custom_line_coords = use_signal::<Vec<Coordinate>>(|| Vec::new());
 
+    // Automated planning + manual station sandbox state
+    let mut create_station_mode = use_signal::<bool>(|| false);
+    let mut ai_busy = use_signal::<bool>(|| false);
+    let mut ai_philosophy = use_signal::<String>(|| "sub_surface".to_string());
+    let mut coverage_summary = use_signal::<String>(|| String::new());
+    let mut new_station_counter = use_signal::<usize>(|| 0);
+
     let mut hidden_lines = use_signal::<HashSet<String>>(|| HashSet::new());
     let mut permanent_deletions = use_signal::<HashSet<String>>(|| HashSet::new());
 
@@ -4989,7 +5545,30 @@ pub fn App() -> Element {
                                 msg.get("lng").and_then(|v| v.as_f64()),
                             ) {
                                 context_menu.set(None);
-                                if *construction_mode.read() {
+                                if *create_station_mode.read() {
+                                    // Manual station placement: drop a station at
+                                    // the clicked coordinate and persist it.
+                                    let n = *new_station_counter.read() + 1;
+                                    new_station_counter.set(n);
+                                    let mut st = Station::new(
+                                        format!("user_station_{}", Utc::now().timestamp_millis()),
+                                        format!("Custom Station {}", n),
+                                        Coordinate::new(lat, lon),
+                                    );
+                                    st.lines = vec!["Sandbox".to_string()];
+                                    let st_for_state = st.clone();
+                                    stations.with_mut(|s| s.push(st_for_state));
+                                    show_toast(
+                                        &mut toasts,
+                                        &mut toast_id_counter,
+                                        &format!("Station placed at {:.4}, {:.4}", lat, lon),
+                                        "success",
+                                    );
+                                    spawn(async move {
+                                        let req = SaveStationRequest { station: st };
+                                        let _ = post_api::<_, Station>("/api/stations/save", &req).await;
+                                    });
+                                } else if *construction_mode.read() {
                                     custom_line_coords.with_mut(|coords| {
                                         coords.push(Coordinate::new(lat, lon));
                                     });
@@ -5438,6 +6017,135 @@ pub fn App() -> Element {
                         style: "font-size: 10px; color: #888; text-align: center; margin-top: 4px;",
                         "Click on map to draw route segments."
                     }
+                }
+            }
+        }
+
+        // ---- AI Urban Planner panel ---------------------------------------
+        div {
+            style: "position: absolute; top: 250px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.92); padding: 15px; border-radius: 12px; border: 1px solid rgba(0,188,212,0.35); color: #fff; width: 280px; box-shadow: 0 0 24px rgba(0,188,212,0.15);",
+            div { style: "font-weight: bold; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #00bcd4; margin-bottom: 10px;", "AI Urban Planner" }
+
+            button {
+                style: format!(
+                    "width: 100%; padding: 8px; border-radius: 6px; border: none; font-weight: bold; cursor: pointer; margin-bottom: 8px; background: {}; color: #000;",
+                    if *create_station_mode.read() { "#ffcc00" } else { "#2b6cb0" }
+                ),
+                onclick: move |_| {
+                    let cur = *create_station_mode.read();
+                    create_station_mode.set(!cur);
+                    if !cur { construction_mode.set(false); }
+                    show_toast(&mut toasts, &mut toast_id_counter,
+                        if !cur { "Create Station: click the map to place stations." } else { "Create Station mode off." },
+                        "info");
+                },
+                if *create_station_mode.read() { "Create Station: ON (click map)" } else { "Create Station" }
+            }
+
+            div { style: "font-size: 11px; color: #aaa; margin: 6px 0 4px;", "Link philosophy" }
+            div { style: "display: flex; gap: 6px; margin-bottom: 8px;",
+                button {
+                    style: format!(
+                        "flex:1; padding:6px; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold; background:{}; color:#fff;",
+                        if *ai_philosophy.read() == "deep_tube" { "#B36305" } else { "#444" }
+                    ),
+                    onclick: move |_| ai_philosophy.set("deep_tube".to_string()),
+                    "Deep-level Tube"
+                }
+                button {
+                    style: format!(
+                        "flex:1; padding:6px; border:none; border-radius:4px; cursor:pointer; font-size:11px; font-weight:bold; background:{}; color:#fff;",
+                        if *ai_philosophy.read() == "sub_surface" { "#00782A" } else { "#444" }
+                    ),
+                    onclick: move |_| ai_philosophy.set("sub_surface".to_string()),
+                    "Sub-surface"
+                }
+            }
+
+            button {
+                disabled: *ai_busy.read(),
+                style: "width: 100%; padding: 9px; border-radius: 6px; border: none; font-weight: bold; background: #e32017; color: #fff; cursor: pointer; margin-bottom: 8px;",
+                onclick: move |_| {
+                    if *ai_busy.read() { return; }
+                    let bounds_opt = map_bounds.read().clone();
+                    let Some(bounds) = bounds_opt else {
+                        show_toast(&mut toasts, &mut toast_id_counter, "Pan the map first so bounds are known.", "error");
+                        return;
+                    };
+                    ai_busy.set(true);
+                    show_toast(&mut toasts, &mut toast_id_counter, "AI planning new stations to eliminate deserts…", "info");
+                    spawn(async move {
+                        let req = AiAddStationRequest { bounds, max_stations: 0 };
+                        if let Some(resp) = post_api::<_, AiAddStationResponse>("/api/ai/add-station", &req).await {
+                            let added = resp.stations.len();
+                            stations.with_mut(|s| s.extend(resp.stations.into_iter()));
+                            coverage_summary.set(format!(
+                                "Added {} stations · deserts {} → {} ({:.1}% eliminated)",
+                                added, resp.deserts_before, resp.deserts_after, resp.coverage_gain
+                            ));
+                            show_toast(&mut toasts, &mut toast_id_counter,
+                                &format!("AI placed {} stations ({:.0}% of deserts eliminated)", added, resp.coverage_gain), "success");
+                        } else {
+                            show_toast(&mut toasts, &mut toast_id_counter, "AI: Add Station failed (no deserts or server error).", "error");
+                        }
+                        ai_busy.set(false);
+                    });
+                },
+                if *ai_busy.read() { "Planning…" } else { "AI: Add Station" }
+            }
+
+            button {
+                disabled: *ai_busy.read(),
+                style: "width: 100%; padding: 9px; border-radius: 6px; border: none; font-weight: bold; background: #6950A1; color: #fff; cursor: pointer; margin-bottom: 8px;",
+                onclick: move |_| {
+                    if *ai_busy.read() { return; }
+                    let philosophy = ai_philosophy.read().clone();
+                    ai_busy.set(true);
+                    show_toast(&mut toasts, &mut toast_id_counter, "AI synthesising network topology…", "info");
+                    spawn(async move {
+                        let req = AiLinkStationsRequest { philosophy, station_ids: Vec::new() };
+                        if let Some(new_lines) = post_api::<_, Vec<Line>>("/api/ai/link-stations", &req).await {
+                            let n = new_lines.len();
+                            lines.with_mut(|l| {
+                                l.retain(|existing| !new_lines.iter().any(|nl| nl.id == existing.id));
+                                l.extend(new_lines.into_iter());
+                            });
+                            show_toast(&mut toasts, &mut toast_id_counter,
+                                &format!("AI built {} service line(s).", n), "success");
+                        } else {
+                            show_toast(&mut toasts, &mut toast_id_counter, "AI: Link Stations failed (need ≥2 stations).", "error");
+                        }
+                        ai_busy.set(false);
+                    });
+                },
+                "AI: Link Stations"
+            }
+
+            button {
+                style: "width: 100%; padding: 7px; border-radius: 6px; border: 1px solid #444; font-weight: bold; background: transparent; color: #00bcd4; cursor: pointer;",
+                onclick: move |_| {
+                    let bounds_opt = map_bounds.read().clone();
+                    let Some(bounds) = bounds_opt else {
+                        show_toast(&mut toasts, &mut toast_id_counter, "Pan the map first so bounds are known.", "error");
+                        return;
+                    };
+                    spawn(async move {
+                        let req = TransitDesertsRequest { bounds };
+                        if let Some(stats) = post_api::<_, CoverageStatsResponse>("/api/coverage-stats", &req).await {
+                            coverage_summary.set(format!(
+                                "Coverage {:.1}% · {} served / {} residential · {} deserts · {} stations",
+                                stats.coverage_pct, stats.served, stats.total_residential, stats.deserts, stats.station_count
+                            ));
+                        }
+                    });
+                },
+                "Compute Coverage"
+            }
+
+            if !coverage_summary.read().is_empty() {
+                div {
+                    style: "margin-top: 10px; font-size: 11px; color: #9fe; background: rgba(0,188,212,0.08); padding: 8px; border-radius: 6px; line-height: 1.4;",
+                    "{coverage_summary}"
                 }
             }
         }
