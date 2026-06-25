@@ -2267,30 +2267,27 @@ impl OverpassApiClient {
                     max_retries,
                     url
                 ));
-                let result = self
-                    .network
-                    .post_form_json(url, &[("data", &query)])
-                    .await;
-
-                match result {
+                enum OverpassOutcome {
+                    Success(Value),
+                    EmptyElements,
+                    RetryNeeded,
+                    Failed,
+                }
+                let outcome = {
+                    let result = self
+                        .network
+                        .post_form_json(url, &[("data", &query)])
+                        .await;
+                    match result {
                     Ok(val) => {
-                        // Validate that the response actually has elements
                         if val.get("elements").and_then(|v| v.as_array()).map_or(0, |a| a.len()) > 0
                             || val.get("remark").is_none()
                         {
-                            log_info(&format!(
-                                "OverpassApiClient::fetch_railway_tracks success using {}",
-                                url
-                            ));
-                            return Ok(val);
+                            OverpassOutcome::Success(val)
+                        } else {
+                            last_error = format!("{} returned empty elements", url);
+                            OverpassOutcome::EmptyElements
                         }
-                        // Response has elements but they're empty — might be valid
-                        log_warn(&format!(
-                            "OverpassApiClient::fetch_railway_tracks - {} returned empty elements, trying next",
-                            url
-                        ));
-                        last_error = format!("{} returned empty elements", url);
-                        break; // Try next URL
                     }
                     Err(e) => {
                         last_error = format!("{}: {}", url, e);
@@ -2300,17 +2297,37 @@ impl OverpassApiClient {
                             retry + 1,
                             max_retries
                         ));
-
                         if retry < max_retries - 1 {
-                            // Exponential backoff: 2s, 4s, 8s
-                            let delay_secs = 2u64 * (1u64 << retry);
-                            log_debug(&format!(
-                                "OverpassApiClient::fetch_railway_tracks - backing off {}s before retry",
-                                delay_secs
-                            ));
-                            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                            OverpassOutcome::RetryNeeded
+                        } else {
+                            OverpassOutcome::Failed
                         }
                     }
+                }};
+                match outcome {
+                    OverpassOutcome::Success(val) => {
+                        log_info(&format!(
+                            "OverpassApiClient::fetch_railway_tracks success using {}",
+                            url
+                        ));
+                        return Ok(val);
+                    }
+                    OverpassOutcome::EmptyElements => {
+                        log_warn(&format!(
+                            "OverpassApiClient::fetch_railway_tracks - {} returned empty elements, trying next",
+                            url
+                        ));
+                        break;
+                    }
+                    OverpassOutcome::RetryNeeded => {
+                        let delay_secs = 2u64 * (1u64 << retry);
+                        log_debug(&format!(
+                            "OverpassApiClient::fetch_railway_tracks - backing off {}s before retry",
+                            delay_secs
+                        ));
+                        tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                    }
+                    OverpassOutcome::Failed => {}
                 }
             }
         }
@@ -3881,7 +3898,7 @@ async fn get_tracks(State(state): State<AppState>) -> Json<ApiResponse<Vec<Railw
 /// Fix #2: Manual "Refresh Tracks" endpoint to force a fresh Overpass query
 async fn refresh_tracks(
     State(state): State<AppState>,
-) -> impl axum::response::IntoResponse {
+) -> Json<ApiResponse<Vec<RailwayTrack>>> {
     log_info("POST /api/tracks/refresh called - force-refreshing railway tracks from Overpass");
 
     let cache = state.cache.clone();
@@ -4779,7 +4796,7 @@ pub fn ConsoleStandaloneApp() -> Element {
     }
 }
 
-#[allow(non_snake_case)]
+#[allow(non_snake_case, dependency_on_unit_never_type_fallback)]
 pub fn App() -> Element {
     let mut toasts = use_signal::<Vec<Toast>>(|| Vec::new());
     let mut toast_id_counter = use_signal::<usize>(|| 0);
@@ -5175,6 +5192,8 @@ pub fn App() -> Element {
                 {lines.read().iter().filter(|l| !permanent_deletions.read().contains(&l.id)).map(|line| {
                     let element_color = &line.color;
                     let element_id = line.id.clone();
+                    let element_id_toggle = element_id.clone();
+                    let element_id_delete = element_id.clone();
                     let element_name = &line.name;
                     let is_custom = line.is_custom;
                     let is_hidden = hidden_lines.read().contains(&element_id);
@@ -5189,10 +5208,10 @@ pub fn App() -> Element {
                                 style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",
                                 onclick: move |e| {
                                     e.stop_propagation();
-                                    if hidden_lines.read().contains(&element_id) {
-                                        hidden_lines.with_mut(|h| { h.remove(&element_id); });
+                                    if hidden_lines.read().contains(&element_id_toggle) {
+                                        hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
                                     } else {
-                                        hidden_lines.with_mut(|h| { h.insert(element_id.clone()); });
+                                        hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
                                     }
                                 },
                                 "{visibility_glyph}"
@@ -5203,7 +5222,7 @@ pub fn App() -> Element {
                                     style: "background: none; border: none; color: #f44336; cursor: pointer; font-weight: bold; font-size: 13px;",
                                     onclick: move |e| {
                                         e.stop_propagation();
-                                        let target_id = element_id.clone();
+                                        let target_id = element_id_delete.clone();
                                         spawn(async move {
                                             let target_endpoint = format!("/api/lines/delete/{target_id}");
                                             if post_api::<_, bool>(&target_endpoint, &true).await.is_some() {
@@ -5267,7 +5286,7 @@ pub fn App() -> Element {
                     }
                 })
             } else {
-                None::<VNode>
+                Some(None::<VNode>)
             }
         }
 
