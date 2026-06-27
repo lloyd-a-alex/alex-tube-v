@@ -618,7 +618,7 @@ fn embedded_residential() -> &'static Vec<Coordinate> {
 // leaks from runaway log output.
 //
 // ============================================================================
-const DEFAULT_MAX_LOG_ENTRIES: usize = 10000;
+const DEFAULT_MAX_LOG_ENTRIES: usize = 20000;
 
 use std::collections::VecDeque;
 
@@ -679,7 +679,8 @@ fn get_log_level() -> &'static LogLevel {
                 _ => LogLevel::Info,
             }
         } else {
-            LogLevel::Info
+            // Development default: Debug. Change to Info for production builds.
+            LogLevel::Debug
         }
     })
 }
@@ -5569,6 +5570,16 @@ window.initMap = async function(dioxus) {
         if (window.errorAccumulator.length > 100) window.errorAccumulator.shift();
     });
 
+    // Ensure dioxus.send is available; if not, define a no-op fallback so
+    // MID diagnostics and event messages never throw ReferenceError.
+    if (typeof dioxus === 'undefined' || !dioxus.send) {
+        console.warn("MID: dioxus.send not available – using console fallback");
+        window.dioxusFallback = {
+            send: function(msg) { console.log("MID (fallback):", msg); }
+        };
+        dioxus = window.dioxusFallback;
+    }
+
     // Polling guard: wait until Leaflet has fully loaded from CDN before
     // touching L. The unpkg script may not finish downloading before Dioxus
     // fires use_effect, causing a silent ReferenceError on L.map which halts
@@ -5581,6 +5592,29 @@ window.initMap = async function(dioxus) {
             setTimeout(() => checkLeafletReady(callback), 500);
         }
     }
+
+    // Start FPS counter immediately (will show -- until the map is ready).
+    // Moved OUTSIDE checkLeafletReady callback so it never depends on CDN.
+    let lastLoopTime = performance.now();
+    let frameCount = 0;
+    let lastLogTime = lastLoopTime;
+    function recordFrame() {
+        frameCount++;
+        let now = performance.now();
+        if (now >= lastLoopTime + 1000) {
+            let currentFps = Math.round((frameCount * 1000) / (now - lastLoopTime));
+            let fpsWidget = document.getElementById("fps-counter-widget");
+            if (fpsWidget) { fpsWidget.innerText = "PERF: " + currentFps + " FPS"; }
+            frameCount = 0;
+            lastLoopTime = now;
+            if (now >= lastLogTime + 5000) {
+                try { dioxus.send({ "event": "fps_audit", "fps": currentFps }); } catch(e) {}
+                lastLogTime = now;
+            }
+        }
+        requestAnimationFrame(recordFrame);
+    }
+    requestAnimationFrame(recordFrame);
 
     checkLeafletReady(() => {
         if (window.map) {
@@ -5598,31 +5632,26 @@ window.initMap = async function(dioxus) {
             wheelDebounceTime: 40
         }).setView([51.5074, -0.1278], 12);
 
-        // ----- Tile layer chain with fallback -----
-        // Primary: ESRI World Imagery (satellite, no API key required, free for
-        // non-commercial use).  Fallback: OpenStreetMap (if ESRI CDN is down).
+        // ----- Tile layer: OpenStreetMap primary, ESRI satellite as overlay -----
         // The old Google tile URL (mt[s].google.com) was frequently blocked by
-        // WebView2 due to missing referrer headers, causing the black map.
+        // WebView2. ESRI was tried next but is also sometimes blocked by CORS /
+        // referrer policies in WebView2. OSM always works, no referrer checks.
+        // ESRI is kept as an optional overlay that the user can switch to.
         window.tileLayer = L.tileLayer(
-            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            maxZoom: 19,
-            attribution: '&copy; Esri'
-        }).addTo(window.map);
-        // Layer-switcher control so user can toggle between satellite and streets
-        window.streetsLayer = L.tileLayer(
             'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(window.map);
+        window.satelliteLayer = L.tileLayer(
+            'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            maxZoom: 19,
+            attribution: '&copy; Esri'
         });
-        // If ESRI tiles fail to load (e.g. offline / throttled), auto-fallback
-        // to OSM streets so the map never stays black.
-        window.tileLayer.on('tileerror', function() {
-            console.warn("MID-CHECK: ESRI satellite tiles failed — falling back to OSM streets");
-            if (window.map && !window.map.hasLayer(window.streetsLayer)) {
-                window.map.removeLayer(window.tileLayer);
-                window.streetsLayer.addTo(window.map);
-            }
-        });
+        // Layer control so user can toggle between OSM and satellite
+        L.control.layers({
+            "OpenStreetMap": window.tileLayer,
+            "Satellite (ESRI)": window.satelliteLayer
+        }).addTo(window.map);
 
         window.lineLayers = {};
         window.stationLayers = {};
@@ -5998,11 +6027,11 @@ window.initMap = async function(dioxus) {
         if (alerts.length > 0) {
             let summary = alerts.map(a => "[" + a.code + "][" + a.severity + "] " + a.detail).join(" | ");
             console.warn("MID-CHECK #" + window.midCheckCount + ": " + alerts.length + " alert(s):", alerts);
-            dioxus.send({ "event": "mid_alerts", "count": alerts.length, "alerts": alerts, "summary": summary });
+            try { dioxus.send({ "event": "mid_alerts", "count": alerts.length, "alerts": alerts, "summary": summary }); } catch(e) { console.warn("MID: send failed", e); }
         } else {
             // Silent heartbeat — no news is good news
             if (window.midCheckCount % 6 === 0) {
-                dioxus.send({ "event": "mid_heartbeat", "tick": window.midCheckCount });
+                try { dioxus.send({ "event": "mid_heartbeat", "tick": window.midCheckCount }); } catch(e) { console.warn("MID: heartbeat send failed", e); }
             }
         }
     }
@@ -6013,24 +6042,6 @@ window.initMap = async function(dioxus) {
         setInterval(runMidChecks, 5000);
     }, 3000);
 
-    function recordFrame() {
-        frameCount++;
-        let now = performance.now();
-        if (now >= lastLoopTime + 1000) {
-            let currentFps = Math.round((frameCount * 1000) / (now - lastLoopTime));
-            let fpsWidget = document.getElementById("fps-counter-widget");
-            if (fpsWidget) { fpsWidget.innerText = "PERF: " + currentFps + " FPS"; }
-            frameCount = 0;
-            lastLoopTime = now;
-            
-            if (now >= lastLogTime + 5000) {
-                dioxus.send({ "event": "fps_audit", "fps": currentFps });
-                lastLogTime = now;
-            }
-        }
-        requestAnimationFrame(recordFrame);
-    }
-    requestAnimationFrame(recordFrame);
     });
 };
 "##;
@@ -6333,6 +6344,23 @@ pub fn build_desktop_window_configuration() -> dioxus::desktop::Config {
                         if (window.chrome && window.chrome.webview) {{
                             window.chrome.webview.postMessage(JSON.stringify(e.data));
                         }}
+                    }}
+                }});
+                // Leaflet load guard: confirm the CDN script actually loaded.
+                // If Leaflet is missing after page load, reload from a backup CDN.
+                window.addEventListener('load', function() {{
+                    if (typeof L === 'undefined') {{
+                        console.error(\"Leaflet CDN failed to load \u2013 map will be black\");
+                        var backupScript = document.createElement('script');
+                        backupScript.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js';
+                        backupScript.onload = function() {{
+                            console.log(\"Leaflet loaded from backup CDN (cdnjs)\");
+                        }};
+                        document.head.appendChild(backupScript);
+                        var backupCSS = document.createElement('link');
+                        backupCSS.rel = 'stylesheet';
+                        backupCSS.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';
+                        document.head.appendChild(backupCSS);
                     }}
                 }});
             </script>"#,
@@ -6791,6 +6819,8 @@ pub fn App() -> Element {
                 &(CLIPBOARD_JS.to_string() + "\n" + MAP_INIT_JS + "\nwindow.initMap(dioxus);"),
             );
             let loop_ev = eval(MAP_LOOP_JS);
+            // Brief delay to let the JS register initMap before we send data
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             eval_handle.set(Some(loop_ev));
 
             while let Ok(msg) = ev.recv().await {
@@ -7658,7 +7688,8 @@ pub fn LogConsoleCompanionApp() -> Element {
     let streaming_logs = use_signal(|| get_all_logs());
     let log_stream = streaming_logs.clone();
 
-    let mut show_trace = use_signal(|| false);
+    // All enabled by default to show maximum detail in the companion console
+    let mut show_trace = use_signal(|| true);
     let mut show_debug = use_signal(|| true);
     let mut show_info = use_signal(|| true);
     let mut show_warn = use_signal(|| true);
