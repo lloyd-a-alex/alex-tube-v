@@ -782,9 +782,11 @@
         if (!catchOn) return;
         desertLayer.clearLayers();
 
+        if (window.desertTimeout) clearTimeout(window.desertTimeout);
+
         const zoom = map.getZoom();
         if (zoom < 11) {
-          alert("Please zoom in to see catchment deserts (minimum zoom level 11).");
+          showNotification("Zoom in to see catchment deserts (zoom ≥ 11).");
           catchOn = false;
           catchBtn.classList.remove('on');
           return;
@@ -793,66 +795,87 @@
         const bounds = map.getBounds();
 
         if (!DATA.deserts || !Array.isArray(DATA.deserts)) return;
-        const visibleRes = DATA.deserts.filter(p => bounds.contains([p.lat, p.lon]));
-        if (visibleRes.length === 0) return;
+
+        const visibleCentroids = DATA.desertCentroids.filter(p => bounds.contains([p.lat, p.lon]));
+        if (visibleCentroids.length === 0) return;
+
+        const visibleIndices = visibleCentroids.map(p => p.index);
+        const visibleRings = visibleIndices.map(i => DATA.deserts[i]);
+        const resPolygons = visibleRings.map(ring => turf.polygon(ring));
 
         // Show spinner / loading indicator
         document.getElementById('spin').style.display = 'flex';
         document.getElementById('spin').innerHTML = '<div class="b"></div>Computing catchment deserts...';
 
         // Run asynchronously to allow browser layout rendering of spinner
-        setTimeout(() => {
-          // Get stations in/near bounds (extended by 0.1 degree)
-          const extBounds = bounds.pad(0.1);
-          const stations = DATA.stations.filter(s => extBounds.contains([s.lat, s.lon]));
+        window.desertTimeout = setTimeout(() => {
+          try {
+            const extBounds = bounds.pad(0.1);
+            // Filter stations by enabled modes
+            const enabledModes = new Set();
+            for (const [mode, layer] of Object.entries(layersByMode)) {
+              if (map.hasLayer(layer)) enabledModes.add(mode);
+            }
+            const stations = DATA.stations.filter(s => enabledModes.has(s.kind) && extBounds.contains([s.lat, s.lon]));
 
-          // 1. Generate 800m buffers around each station and union them
-          const stationBuffers = stations.map(s =>
-            turf.buffer(turf.point([s.lon, s.lat]), 0.8, { units: 'kilometers' })
-          );
-          const stationCoverage = unionAll(stationBuffers);
-
-          // 2. Generate 300m buffers around visible residential points
-          const resBuffers = visibleRes.map(p =>
-            turf.buffer(turf.point([p.lon, p.lat]), 0.3, { units: 'kilometers' })
-          );
-
-          // 3. Subtract station coverage from each residential buffer
-          const desertFragments = [];
-          for (const resBuf of resBuffers) {
-            if (!stationCoverage) {
-              desertFragments.push(resBuf);
-            } else {
-              try {
-                const diff = turf.difference(resBuf, stationCoverage);
-                if (diff) {
-                  desertFragments.push(diff);
+            if (stations.length === 0) {
+              showNotification("No stations in view – all residential areas are deserts.");
+              // Still draw all residential polygons as deserts
+              if (resPolygons.length > 0) {
+                const allDesert = unionAll(resPolygons);
+                if (allDesert) {
+                  L.geoJSON(allDesert, {
+                    pane: 'deserts',
+                    style: { stroke: false, fillColor: '#ff3366', fillOpacity: 0.5 },
+                    interactive: false
+                  }).addTo(desertLayer);
                 }
-              } catch (e) {
-                desertFragments.push(resBuf); // Keep original buffer on error
+              }
+              desertLayer.addTo(map);
+              document.getElementById('spin').style.display = 'none';
+              return;
+            }
+
+            // Build union of station 800m buffers
+            let stationCoverage = null;
+            for (const s of stations) {
+              const buf = turf.buffer(turf.point([s.lon, s.lat]), 0.8, { units: 'kilometers' });
+              if (!stationCoverage) stationCoverage = buf;
+              else stationCoverage = turf.union(stationCoverage, buf);
+            }
+
+            // Subtract from each residential polygon
+            const desertFragments = [];
+            for (const poly of resPolygons) {
+              if (!stationCoverage) {
+                desertFragments.push(poly);
+              } else {
+                try {
+                  const diff = turf.difference(poly, stationCoverage);
+                  if (diff) desertFragments.push(diff);
+                } catch (e) {
+                  // Skip problematic polygons
+                }
               }
             }
+
+            if (desertFragments.length > 0) {
+              const allDesert = unionAll(desertFragments);
+              if (allDesert) {
+                L.geoJSON(allDesert, {
+                  pane: 'deserts',
+                  style: { stroke: false, fillColor: '#ff3366', fillOpacity: 0.5 },
+                  interactive: false
+                }).addTo(desertLayer);
+              }
+            }
+            desertLayer.addTo(map);
+          } catch (err) {
+            console.error("Desert computation error", err);
+          } finally {
+            document.getElementById('spin').style.display = 'none';
           }
-
-          // 4. Union all the resulting desert fragments to avoid compounding opacity
-          const finalDesert = unionAll(desertFragments);
-
-          if (finalDesert) {
-            L.geoJSON(finalDesert, {
-              pane: 'deserts',
-              style: {
-                stroke: false,
-                fillColor: '#ff3366',
-                fillOpacity: 0.5,
-                fillRule: 'nonzero'
-              },
-              interactive: false
-            }).addTo(desertLayer);
-          }
-
-          desertLayer.addTo(map);
-          document.getElementById('spin').style.display = 'none';
-        }, 50);
+        }, 300);
       }
 
       const catchBtn = document.getElementById('catchBtn');
@@ -873,124 +896,60 @@
       // -------------------------------------------------------------------------
       function optimizeStationPlacement() {
         if (!DATA.deserts || !Array.isArray(DATA.deserts)) return [];
-
         const bounds = map.getBounds();
-        const visibleRes = DATA.deserts.filter(p => bounds.contains([p.lat, p.lon]));
-        if (visibleRes.length === 0) return [];
+        const visibleCentroids = DATA.desertCentroids.filter(p => bounds.contains([p.lat, p.lon]));
+        if (visibleCentroids.length === 0) return [];
+        const visibleRings = visibleCentroids.map(p => DATA.deserts[p.index]);
+        const resPolygons = visibleRings.map(ring => turf.polygon(ring));
 
-        // 1. Compute initial uncovered residential polygons (deserts)
-        // Station buffers of all existing stations in/near bounds
         const extBounds = bounds.pad(0.1);
         const stations = DATA.stations.filter(s => extBounds.contains([s.lat, s.lon]));
-        const stationBuffers = stations.map(s =>
-          turf.buffer(turf.point([s.lon, s.lat]), 0.8, { units: 'kilometers' })
-        );
-        const stationCoverage = unionAll(stationBuffers);
-
-        // Residential buffers in bounds
-        const resBuffers = visibleRes.map(p =>
-          turf.buffer(turf.point([p.lon, p.lat]), 0.3, { units: 'kilometers' })
-        );
-        const totalResPolygon = unionAll(resBuffers);
-        if (!totalResPolygon) return [];
-
-        // Subtract existing station coverage from residential land to get initial uncovered area
-        let uncoveredArea = totalResPolygon;
-        if (stationCoverage) {
-          try {
-            const diff = turf.difference(totalResPolygon, stationCoverage);
-            if (diff) uncoveredArea = diff;
-            else return []; // No uncovered area!
-          } catch (e) {
-            console.warn("Initial diff failed", e);
-          }
+        let stationCoverage = null;
+        for (const s of stations) {
+          const buf = turf.buffer(turf.point([s.lon, s.lat]), 0.8, { units: 'kilometers' });
+          if (!stationCoverage) stationCoverage = buf;
+          else stationCoverage = turf.union(stationCoverage, buf);
         }
 
-        // Candidates for new stations: we can use the centers of visible residential points that are currently uncovered
-        // Let's filter visibleRes to only those that are currently inside uncoveredArea
-        const candidates = visibleRes.filter(p => {
-          const pt = turf.point([p.lon, p.lat]);
-          try {
-            return turf.booleanPointInPolygon(pt, uncoveredArea);
-          } catch (e) {
-            return true;
-          }
-        });
+        // Combine residential polygons into single feature for subtraction
+        let residentialUnion = resPolygons[0];
+        for (let i = 1; i < resPolygons.length; i++) {
+          residentialUnion = turf.union(residentialUnion, resPolygons[i]);
+        }
+        if (!residentialUnion) return [];
+
+        let uncovered = stationCoverage ? turf.difference(residentialUnion, stationCoverage) : residentialUnion;
+        if (!uncovered) return [];
 
         const proposed = [];
-        const maxProposed = 25; // limit proposed stations
-        const minAreaThreshold = 5000; // in square meters (0.005 km2)
+        const maxProposed = 25;
+        const minArea = 5000; // 5000 m²
 
-        while (proposed.length < maxProposed) {
-          let bestCandidate = null;
-          let bestIntersectionArea = 0;
-          let bestCoverageBuffer = null;
-
-          // To make it fast, if candidates list is huge, we can sample it
-          const sampledCandidates = candidates.length > 150
-            ? candidates.filter((_, idx) => idx % Math.ceil(candidates.length / 150) === 0)
-            : candidates;
-
-          for (const cand of sampledCandidates) {
-            const candPt = turf.point([cand.lon, cand.lat]);
-            const candBuffer = turf.buffer(candPt, 0.8, { units: 'kilometers' });
-
-            try {
-              const intersection = turf.intersect(candBuffer, uncoveredArea);
-              if (intersection) {
-                const area = turf.area(intersection);
-                if (area > bestIntersectionArea) {
-                  bestIntersectionArea = area;
-                  bestCandidate = cand;
-                  bestCoverageBuffer = candBuffer;
-                }
-              }
-            } catch (e) {
-              // Ignore spatial errors for single candidates
+        for (let iter = 0; iter < maxProposed; iter++) {
+          let bestArea = 0, bestCentroid = null, bestBuffer = null;
+          // Use centroids of visible residential rings as candidates
+          for (const c of visibleCentroids) {
+            const pt = turf.point([c.lon, c.lat]);
+            if (!turf.booleanPointInPolygon(pt, uncovered)) continue;
+            const buf = turf.buffer(pt, 0.8, { units: 'kilometers' });
+            const inter = turf.intersect(buf, uncovered);
+            if (!inter) continue;
+            const area = turf.area(inter);
+            if (area > bestArea) {
+              bestArea = area;
+              bestCentroid = c;
+              bestBuffer = buf;
             }
           }
-
-          if (!bestCandidate || bestIntersectionArea < minAreaThreshold) {
-            break; // No more candidates that cover significant area
-          }
-
-          // Add proposed station
+          if (bestArea < minArea) break;
           proposed.push({
-            lat: bestCandidate.lat,
-            lon: bestCandidate.lon,
-            name: `Proposed Station ${proposed.length + 1}`
+            lat: bestCentroid.lat,
+            lon: bestCentroid.lon,
+            name: `Potential Station ${proposed.length+1}`
           });
-
-          // Update uncovered area by subtracting the best candidate's coverage buffer
-          try {
-            const nextUncovered = turf.difference(uncoveredArea, bestCoverageBuffer);
-            if (nextUncovered) {
-              uncoveredArea = nextUncovered;
-            } else {
-              break; // Coverage is complete!
-            }
-          } catch (e) {
-            console.warn("Difference failed during optimization step", e);
-            // Fallback: remove candidates near the placed station to prevent infinite loop
-            break;
-          }
-
-          // Remove candidates that are now covered
-          const placedLat = bestCandidate.lat;
-          const placedLon = bestCandidate.lon;
-          for (let i = candidates.length - 1; i >= 0; i--) {
-            const c = candidates[i];
-            const dist = turf.distance(
-              turf.point([c.lon, c.lat]),
-              turf.point([placedLon, placedLat]),
-              { units: 'kilometers' }
-            );
-            if (dist <= 0.8) {
-              candidates.splice(i, 1);
-            }
-          }
+          uncovered = turf.difference(uncovered, bestBuffer);
+          if (!uncovered) break;
         }
-
         return proposed;
       }
 
@@ -1024,7 +983,7 @@
 
         if (stationsEnabled) stationLayer.addTo(map);
 
-        alert(`Optimization complete: ${newStations.length} new stations proposed to eliminate catchment deserts.\n\nTram stops are counted as 800m coverage buffers.\nClick "TfL-style connections" to connect these optimally.`);
+        showNotification(`Optimization complete: ${newStations.length} new stations proposed.`);
       };
 
       // -------------------------------------------------------------------------
@@ -1073,13 +1032,14 @@
       // -------------------------------------------------------------------------
       function createTFLConnections() {
         if (proposedStations.length === 0) {
-          alert('Please optimize station placement first.');
+          showNotification('Please optimize station placement first.');
           return;
         }
 
-        // Remove previous connections if any
+        // Clear any existing connections
         if (window.connectionsLayer) {
           map.removeLayer(window.connectionsLayer);
+          window.connectionsLayer = null;
         }
         window.connectionsLayer = L.layerGroup();
 
@@ -1139,8 +1099,7 @@
             const lineToSpline = turf.lineString(rawCoords);
             try {
               const smoothConnection = turf.bezierSpline(lineToSpline, {
-                resolution: 10000,
-                sharpness: 0.85
+                resolution: 500
               });
 
               L.geoJSON(smoothConnection, {
@@ -1171,7 +1130,7 @@
         }
 
         window.connectionsLayer.addTo(map);
-        alert(`TfL-style bezier connections created:\n- Snapped proposed stations to the nearest tracks on the actual network.\n- Built smooth Bezier curve transitions matching the existing track geometry.`);
+        showNotification(`TfL-style connections created.`);
       }
 
       document.getElementById('connectBtn').onclick = createTFLConnections;
@@ -1204,6 +1163,7 @@
           if (cb.checked) layer.addTo(map);
           else map.removeLayer(layer);
         };
+        cb.addEventListener('change', () => { if (catchOn) computeTrueDeserts(); });
 
         const swatch = document.createElement('span');
         swatch.className = 'swatch';
