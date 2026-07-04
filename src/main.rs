@@ -402,6 +402,11 @@ const MAX_MERCATOR_LAT: f64 = 85.0511;
 const MAX_ASTAR_ITERATIONS: usize = 50_000;
 
 fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> AppResult<()> {
+    // NaN guard: NaN fails ALL comparisons, so it silently passes range checks
+    if !min_lat.is_finite() || !min_lon.is_finite() || !max_lat.is_finite() || !max_lon.is_finite() {
+        log_error(&format!("validate_bounds - rejected: non-finite input (NaN/Inf) lat=[{}, {}], lon=[{}, {}]", min_lat, max_lat, min_lon, max_lon));
+        return Err(AppError::Validation("All bounds must be finite numbers (no NaN or Infinity)".into()));
+    }
     if min_lat < -MAX_MERCATOR_LAT
         || min_lat > MAX_MERCATOR_LAT
         || max_lat < -MAX_MERCATOR_LAT
@@ -1911,6 +1916,13 @@ impl TransitNetworkGrid {
     pub fn from_stations_and_lines(stations: &[Station], lines: &[Line]) -> Self {
         log_info("TransitNetworkGrid::from_stations_and_lines - building cache-dense grid");
         
+        if stations.is_empty() {
+            log_warn("TransitNetworkGrid::from_stations_and_lines - ZERO stations provided; grid will be empty");
+        }
+        if lines.is_empty() {
+            log_warn("TransitNetworkGrid::from_stations_and_lines - ZERO lines provided; no edges will exist");
+        }
+
         let node_count = stations.len();
         let mut coords_x = Vec::with_capacity(node_count);
         let mut coords_y = Vec::with_capacity(node_count);
@@ -8078,8 +8090,8 @@ async fn run_server(
         use axum::http::{header::CONTENT_TYPE, Method};
         CorsLayer::new()
             .allow_origin([
-                cors_origin.parse().unwrap(),
-                cors_origin_localhost.parse().unwrap(),
+                cors_origin.parse().unwrap_or_else(|_| axum::http::HeaderValue::from_static("http://127.0.0.1:3000")),
+                cors_origin_localhost.parse().unwrap_or_else(|_| axum::http::HeaderValue::from_static("http://localhost:3000")),
             ])
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers([CONTENT_TYPE])
@@ -9026,6 +9038,13 @@ async fn get_isochrone(
         "POST /api/isochrone - lat={:.5} lon={:.5} t={}min",
         req.lat, req.lon, req.time_minutes
     ));
+    if let Err(e) = validate_coordinate(req.lat, req.lon, "isochrone.center") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
+    if req.time_minutes <= 0.0 || req.time_minutes > 120.0 {
+        log_error(&format!("POST /api/isochrone - invalid time_minutes={}", req.time_minutes));
+        return Json(ApiResponse::error("time_minutes must be between 1 and 120".into()));
+    }
     let seed = Coordinate::new(req.lat, req.lon);
     let stations = (**state.stations.load()).clone();
     let lines = (**state.lines.load()).clone();
@@ -9052,6 +9071,9 @@ async fn get_transit_score(
         "POST /api/transit-score - lat={:.5} lon={:.5}",
         req.lat, req.lon
     ));
+    if let Err(e) = validate_coordinate(req.lat, req.lon, "transit-score.center") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
     let coord = Coordinate::new(req.lat, req.lon);
     let stations = (**state.stations.load()).clone();
     let result = tokio::task::spawn_blocking(move || compute_transit_score(coord, &stations))
@@ -9549,15 +9571,18 @@ async fn refresh_tracks(State(state): State<AppState>) -> Json<ApiResponse<Vec<R
     log_info("POST /api/tracks/refresh called - force-refreshing railway tracks from Overpass");
 
     let cache = state.cache.clone();
-    let _ = tokio::task::spawn_blocking(move || {
+    let cache_clear = tokio::task::spawn_blocking(move || {
         if let Ok(conn) = cache.pool.get() {
-            let _ = conn.execute(
-                "DELETE FROM api_cache WHERE key = 'railway_tracks_london'",
-                [],
-            );
+            conn.execute("DELETE FROM api_cache WHERE key = 'railway_tracks_london'", [])
+        } else {
+            log_error("POST /api/tracks/refresh - failed to get DB connection for cache clear");
+            Err(rusqlite::Error::ExecuteReturnedResults)
         }
     })
     .await;
+    if let Err(e) = cache_clear {
+        log_error(&format!("POST /api/tracks/refresh - spawn_blocking JoinError clearing cache: {}", e));
+    }
 
     match state
         .fetch_railway_tracks(&state.config.london_bounds)
@@ -9590,7 +9615,7 @@ async fn delete_line(
     ));
     let cache = state.cache.clone();
 
-    let _db_res = tokio::task::spawn_blocking(move || {
+    let db_res = tokio::task::spawn_blocking(move || {
         if let Ok(conn) = cache.pool.get() {
             conn.execute("DELETE FROM custom_lines WHERE id = ?1", params![id])
         } else {
@@ -9598,6 +9623,11 @@ async fn delete_line(
         }
     })
     .await;
+    match db_res {
+        Ok(Ok(rows)) => log_debug(&format!("POST /api/lines/delete - DB removed {} rows for '{}'", rows, id_clone)),
+        Ok(Err(e)) => log_error(&format!("POST /api/lines/delete - DB error deleting '{}': {}", id_clone, e)),
+        Err(e) => log_error(&format!("POST /api/lines/delete - spawn_blocking JoinError for '{}': {}", id_clone, e)),
+    }
 
     let mut current_lines = (**state.lines.load()).clone();
     let before_count = current_lines.len();
@@ -9621,9 +9651,11 @@ async fn save_station(
         "POST /api/stations/save called - saving station: {} at lat={:.6}, lon={:.6}",
         req.station.id, req.station.coord.lat, req.station.coord.lon
     ));
-    if req.station.coord.lat.abs() > 90.0 || req.station.coord.lon.abs() > 180.0 {
+    if !req.station.coord.lat.is_finite() || !req.station.coord.lon.is_finite()
+        || req.station.coord.lat.abs() > 90.0 || req.station.coord.lon.abs() > 180.0
+    {
         log_error(&format!("POST /api/stations/save - station '{}' has INVALID coordinates lat={}, lon={}", req.station.id, req.station.coord.lat, req.station.coord.lon));
-        return Json(ApiResponse::error("Invalid station coordinates".into()));
+        return Json(ApiResponse::error("Invalid station coordinates (must be finite, lat <= 90, lon <= 180)".into()));
     }
 
     let cache_clone = state.cache.clone();
@@ -9684,12 +9716,20 @@ async fn clear_ai_stations(State(state): State<AppState>) -> Json<ApiResponse<bo
     log_info(&format!("POST /api/stations/clear-ai - removed {} stations ({} -> {})", removed, before, before - removed));
     // Wipe the entire free_stations table ? it only contains user/AI-created stations
     let cache = state.cache.clone();
-    let _ = tokio::task::spawn_blocking(move || {
+    let db_clear = tokio::task::spawn_blocking(move || {
         if let Ok(conn) = cache.pool.get() {
-            let _ = conn.execute("DELETE FROM free_stations", ());
+            conn.execute("DELETE FROM free_stations", ())
+        } else {
+            log_error("POST /api/stations/clear - failed to get DB connection");
+            Err(rusqlite::Error::ExecuteReturnedResults)
         }
     })
     .await;
+    match db_clear {
+        Ok(Ok(rows)) => log_debug(&format!("POST /api/stations/clear - DB deleted {} free station rows", rows)),
+        Ok(Err(e)) => log_error(&format!("POST /api/stations/clear - DB error: {}", e)),
+        Err(e) => log_error(&format!("POST /api/stations/clear - spawn_blocking JoinError: {}", e)),
+    }
     Json(ApiResponse::success(true))
 }
 
@@ -9738,8 +9778,16 @@ async fn find_route(
         log_error("POST /api/route - routing graph is EMPTY! Cannot compute route.");
         return Json(ApiResponse::error("Routing graph not initialised — no track data available".into()));
     }
-    if req.start.distance_to(&req.end) < 1.0 {
-        log_warn("POST /api/route - start and end are essentially the same point");
+    let route_distance = req.start.distance_to(&req.end);
+    if !route_distance.is_finite() {
+        log_error(&format!("POST /api/route - route distance is non-finite (NaN/Inf): start={:?}, end={:?}", req.start, req.end));
+        return Json(ApiResponse::error("Invalid route: coordinate distance computation produced non-finite result".into()));
+    }
+    if route_distance < 1.0 {
+        log_warn("POST /api/route - start and end are essentially the same point (<1m)");
+    }
+    if route_distance > 500_000.0 {
+        log_warn(&format!("POST /api/route - very long route requested: {:.0}m (>500km). This may be a coordinate error.", route_distance));
     }
     let path = routing.find_path(&req.start, &req.end);
     if path.is_empty() {
@@ -9802,7 +9850,10 @@ async fn simulate_congestion(
         return Json(ApiResponse::error("Routing graph not initialised — no track data available".into()));
     }
 
+    log_info("POST /api/simulate-congestion - starting Monte Carlo simulation (100k agents, may take 10-60s)...");
+    let sim_start = std::time::Instant::now();
     let loads = routing.simulate_network_load(100_000);
+    log_info(&format!("POST /api/simulate-congestion - simulation completed in {:.2}s", sim_start.elapsed().as_secs_f64()));
     log_info(&format!(
         "POST /api/simulate-congestion - simulation complete, {} edges with load",
         loads.len()
@@ -9984,6 +10035,11 @@ async fn ai_add_station(
         "POST /api/ai/add-station called - max_stations={}",
         req.max_stations
     ));
+    // Cap max_stations to prevent abusive requests from overwhelming the engine
+    if req.max_stations == 0 || req.max_stations > 50 {
+        log_error(&format!("POST /api/ai/add-station - invalid max_stations={}", req.max_stations));
+        return Json(ApiResponse::error("max_stations must be between 1 and 50".into()));
+    }
     let res_areas = match state.fetch_residential_coordinates(&req.bounds).await {
         Ok(c) => c,
         Err(e) => return Json(ApiResponse::error(e.to_string())),
@@ -10325,13 +10381,13 @@ async fn get_live_congestion_bincode(
         Ok(bytes) => axum::response::Response::builder()
             .header("Content-Type", "application/octet-stream")
             .body(axum::body::Body::from(bytes))
-            .unwrap(),
+            .unwrap_or_else(|_| axum::response::Response::builder().status(500).body(axum::body::Body::from("internal error")).unwrap()),
         Err(e) => {
             log_error(&format!("/live-congestion - bincode serialize failed: {}", e));
             axum::response::Response::builder()
                 .status(500)
                 .body(axum::body::Body::from(format!("serialize error: {}", e)))
-                .unwrap()
+                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::from("internal error")))
         }
     }
 }
@@ -10347,13 +10403,13 @@ async fn get_network_state_bincode(
         Ok(bytes) => axum::response::Response::builder()
             .header("Content-Type", "application/octet-stream")
             .body(axum::body::Body::from(bytes))
-            .unwrap(),
+            .unwrap_or_else(|_| axum::response::Response::builder().status(500).body(axum::body::Body::from("internal error")).unwrap()),
         Err(e) => {
             log_error(&format!("/network-state - bincode serialize failed: {}", e));
             axum::response::Response::builder()
                 .status(500)
                 .body(axum::body::Body::from(format!("serialize error: {}", e)))
-                .unwrap()
+                .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::from("internal error")))
         }
     }
 }
