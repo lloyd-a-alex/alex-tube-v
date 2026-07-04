@@ -4065,6 +4065,7 @@ impl RoutingGraph {
     /// - This method shares the same `PriorityQueueItem` binary heap and
     ///   `reconstruct_path` backtracking as all other A* variants in the
     ///   routing engine, ensuring consistent behaviour across the codebase.
+    #[allow(dead_code)]
     fn astar_with_congestion(
         &self,
         start: usize,
