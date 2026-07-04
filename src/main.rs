@@ -481,6 +481,28 @@ static IS_PANICKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 static CRASH_LOG_ACCUMULATOR: std::sync::OnceLock<std::sync::Mutex<String>> =
     std::sync::OnceLock::new();
 
+/// Crash telemetry frame — a fixed-size buffer the UI can poll to detect crash state
+/// without parsing the full log accumulator. Contains the last panic summary line.
+static CRASH_TELEMETRY_FRAME: std::sync::OnceLock<std::sync::Mutex<String>> =
+    std::sync::OnceLock::new();
+
+/// Write a crash telemetry summary for the UI overlay to detect.
+fn update_crash_telemetry(summary: &str) {
+    let mutex = CRASH_TELEMETRY_FRAME.get_or_init(|| std::sync::Mutex::new(String::new()));
+    if let Ok(mut guard) = mutex.lock() {
+        *guard = summary.to_string();
+    }
+}
+
+/// Read the current crash telemetry frame (for UI polling).
+fn read_crash_telemetry() -> String {
+    CRASH_TELEMETRY_FRAME
+        .get()
+        .and_then(|m| m.lock().ok())
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 fn accumulate_crash_text(msg: &str) {
     let mutex = CRASH_LOG_ACCUMULATOR.get_or_init(|| std::sync::Mutex::new(String::new()));
     if let Ok(mut guard) = mutex.lock() {
@@ -2415,6 +2437,30 @@ pub fn stations_from_bytes(bytes: &[u8]) -> &[StationPod] {
 #[inline]
 pub fn stations_to_bytes(pods: &[StationPod]) -> &[u8] {
     bytemuck::cast_slice(pods)
+}
+
+/// Zero-copy transit grid cell for binary file I/O.
+/// 16 bytes total — packed coordinate + zone + interchange flag.
+/// Enables instant grid loading from mmap without parsing.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct TransitGridPod {
+    pub x: f32,
+    pub y: f32,
+    pub zone: u8,
+    pub is_interchange: u8,
+    pub _padding: [u8; 2], // align to 8 bytes
+    pub name_hash: u64,    // FNV-1a hash for O(1) identity check
+}
+
+// Safety: TransitGridPod is plain old data — all fields are Pod, no padding beyond _padding.
+unsafe impl bytemuck::Zeroable for TransitGridPod {}
+unsafe impl bytemuck::Pod for TransitGridPod {}
+
+/// Cast a byte slice to a slice of TransitGridPod — zero copy, zero allocation.
+#[inline]
+pub fn transit_grid_from_bytes(bytes: &[u8]) -> &[TransitGridPod] {
+    bytemuck::cast_slice(bytes)
 }
 
 // ============================================================================
@@ -10670,6 +10716,19 @@ impl MmapCacheStore {
     pub fn as_ptr(&self) -> *const u8 {
         self.mmap.as_ptr()
     }
+
+    /// Zero-copy read of transit grid pods from the mapped region.
+    /// The raw disk bytes ARE the Rust struct — bytemuck cast is free.
+    pub fn read_tracks_zero_copy(&self, byte_offset: usize, count: usize) -> &[TransitGridPod] {
+        let byte_length = count * std::mem::size_of::<TransitGridPod>();
+        assert!(
+            byte_offset + byte_length <= self.len,
+            "MmapCacheStore: track read out of bounds (offset={} len={} need={})",
+            byte_offset, self.len, byte_length
+        );
+        let slice = &self.mmap[byte_offset..(byte_offset + byte_length)];
+        bytemuck::cast_slice(slice)
+    }
 }
 
 // ============================================================================
@@ -10914,6 +10973,7 @@ fn main() {
             get_all_logs()
         );
         accumulate_crash_text(&crash_report);
+        update_crash_telemetry(&format!("PANIC at {}: {}", location, payload));
         eprintln!("{}", crash_report);
 
         log_debug("main - panic recovery path without spawning a new desktop window");
@@ -16659,6 +16719,7 @@ pub fn CrashRecoveryPanel() -> Element {
         }
         "No explicit trace logs collected.".to_string()
     });
+    let telemetry_frame = read_crash_telemetry();
 
     rsx! {
         style {
@@ -16683,6 +16744,12 @@ pub fn CrashRecoveryPanel() -> Element {
                 class: "bar",
                 h3 { "SYSTEM PANIC DISPATCH INTERFACE" }
                 span { "Press [ESC] to Exit System Safely" }
+            }
+            if !telemetry_frame.is_empty() {
+                div {
+                    style: "background: #2a0a0a; border: 1px solid #ff4444; padding: 8px; font-size: 12px; color: #ff4444;",
+                    "CRASH TELEMETRY: {telemetry_frame}"
+                }
             }
             textarea {
                 readonly: true,
