@@ -54,7 +54,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 once_cell = "1.19"
 dirs = "5.0"
-phf = { version = "0.11", features = ["macros"] }
+phf = { version = "0.14", features = ["macros"] }
 
 # Performance
 rayon = "1.8"
