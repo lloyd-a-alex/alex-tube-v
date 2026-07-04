@@ -1,12 +1,20 @@
 [package]
-name = "london-transport-network"
+name = "alexs-tube-v"
 version = "1.0.0"
 edition = "2021"
+authors = ["Alex"]
+description = "London Transport network visualiser and spatial analysis engine — interactive map, A* pathfinding, demand modelling, and disruption simulation."
+license = "MIT"
+repository = "https://github.com/alextube/alex-tube-v"
+keywords = ["london", "transport", "tube", "spatial", "map"]
+categories = ["visualization", "science::geo"]
+documentation = "https://docs.rs/alexs-tube-v"
 
 [dependencies]
 # Web Framework
 axum = "0.7"
 tokio = { version = "1.35", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
 
@@ -51,6 +59,8 @@ phf = { version = "0.11", features = ["macros"] }
 # Performance
 rayon = "1.8"
 parking_lot = "0.12"
+rkyv = { version = "0.7", features = ["validation"] }
+crossbeam-channel = "0.5"
 
 # URL encoding
 percent-encoding = "2.3"
