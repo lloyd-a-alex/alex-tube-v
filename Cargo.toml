@@ -70,7 +70,7 @@ dioxus = { version = "0.5", features = ["fullstack", "axum", "desktop"] }
 arc-swap = "1.7"
 r2d2 = "0.8"
 gloo-storage = "0.3"
-gloo-timers = { version = "0.3", features = ["futures"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 futures-util = "0.3"
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["Window", "Document", "Element"] }
