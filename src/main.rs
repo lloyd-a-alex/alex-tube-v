@@ -368,11 +368,11 @@ fn validate_line_id(id: &str) -> AppResult<()> {
         ));
     }
     if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        log_debug(&format!("validate_line_id - rejected: invalid chars in '{}'", id));
-        return Err(AppError::Validation(format!(
-            "Line ID '{}' contains invalid characters (only alphanumeric and hyphens allowed)",
-            id
-        )));
+        // Security: do not reflect raw user input in logs (log injection) or error messages (stored XSS)
+        log_debug(&format!("validate_line_id - rejected: invalid chars in input (len={})", id.len()));
+        return Err(AppError::Validation(
+            "Line ID contains invalid characters (only alphanumeric and hyphens allowed)".into(),
+        ));
     }
     Ok(())
 }
@@ -1561,10 +1561,12 @@ pub struct QuantizedCoord {
 
 impl QuantizedCoord {
     /// Quantizes f64 coordinates to 6 decimal places (~11.1 cm precision at the equator).
+    /// Security: clamps to i32::MIN/MAX to prevent silent overflow wrapping
+    /// from extreme (but validated) coordinate values.
     pub fn new(lat: f64, lon: f64) -> Self {
         Self {
-            lat_e6: (lat * 1_000_000.0).round() as i32,
-            lon_e6: (lon * 1_000_000.0).round() as i32,
+            lat_e6: (lat * 1_000_000.0).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            lon_e6: (lon * 1_000_000.0).round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
         }
     }
 
@@ -1631,8 +1633,10 @@ impl ArchivedTrackGeometry {
 
     /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
     /// SAFETY: The buffer must contain a valid archived ArchivedTrackGeometry.
-    pub fn from_buffer_unchecked(buf: &[u8]) -> &ArchivedArchivedTrackGeometry {
-        unsafe { rkyv::archived_root::<ArchivedTrackGeometry>(buf) }
+    /// Returns None if the buffer is too small to contain a valid archive.
+    pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedTrackGeometry> {
+        if buf.len() < 8 { return None; }
+        Some(unsafe { rkyv::archived_root::<ArchivedTrackGeometry>(buf) })
     }
 }
 
@@ -1643,8 +1647,10 @@ impl ArchivedStationRecord {
     }
 
     /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
-    pub fn from_buffer_unchecked(buf: &[u8]) -> &ArchivedArchivedStationRecord {
-        unsafe { rkyv::archived_root::<ArchivedStationRecord>(buf) }
+    /// Returns None if the buffer is too small to contain a valid archive.
+    pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedStationRecord> {
+        if buf.len() < 8 { return None; }
+        Some(unsafe { rkyv::archived_root::<ArchivedStationRecord>(buf) })
     }
 }
 
@@ -6812,9 +6818,11 @@ fn verify_secure_path(base_dir: &Path, user_path: &Path) -> Result<PathBuf, std:
 }
 
 async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<ApiResponse<bool>> {
+    // Security: sanitise user-controlled path before logging to prevent log injection
+    let safe_path_display = payload.file_path.replace(['\n', '\r'], "?");
     log_info(&format!(
         "IDE Workspace Overwrite Request received for: {}",
-        payload.file_path
+        safe_path_display
     ));
 
     let user_path = Path::new(&payload.file_path);
@@ -6876,6 +6884,18 @@ async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<Ap
         }
     }
 
+    // Security: cap IDE write payload at 50 MB to prevent disk exhaustion DoS.
+    const MAX_IDE_WRITE_SIZE: usize = 50 * 1024 * 1024;
+    if payload.raw_content.len() > MAX_IDE_WRITE_SIZE {
+        log_error(&format!(
+            "IDE write rejected: payload size {} exceeds {} byte limit",
+            payload.raw_content.len(), MAX_IDE_WRITE_SIZE
+        ));
+        return Json(ApiResponse::error(
+            "Payload too large: maximum 50 MB permitted.".to_string(),
+        ));
+    }
+
     match std::fs::write(&target_path, &payload.raw_content) {
         Ok(_) => {
             log_info("IDE Workspace update committed successfully. Workspace reloading.");
@@ -6883,7 +6903,8 @@ async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<Ap
         }
         Err(e) => {
             log_error(&format!("Failed to write modifications to disk: {}", e));
-            Json(ApiResponse::error(e.to_string()))
+            // Security: scrub OS error details (may reveal filesystem paths or permissions)
+            Json(ApiResponse::error("Failed to write file. Please check permissions and try again.".to_string()))
         }
     }
 }
@@ -7050,6 +7071,10 @@ async fn run_server(
     // Update CORS to allow the actual ephemeral origin
     let cors_origin = format!("http://127.0.0.1:{}", actual_port);
     let cors_origin_localhost = format!("http://localhost:{}", actual_port);
+
+    // Security: enforce a 10 MB request body limit to prevent OOM DoS from
+    // maliciously large payloads (e.g. a client sending a multi-GB JSON body).
+    let app = app.layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024));
 
     // Reconfigure CORS with the actual ephemeral port
     let app = app.layer({
