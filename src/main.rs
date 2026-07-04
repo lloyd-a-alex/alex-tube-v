@@ -66,7 +66,7 @@
 //!
 //! ## Limitations
 //!
-//! - Single-file architecture (~13,000 lines) — all modules in one binary
+//! - Single-file architecture (~16,000 lines) — all modules in one binary
 //! - SQLite for caching — not suitable for high-concurrency production
 //! - Mercator projection — latitude clamped to ±85.0511°
 //!
@@ -574,9 +574,23 @@ pub struct Config {
     sample_lines: Vec<String>,
 }
 
+/// Bounding box for the Greater London spatial query region.
+///
+/// Defines the geographic extent used by all spatial queries, Overpass API
+/// fetches, and transit desert detection. Coordinates are WGS-84 decimal degrees.
+///
+/// The bounds are clamped to Web-Mercator safe latitude range (±85.0511°)
+/// to prevent projection singularities at the poles.
+///
+/// # Default
+///
+/// Covers approximately Greater London:
+/// lat ∈ [51.28, 51.69], lon ∈ [-0.51, 0.33]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LondonBounds {
+    /// Southern latitude boundary (decimal degrees).
     min_lat: f64,
+    /// Western longitude boundary (decimal degrees).
     min_lon: f64,
     max_lat: f64,
     max_lon: f64,
@@ -1548,9 +1562,21 @@ pub struct Coordinate {
     pub lon: f64,
 }
 
+/// A residential area polygon from OpenStreetMap, used for transit desert detection.
+///
+/// Represents a populated area with a centroid coordinate and boundary polygon.
+/// The [`GeometryEngine`] uses these to compute catchment coverage — areas where
+/// residents can reach a transit station within a walking threshold.
+///
+/// # Fields
+///
+/// - `centroid` — Geographic center of the residential area (WGS-84 lat/lon).
+/// - `polygon` — Ordered boundary vertices forming a closed ring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResidentialArea {
+    /// Geographic center of the residential area (WGS-84 lat/lon).
     pub centroid: Coordinate,
+    /// Ordered boundary vertices forming a closed ring.
     pub polygon: Vec<Coordinate>,
 }
 
@@ -1747,15 +1773,32 @@ impl ArchivedStationRecord {
 // the channel is full, telemetry frames are silently dropped — the backend
 // never blocks on UI backpressure.
 
-/// Telemetry frame sent from AI planner / routing engine to the UI HUD.
+/// Real-time performance telemetry frame sent from the backend to the UI HUD.
+///
+/// Captured at ~30fps by the [`TelemetryBroadcaster`]. Each frame is a
+/// point-in-time snapshot of the engine's vital statistics — routing latency,
+/// graph size, worker pool utilisation, and AI injection count.
+///
+/// # Performance
+///
+/// `Copy`-semantically cheap (56 bytes, all POD fields). The broadcaster uses
+/// `crossbeam_channel` with `try_send` — emission never blocks the backend,
+/// even if the UI thread stalls.
 #[derive(Debug, Clone)]
 pub struct TelemetryFrame {
+    /// Wall-clock timestamp (milliseconds since UNIX epoch).
     pub timestamp_ms: u64,
+    /// Last A* pathfinding duration (microseconds). Spike = graph fragmentation.
     pub astar_duration_us: u64,
+    /// Total nodes in the routing graph (each node = one station/merge point).
     pub routing_graph_nodes: usize,
+    /// Total directed edges in the routing graph.
     pub routing_graph_edges: usize,
+    /// Current number of active Tokio worker threads (should match CPU count).
     pub active_tokio_workers: usize,
+    /// SQLite WAL (Write-Ahead Log) queue depth. High = write contention.
     pub sqlite_wal_queue: usize,
+    /// Number of AI-proposed junction stations injected this session.
     pub ai_junctions_injected: usize,
 }
 
@@ -1874,8 +1917,38 @@ impl Station {
 /// All data is stored in contiguous arrays, aligned to cache lines.
 /// No pointers, no heap allocations within the arrays, no cache misses.
 #[derive(Debug, Clone)]
+/// Cache-dense SoA (Structure-of-Arrays) transit network representation.
+///
+/// The high-performance graph layout for the routing engine. Unlike the
+/// pointer-based [`RoutingGraph`] (HashMap of Nodes), this uses contiguous
+/// arrays with CSR (Compressed Sparse Row) edge storage — optimized for
+/// CPU cache-line utilization, SIMD vectorization, and zero-copy mmap loading.
+///
+/// # Memory Layout
+///
+/// ```text
+/// coords_x:    [f32; N]      ← contiguous X coordinates (Web-Mercator metres)
+/// coords_y:    [f32; N]      ← contiguous Y coordinates
+/// node_ids:    [u32; N]      ← station ID lookup
+/// zone_ids:    [u8;  N]      ← TfL fare zone (1-9)
+/// edge_offsets: [usize; N+1] ← CSR row pointers
+/// edge_targets: [u32; E]     ← destination node for each directed edge
+/// edge_weights: [f32; E]     ← travel time (seconds) for each edge
+/// edge_line_ids: [u8;  E]    ← line index for each edge
+/// ```
+///
+/// # Complexity
+///
+/// | Operation | Time | Space |
+/// |-----------|------|-------|
+/// | Build from stations+lines | O(S + L·P) | O(S + E) |
+/// | Get edges for node i | O(1) slice | — |
+/// | Nearest node (grid) | O(1) avg | O(S) |
+/// | Nearest node (Morton) | O(log N) | O(N) |
+///
+/// Where S = stations, L = lines, P = avg points per line, E = directed edges.
 pub struct TransitNetworkGrid {
-    /// Number of nodes (stations) in the network
+    /// Number of nodes (stations) in the network.
     pub node_count: usize,
     
     /// Easting coordinates (meters from London center) - contiguous array
@@ -2409,11 +2482,25 @@ impl RouteScratchpad {
 // without any deserialization step. Zero allocation, zero copy.
 
 /// Zero-copy spatial coordinate pair for binary file I/O.
-/// 8 bytes total, no padding — safe for bytemuck::cast from &[u8].
+///
+/// 8 bytes total, no padding — safe for `bytemuck::cast` from `&[u8]`.
+/// Stores Web-Mercator projected coordinates as `f32` for compact on-disk
+/// representation. Used inside [`StationPod`] and [`TransitGridPod`].
+///
+/// # Layout
+///
+/// ```text
+/// Offset  Size  Field
+/// 0       4     x  (f32 — Web-Mercator easting, metres)
+/// 4       4     y  (f32 — Web-Mercator northing, metres)
+/// Total:  8 bytes, naturally aligned, no padding
+/// ```
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct SpatialCoordPod {
+    /// Web-Mercator easting coordinate (metres from projection origin).
     pub x: f32,
+    /// Web-Mercator northing coordinate (metres from projection origin).
     pub y: f32,
 }
 
@@ -2423,15 +2510,40 @@ unsafe impl bytemuck::Zeroable for SpatialCoordPod {}
 unsafe impl bytemuck::Pod for SpatialCoordPod {}
 
 /// Zero-copy station record for binary file I/O.
-/// 16 bytes total, no padding — safe for bytemuck::cast from &[u8].
+///
+/// 16 bytes total, no padding — safe for `bytemuck::cast` from `&[u8]`.
+/// The on-disk representation of a station, designed for instant mmap loading
+/// with zero deserialization cost.
+///
+/// # Layout
+///
+/// ```text
+/// Offset  Size  Field
+/// 0       8     coord        (SpatialCoordPod: x:f32 + y:f32)
+/// 8       1     zone         (u8 — TfL fare zone 1-9)
+/// 9       1     is_interchange (u8 — 0 or 1)
+/// 10      2     _padding     (align to 8-byte boundary)
+/// 12      8     name_hash    (u64 — FNV-1a hash for O(1) identity check)
+/// Total:  24 bytes (padded to 8-byte alignment)
+/// ```
+///
+/// # bytemuck Safety
+///
+/// Implements `Pod + Zeroable` — all fields are plain old data, no pointers,
+/// no Drop impl, no padding bytes between fields beyond `_padding`.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct StationPod {
+    /// Web-Mercator projected coordinate.
     pub coord: SpatialCoordPod,
+    /// TfL fare zone (1-9). 0 for out-of-system.
     pub zone: u8,
+    /// 1 if station serves multiple lines (interchange), 0 otherwise.
     pub is_interchange: u8,
-    pub _padding: [u8; 2], // align to 8 bytes
-    pub name_hash: u64,    // FNV-1a hash for O(1) identity check
+    /// Padding bytes for 8-byte alignment.
+    pub _padding: [u8; 2],
+    /// FNV-1a hash of the station name for O(1) identity comparison.
+    pub name_hash: u64,
 }
 
 // Safety: StationPod is plain old data — all fields are Pod, no padding beyond _padding.
@@ -10718,6 +10830,26 @@ pub fn load_spatial_cache_mmap() -> AppResult<Vec<StationPod>> {
 // serialization cost. Safe to read lock-free across all Rayon threads.
 // ============================================================================
 
+/// Zero-copy virtual filesystem for the spatial cache.
+///
+/// Wraps a `memmap2::Mmap` to serve station and transit grid data with
+/// **literal zero CPU allocation** — the bytes on disk ARE the Rust structs.
+/// `bytemuck::cast_slice` reinterprets the mmap'd region as `&[StationPod]`
+/// or `&[TransitGridPod]` without any parsing, deserialization, or copying.
+///
+/// # Thread Safety
+///
+/// Safe to read lock-free across all Rayon threads. The underlying `Mmap` is
+/// `Sync + Send`. The OS handles page faults transparently — first access
+/// triggers a disk read; subsequent accesses hit the page cache (L3/RAM).
+///
+/// # Usage
+///
+/// ```rust
+/// let store = MmapCacheStore::new("cache/spatial.bin", 1 << 20)?;
+/// let stations: &[StationPod] = store.read_stations_zero_copy(0, 1000);
+/// let grid: &[TransitGridPod] = store.read_tracks_zero_copy(16000, 500);
+/// ```
 pub struct MmapCacheStore {
     /// The raw memory-mapped file. Safe to read lock-free across all Rayon threads.
     mmap: memmap2::Mmap,
@@ -10802,7 +10934,35 @@ impl MmapCacheStore {
 // ============================================================================
 
 /// Pin a memory region to physical RAM, preventing OS page-out to swap.
-/// On Windows uses VirtualLock; on Unix uses mlock.
+///
+/// Defeats OS page-fault latency spikes by locking the specified memory range
+/// into physical RAM. After pinning, every access is a guaranteed L1/L2 cache
+/// hit — no SSD round-trip, no TLB shootdown, no page fault interrupt.
+///
+/// # Platform Implementations
+///
+/// - **Windows**: `VirtualLock` FFI — locks pages into the working set.
+/// - **Unix/Linux**: `libc::mlock` FFI — locks pages into RAM (requires
+///   `RLIMIT_MEMLOCK` or `CAP_IPC_LOCK`).
+///
+/// # Graceful Degradation
+///
+/// If pinning fails (insufficient privileges, memory limits exceeded), logs a
+/// warning and continues. The application works correctly without pinning —
+/// it just may experience occasional latency spikes from page faults.
+///
+/// # Safety
+///
+/// `ptr` must point to a valid allocated region of at least `len` bytes.
+/// The caller must ensure the memory outlives this call.
+///
+/// # Examples
+///
+/// ```rust
+/// let data: Vec<f32> = vec![0.0; 1_000_000]; // 4 MB
+/// pin_memory_to_ram(data.as_ptr() as *const u8, data.len() * 4);
+/// // data is now locked in physical RAM — no page faults on access
+/// ```
 #[cfg(windows)]
 pub fn pin_memory_to_ram(ptr: *const u8, len: usize) {
     extern "system" {
