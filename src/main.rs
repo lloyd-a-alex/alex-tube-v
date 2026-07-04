@@ -12870,6 +12870,14 @@ pub fn App() -> Element {
     rsx! {
             style { "{*CONSOLIDATED_UI_STYLES}" }
 
+            // Skip Navigation Link — visible on Tab focus, lets keyboard users
+            // jump past the title bar directly to the map content.
+            a {
+                class: "skip-link",
+                href: "#map-viewport",
+                "Skip to map"
+            }
+
             // Global keyboard interceptor for Cmd+K and Escape unwinding
             div {
                 tabindex: "0",
@@ -12907,6 +12915,7 @@ pub fn App() -> Element {
 
             // Frameless Glassmorphism Header Bar (draggable title bar)
             div {
+                role: "banner",
                 style: "
                     position: fixed;
                     top: 0; left: 0; right: 0;
@@ -12975,6 +12984,9 @@ pub fn App() -> Element {
             // Cmd+K Omnibox Overlay
             if show_omnibox() {
                 div {
+                    role: "dialog",
+                    "aria-modal": "true",
+                    "aria-label": "Command palette",
                     style: "
                         position: fixed;
                         top: 0; left: 0; right: 0; bottom: 0;
@@ -13010,6 +13022,7 @@ pub fn App() -> Element {
                             input {
                                 style: "flex: 1; background: none; border: none; outline: none; color: #fff; font-size: 15px; font-family: 'JetBrains Mono', monospace;",
                                 placeholder: "Search stations or type /command...",
+                                "aria-label": "Search stations or type a slash command",
                                 value: "{omnibox_query}",
                                 autofocus: true,
                                 oninput: move |e| {
@@ -13111,6 +13124,8 @@ pub fn App() -> Element {
 
             div {
                 id: "map-viewport",
+                role: "application",
+                "aria-label": "London Transport interactive map",
                 style: "z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden; padding-top: 42px;"
             }
 
@@ -13120,6 +13135,8 @@ pub fn App() -> Element {
             div { class: "tactical-crt-overlay" }
 
         div { class: "legend-container",
+            role: "complementary",
+            "aria-label": "Network Layers legend",
             div { class: "legend-header",
                 div { class: "legend-title", "Network Layers" }
             }
@@ -13341,11 +13358,14 @@ pub fn App() -> Element {
                 let target_station_name = &st.name;
                 Some(rsx! {
                     div { class: "tfl-bottom-sheet spring-enter",
+                        role: "dialog",
+                        "aria-label": "Station details",
                         div { class: "sheet-handle" }
                         div { class: "sheet-header",
                             h2 { "{target_station_name}" }
                             span { class: "badge-status", "{dashboard_zone_label}" }
                             button {
+                                "aria-label": "Close station details",
                                 style: "background:none; border:none; color:#ff4444; font-weight:bold; cursor:pointer;",
                                 onclick: move |_| {
                                     selected_station.set(None);
@@ -13410,6 +13430,8 @@ pub fn App() -> Element {
                 if let Some((coord, _)) = context_menu_val {
             div {
                 class: "custom-context-dropdown spring-pop",
+                role: "menu",
+                "aria-label": "Map context menu",
                 style: "{layout_position_style}",
                 // Coordinate display header
                 div {
@@ -13418,6 +13440,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         // Copy coordinates to clipboard via JS
@@ -13429,6 +13453,8 @@ pub fn App() -> Element {
                 div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 2px 0;" }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         journey_from_coord.set(Some(coord));
@@ -13439,6 +13465,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         journey_to_coord.set(Some(coord));
@@ -13450,6 +13478,8 @@ pub fn App() -> Element {
                 div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         transit_score_loading.set(true);
@@ -13469,6 +13499,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         let mins = *isochrone_minutes.read() as f64;
@@ -13494,6 +13526,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         let active = *demand_heat_active.read();
@@ -13523,6 +13557,8 @@ pub fn App() -> Element {
                 div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         eval(&call_window_js("exportGeoJSON"));
@@ -13531,6 +13567,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         is_keyboard_help_open.set(true);
@@ -13540,6 +13578,8 @@ pub fn App() -> Element {
                 div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                         if !*construction_mode.read() { construction_mode.set(true); }
@@ -13562,6 +13602,8 @@ pub fn App() -> Element {
                 }
                 div {
                     class: "menu-item",
+                    role: "menuitem",
+                    tabindex: "0",
                     onclick: move |_| {
                         context_menu.set(None);
                     },
@@ -13750,6 +13792,8 @@ pub fn App() -> Element {
         }
 
         div { class: "toast-container",
+            "aria-live": "polite",
+            "aria-atomic": "true",
             for toast in toasts.read().iter() {
                 div {
                     class: "toast show {toast.style}",
@@ -13764,12 +13808,15 @@ pub fn App() -> Element {
         // A. Fuzzy Search Bar Dropdown
         div {
             class: "search-bar-wrap",
+            role: "search",
+            "aria-label": "Station search",
             style: "position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 11000; width: 360px; max-width: calc(100vw - 32px); pointer-events: auto;",
             div {
                 style: "position: relative",
                 input {
                     id: "global-search",
                     placeholder: "🔍 Search stations, lines...",
+                    "aria-label": "Search stations and lines",
                     autocomplete: "off",
                     style: "width: 100%; padding: 11px 16px; background: rgba(8,10,14,.92); border: 1px solid rgba(255,255,255,.15); border-radius: 24px; color: #fff; font-size: 14px; outline: none; box-shadow: 0 8px 24px rgba(0,0,0,.4); backdrop-filter: blur(12px);",
                     value: "{search_query}",
@@ -13905,6 +13952,8 @@ pub fn App() -> Element {
         // C. Sliding Journey Planner Panel (Right Side)
         div {
             id: "journey-planner-panel",
+            role: "dialog",
+            "aria-label": "Journey Planner",
             style: format!("position: fixed; top: 0; right: {}; width: 400px; height: 100vh; background: rgba(8,10,14,.97); color: #f0f4f8; z-index: 12000; transition: right .3s cubic-bezier(.19,1,.22,1); display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,.12); box-shadow: -8px 0 40px rgba(0,0,0,.6); font-family: Inter,sans-serif; overflow: hidden; pointer-events: auto;",
                 if *is_journey_planner_open.read() { "0" } else { "-420px" }
             ),
@@ -13914,6 +13963,7 @@ pub fn App() -> Element {
                     style: "display: flex; justify-content: space-between; align-items: center;",
                     div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #00bcd4;", "Journey Planner" }
                     button {
+                        "aria-label": "Close Journey Planner",
                         style: "background: none; border: none; color: #888; cursor: pointer; font-size: 18px; padding: 4px;",
                         onclick: move |_| {
                             is_journey_planner_open.set(false);
@@ -13933,6 +13983,7 @@ pub fn App() -> Element {
                         input {
                             id: "jp-from",
                             placeholder: "Click map or type station...",
+                            "aria-label": "Journey origin station",
                             style: "flex: 1; padding: 9px 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); border-radius: 8px; color: #fff; font-size: 13px; outline: none;",
                             value: "{journey_from}",
                             oninput: move |e| { journey_from.set(e.value()); }
@@ -13957,6 +14008,7 @@ pub fn App() -> Element {
                         input {
                             id: "jp-to",
                             placeholder: "Click map or type station...",
+                            "aria-label": "Journey destination station",
                             style: "flex: 1; padding: 9px 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); border-radius: 8px; color: #fff; font-size: 13px; outline: none;",
                             value: "{journey_to}",
                             oninput: move |e| { journey_to.set(e.value()); }
@@ -14125,6 +14177,7 @@ pub fn App() -> Element {
             div { style: "font-size: 10px; color: #00bcd4; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;", "Isochrone" }
             select {
                 id: "iso-minutes",
+                "aria-label": "Isochrone travel time in minutes",
                 style: "width: 100%; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); color: #fff; padding: 5px 8px; border-radius: 6px; font-size: 12px; outline: none; margin-bottom: 6px;",
                 value: "{isochrone_minutes}",
                 onchange: move |e| {
@@ -14162,6 +14215,8 @@ pub fn App() -> Element {
         // F. sliding Cost Estimator Panel (Left Side)
         div {
             id: "cost-estimator-panel",
+            role: "dialog",
+            "aria-label": "Cost Estimator",
             style: format!("position: fixed; top: 0; left: {}; width: 360px; height: 100vh; background: rgba(8,10,14,.97); color: #f0f4f8; z-index: 12000; transition: left .3s cubic-bezier(.19,1,.22,1); display: flex; flex-direction: column; border-right: 1px solid rgba(255,255,255,.12); box-shadow: 8px 0 40px rgba(0,0,0,.6); font-family: Inter,sans-serif; pointer-events: auto;",
                 if *is_cost_estimator_open.read() { "0" } else { "-380px" }
             ),
@@ -14171,6 +14226,7 @@ pub fn App() -> Element {
                     style: "display: flex; justify-content: space-between; align-items: center;",
                     div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #ff9800;", "💸 Cost Estimator" }
                     button {
+                        "aria-label": "Close Cost Estimator",
                         style: "background: none; border: none; color: #888; cursor: pointer; font-size: 18px;",
                         onclick: move |_| {
                             is_cost_estimator_open.set(false);
@@ -14187,6 +14243,7 @@ pub fn App() -> Element {
                 label { style: "font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 6px;", "Bore Type" }
                 select {
                     id: "cost-bore",
+                    "aria-label": "Tunnel bore type",
                     style: "width: 100%; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); color: #fff; padding: 9px 12px; border-radius: 8px; font-size: 13px; outline: none; margin-bottom: 12px;",
                     value: "{cost_bore_type}",
                     onchange: move |e| { cost_bore_type.set(e.value()); },
@@ -14198,6 +14255,7 @@ pub fn App() -> Element {
                 label { style: "font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; display: block; margin-bottom: 6px;", "Line Name" }
                 input {
                     id: "cost-name",
+                    "aria-label": "Custom line name for cost estimate",
                     style: "width: 100%; padding: 9px 12px; background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.15); border-radius: 8px; color: #fff; font-size: 13px; outline: none; margin-bottom: 12px;",
                     value: "{cost_line_name}",
                     oninput: move |e| { cost_line_name.set(e.value()); }
@@ -14282,6 +14340,9 @@ pub fn App() -> Element {
                 Some(rsx! {
                     div {
                         id: "kb-help-modal",
+                        role: "dialog",
+                        "aria-modal": "true",
+                        "aria-label": "Keyboard shortcuts reference",
                         style: "position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 20000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); pointer-events: auto;",
                         onclick: move |_| {
                             is_keyboard_help_open.set(false);
@@ -14337,6 +14398,8 @@ pub fn App() -> Element {
         // H. Floating Toolbar Button Column (Bottom Right)
         div {
             id: "alex-toolbar",
+            role: "toolbar",
+            "aria-label": "Map tools",
             style: "position: fixed; bottom: 80px; right: 20px; z-index: 11500; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: auto;",
             button {
                 title: "Journey Planner (J)",
@@ -14425,6 +14488,9 @@ pub fn App() -> Element {
                 Some(rsx! {
                     div {
                         id: "network-stats-hud",
+                        role: "status",
+                        "aria-live": "polite",
+                        "aria-label": "Network statistics",
                         style: "position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(8,10,14,.88); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 8px 18px; z-index: 10500; display: flex; gap: 22px; align-items: center; font-family: Inter,sans-serif; backdrop-filter: blur(10px); box-shadow: 0 6px 24px rgba(0,0,0,.4); pointer-events: none;",
                         div { style: "text-align: center;",
                             div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_lines}" }
@@ -14488,6 +14554,9 @@ pub fn App() -> Element {
 
         div {
             class: "loading-overlay",
+            role: "alert",
+            "aria-busy": "true",
+            "aria-label": "Loading network data",
             style: "display:{loading_display}",
             div { class: "spinner" }
             div { class: "status-container",
