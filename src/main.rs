@@ -1916,6 +1916,120 @@ impl TransitNetworkGrid {
 }
 
 // ============================================================================
+// INTERFACE SEGREGATION TRAITS
+// ============================================================================
+// These traits allow A* and spatial queries to operate on ANY graph
+// implementation, not just TransitNetworkGrid. This enables testing with
+// synthetic graphs and swapping implementations at module boundaries.
+
+/// Graph edge access trait — abstracts over CSR edge storage.
+pub trait EdgeProvider {
+    /// Get the target node IDs for all edges from `node_id`.
+    fn get_edges(&self, node_id: u32) -> &[u32];
+    /// Get the edge weights for all edges from `node_id`.
+    fn get_edge_weights(&self, node_id: u32) -> &[f32];
+    /// Total number of nodes in the graph.
+    fn node_count(&self) -> usize;
+}
+
+/// Spatial coordinate access trait — abstracts over coordinate storage.
+pub trait CoordProvider {
+    /// Get the (x, y) coordinates for node `idx`.
+    fn get_coords(&self, idx: usize) -> (f32, f32);
+    /// Total number of nodes.
+    fn node_count(&self) -> usize;
+}
+
+impl EdgeProvider for TransitNetworkGrid {
+    #[inline(always)]
+    fn get_edges(&self, node_id: u32) -> &[u32] {
+        let start = self.edge_offsets[node_id as usize] as usize;
+        let end = self.edge_offsets[node_id as usize + 1] as usize;
+        &self.edge_targets[start..end]
+    }
+    #[inline(always)]
+    fn get_edge_weights(&self, node_id: u32) -> &[f32] {
+        let start = self.edge_offsets[node_id as usize] as usize;
+        let end = self.edge_offsets[node_id as usize + 1] as usize;
+        &self.edge_weights[start..end]
+    }
+    #[inline(always)]
+    fn node_count(&self) -> usize { self.node_count }
+}
+
+impl CoordProvider for TransitNetworkGrid {
+    #[inline(always)]
+    fn get_coords(&self, idx: usize) -> (f32, f32) {
+        (self.coords_x[idx], self.coords_y[idx])
+    }
+    #[inline(always)]
+    fn node_count(&self) -> usize { self.node_count }
+}
+
+/// A* using dynamic dispatch — accepts any EdgeProvider + CoordProvider.
+/// This enables type-erased routing at module boundaries (e.g., plugin systems).
+pub fn astar_dynamic(
+    edges: &dyn EdgeProvider,
+    coords: &dyn CoordProvider,
+    scratchpad: &mut RouteScratchpad,
+    start: usize,
+    goal: usize,
+) -> Vec<usize> {
+    let n = edges.node_count();
+    if start >= n || goal >= n {
+        return Vec::new();
+    }
+    // Reset scratchpad
+    scratchpad.heap.clear();
+    for i in 0..n {
+        scratchpad.g_cost[i] = f32::INFINITY;
+        scratchpad.came_from[i] = usize::MAX;
+        scratchpad.closed[i] = false;
+    }
+
+    let heuristic = |idx: usize| -> f32 {
+        let (ix, iy) = coords.get_coords(idx);
+        let (gx, gy) = coords.get_coords(goal);
+        let dx = ix - gx;
+        let dy = iy - gy;
+        (dx * dx + dy * dy).sqrt()
+    };
+
+    scratchpad.g_cost[start] = 0.0;
+    scratchpad.heap.push(AStarNode { idx: start, f_cost: heuristic(start) });
+
+    while let Some(AStarNode { idx, .. }) = scratchpad.heap.pop() {
+        if idx == goal {
+            let mut path = Vec::new();
+            let mut cur = goal;
+            while cur != usize::MAX {
+                path.push(cur);
+                cur = scratchpad.came_from[cur];
+            }
+            path.reverse();
+            return path;
+        }
+        if scratchpad.closed[idx] { continue; }
+        scratchpad.closed[idx] = true;
+
+        let edge_targets = edges.get_edges(idx as u32);
+        let edge_weights = edges.get_edge_weights(idx as u32);
+        for (&next, &weight) in edge_targets.iter().zip(edge_weights.iter()) {
+            let next = next as usize;
+            if scratchpad.closed[next] { continue; }
+            let tentative_g = scratchpad.g_cost[idx] + weight;
+            if tentative_g < scratchpad.g_cost[next] {
+                scratchpad.came_from[next] = idx;
+                scratchpad.g_cost[next] = tentative_g;
+                let f = tentative_g + heuristic(next);
+                scratchpad.heap.push(AStarNode { idx: next, f_cost: f });
+            }
+        }
+    }
+    Vec::new()
+}
+
+// ============================================================================
 // SIMD-ACCELERATED BATCH DISTANCE COMPUTATION
 // ============================================================================
 // Computes 8 squared distances per clock cycle using AVX2 auto-vectorization.
@@ -2152,6 +2266,163 @@ pub fn stations_from_bytes(bytes: &[u8]) -> &[StationPod] {
 #[inline]
 pub fn stations_to_bytes(pods: &[StationPod]) -> &[u8] {
     bytemuck::cast_slice(pods)
+}
+
+// ============================================================================
+// TRANSIT DESERT DETECTION
+// ============================================================================
+// Identifies geographic areas with poor transit coverage by sweeping a grid
+// of query points across London and finding cells far from any station.
+// Uses SIMD batch_distance_squared for fast sweep.
+
+/// A detected transit desert: a grid cell with no station within threshold.
+#[derive(Debug, Clone, Serialize)]
+pub struct TransitDesert {
+    pub center_lon: f32,
+    pub center_lat: f32,
+    pub nearest_station_dist_m: f32,
+}
+
+/// Scan a regular grid across London for areas far from any station.
+/// `grid_size` controls resolution (e.g. 50 = 50x50 = 2500 cells).
+/// `threshold_m` is the minimum distance to consider a cell a "desert".
+pub fn detect_transit_deserts(
+    grid: &TransitNetworkGrid,
+    grid_size: usize,
+    threshold_m: f32,
+) -> Vec<TransitDesert> {
+    // London bounding box (approximate)
+    const LON_MIN: f32 = -0.51;
+    const LON_MAX: f32 = 0.33;
+    const LAT_MIN: f32 = 51.28;
+    const LAT_MAX: f32 = 51.69;
+
+    let lon_step = (LON_MAX - LON_MIN) / grid_size as f32;
+    let lat_step = (LAT_MAX - LAT_MIN) / grid_size as f32;
+    let mut deserts = Vec::new();
+
+    for gi in 0..grid_size {
+        for gj in 0..grid_size {
+            let cx = LON_MIN + (gi as f32 + 0.5) * lon_step;
+            let cy = LAT_MIN + (gj as f32 + 0.5) * lat_step;
+
+            // SIMD batch distance to all stations
+            let dists = batch_distance_squared(cx, cy, &grid.coords_x, &grid.coords_y);
+            let min_dist_sq = dists.iter().cloned().fold(f32::INFINITY, f32::min);
+            // Convert squared degree distance to approximate meters
+            // 1 degree lat ~ 111km, 1 degree lon ~ 70km at London lat
+            let dist_m = (min_dist_sq).sqrt() * 111_000.0;
+
+            if dist_m > threshold_m {
+                deserts.push(TransitDesert {
+                    center_lon: cx,
+                    center_lat: cy,
+                    nearest_station_dist_m: dist_m,
+                });
+            }
+        }
+    }
+    log_info(&format!(
+        "detect_transit_deserts - found {} deserts (threshold: {}m, grid: {}x{})",
+        deserts.len(), threshold_m, grid_size, grid_size
+    ));
+    deserts
+}
+
+// ============================================================================
+// FIXED-POINT DETERMINISTIC GEOMETRY
+// ============================================================================
+// Sub-micrometer integer coordinates for reproducible cross-platform routing.
+// Eliminates floating-point non-determinism across CPU architectures.
+
+/// Fixed-point coordinate in micrometers (1e-6 degrees).
+/// Provides deterministic distance calculations across platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixedCoord {
+    pub x: i64, // micrometers of longitude
+    pub y: i64, // micrometers of latitude
+}
+
+impl FixedCoord {
+    /// Convert from floating-point degrees to fixed-point micrometers.
+    pub fn from_lat_lon(lon: f64, lat: f64) -> Self {
+        Self {
+            x: (lon * 1_000_000.0) as i64,
+            y: (lat * 1_000_000.0) as i64,
+        }
+    }
+
+    /// Squared Euclidean distance in micrometer^2 (no sqrt needed for comparison).
+    pub fn distance_squared(&self, other: &Self) -> i64 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        dx * dx + dy * dy
+    }
+
+    /// Convert back to floating-point degrees.
+    pub fn to_lat_lon(&self) -> (f64, f64) {
+        (self.x as f64 / 1_000_000.0, self.y as f64 / 1_000_000.0)
+    }
+}
+
+impl QuantizedCoord {
+    /// Convert quantized coordinate to fixed-point for deterministic routing.
+    pub fn to_fixed(&self) -> FixedCoord {
+        FixedCoord::from_lat_lon(self.lon_e6 as f64 / 1_000_000.0, self.lat_e6 as f64 / 1_000_000.0)
+    }
+}
+
+// ============================================================================
+// ATOMIC HOT-SWAP HELPERS
+// ============================================================================
+// AppState methods for atomic hot-swap of routing graph and edge loads.
+// These enable live disruption simulation without restarting the server.
+
+impl AppState {
+    /// Atomically swap in a new routing graph (e.g., after disruption removal).
+    pub fn hot_swap_routing_graph(&self, new_graph: RoutingGraph) {
+        self.routing_graph.store(Arc::new(new_graph));
+        log_info("AppState::hot_swap_routing_graph - routing graph atomically swapped");
+    }
+
+    /// Atomically swap in new edge load state.
+    pub fn hot_swap_edge_loads(&self, new_loads: HashMap<EdgeKey, usize>) {
+        self.edge_loads.store(Arc::new(new_loads));
+        log_info("AppState::hot_swap_edge_loads - edge loads atomically swapped");
+    }
+}
+
+/// Handle a disruption by cloning the current graph, removing a line's edges,
+/// and hot-swapping the modified graph into AppState.
+pub async fn handle_disruption(
+    state: &AppState,
+    line_id: &str,
+) -> AppResult<String> {
+    let graph = state.routing_graph.load().clone();
+    let mut new_graph = graph.as_ref().clone();
+    
+    // Find stations on this line from AppState
+    let stations = state.stations.load();
+    let line_stations: Vec<&Station> = stations.iter()
+        .filter(|s| s.lines.iter().any(|l| l == line_id))
+        .collect();
+    
+    // Remove nodes nearest to the disrupted line's stations
+    let mut removed_count = 0;
+    for station in &line_stations {
+        if let Some(node_id) = new_graph.find_nearest_node(&station.coord) {
+            new_graph.nodes.remove(&node_id);
+            removed_count += 1;
+        }
+    }
+    
+    state.hot_swap_routing_graph(new_graph);
+    
+    log_info(&format!(
+        "handle_disruption - removed {} nodes for line '{}'",
+        removed_count, line_id
+    ));
+    Ok(format!("Disruption applied: {} nodes removed for line '{}'", removed_count, line_id))
 }
 
 const ROUNDEL_OVERGROUND: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.335 500" enable-background="new 0 0 615.335 500" xml:space="preserve"><g><path fill="#EE7623" d="M469.468,249.985c0,89.079-72.266,161.316-161.345,161.316c-89.094,0-161.294-72.237-161.294-161.316c0-89.072,72.2-161.279,161.294-161.279C397.202,88.706,469.468,160.914,469.468,249.985 M308.123,0C170.039,0,58.108,111.931,58.108,249.985C58.108,388.062,170.039,500,308.123,500c138.062,0,249.985-111.938,249.985-250.015C558.108,111.931,446.185,0,308.123,0"/><rect y="199.517" fill="#000F9F" width="615.335" height="101.127"/><g><path fill="#FFFFFF" d="M81.164,277.09c-14.939,0-27.229-11.272-27.229-26.987c0-15.635,12.37-26.921,27.229-26.921c14.859,0,27.229,11.287,27.229,27.002C108.393,265.818,96.023,277.09,81.164,277.09 M81.164,233.143c-9.72,0-16.96,7.385-16.96,17.04c0,9.567,7.239,16.952,16.96,16.952c9.72,0,16.959-7.385,16.959-16.952C98.123,240.529,90.884,233.143,81.164,233.143"/><polygon fill="#FFFFFF" points="138.133,276.087 128.874,276.087 108.723,224.191 119.768,224.191 133.463,260.994 146.924,224.191 157.815,224.191"/><polygon fill="#FFFFFF" points="162.946,276.087 162.946,224.191 195.16,224.191 195.16,233.216 173.062,233.216 173.062,244.035 191.266,244.035 191.266,253.14 173.062,253.14 173.062,266.821 197.107,266.821 197.107,276.087"/><path fill="#FFFFFF" d="M232.738,276.087l-14.317-20.7h-4.67v20.7h-10.108v-51.896h16.806c10.65,0,17.655,5.607,17.655,15.173c0,6.383-3.579,11.433-9.801,13.695l16.337,23.027H232.738z M219.511,232.982h-5.761v13.622h4.831c5.907,0,9.406-2.65,9.406-7.159C227.987,235.398,224.803,232.982,219.511,232.982"/><path fill="#FFFFFF" d="M273.362,277.097c-16.257,0-28.239-11.36-28.239-26.994c0-15.247,11.982-26.921,28.085-26.921c6.068,0,12.216,1.64,18.05,4.589v10.584c-4.897-3.499-11.126-5.914-17.347-5.914c-11.287,0-18.518,8.088-18.518,17.896c0,9.955,7.393,17.735,18.204,17.735c2.723,0,5.292-0.234,8.015-1.164v-11.133h-8.483v-8.864h18.599v24.74C285.578,275.311,280.059,277.097,273.362,277.097"/><path fill="#FFFFFF" d="M329.62,276.087l-14.317-20.7h-4.67v20.7h-10.116v-51.896h16.799c10.665,0,17.669,5.607,17.669,15.173c0,6.383-3.579,11.433-9.801,13.695l16.337,23.027H329.62z M316.386,232.982h-5.753v13.622h4.824c5.914,0,9.413-2.65,9.413-7.159C324.869,235.398,321.685,232.982,316.386,232.982"/><path fill="#FFFFFF" d="M369.227,277.09c-14.932,0-27.229-11.272-27.229-26.987c0-15.635,12.377-26.921,27.229-26.921c14.866,0,27.236,11.287,27.236,27.002C396.462,265.818,384.092,277.09,369.227,277.09 M369.227,233.143c-9.72,0-16.96,7.385-16.96,17.04c0,9.567,7.239,16.952,16.96,16.952c9.728,0,16.967-7.385,16.967-16.952C386.193,240.529,378.954,233.143,369.227,233.143"/><path fill="#FFFFFF" d="M445.006,268.621c-4.201,5.204-10.504,8.476-18.204,8.476c-7.781,0-14.002-3.191-18.357-8.557c-3.352-4.121-4.904-8.952-4.904-15.949v-28.4h10.108v28.48c0,8.871,5.139,14.698,13.073,14.698c8.169,0,13.146-5.826,13.146-14.698v-28.48h10.123v28.092C449.991,259.435,448.666,264.105,445.006,268.621"/><polygon fill="#FFFFFF" points="496.587,276.087 468.89,240.294 468.89,276.087 458.774,276.087 458.774,224.191 468.89,224.191 496.587,260.138 496.587,224.191 506.703,224.191 506.703,276.087"/><path fill="#FFFFFF" d="M530.199,276.087h-14.471v-51.896h17.735c17.977,0,27.624,11.821,27.624,25.289C561.087,263.41,550.891,276.087,530.199,276.087 M531.677,232.982h-5.834v33.999h4.978c12.062,0,19.997-6.763,19.997-17.113C550.818,239.445,543.586,232.982,531.677,232.982"/></g></g></svg>"##;
@@ -4416,20 +4687,40 @@ impl RoutingGraph {
         ));
 
         // Parallel route processing using Rayon
+        // Thread-pool poisoning defense: catch_unwind prevents a single agent panic
+        // from killing the entire Rayon thread pool.
+        let panic_count = std::sync::atomic::AtomicU64::new(0);
         commutes.par_iter().for_each(|&(origin, dest)| {
-            let path = self.astar(origin, dest);
-            // astar returns Vec<Coordinate>; we need node IDs. Re-derive via grid index.
-            for window in path.windows(2) {
-                let u_coord = &window[0];
-                let v_coord = &window[1];
-                if let (Some(u), Some(v)) = (self.find_nearest_node(u_coord), self.find_nearest_node(v_coord)) {
-                    let key = EdgeKey(u, v);
-                    if let Some(&idx) = edge_to_index.get(&key) {
-                        edge_loads[idx].fetch_add(1, Ordering::Relaxed);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let path = self.astar(origin, dest);
+                // astar returns Vec<Coordinate>; we need node IDs. Re-derive via grid index.
+                for window in path.windows(2) {
+                    let u_coord = &window[0];
+                    let v_coord = &window[1];
+                    if let (Some(u), Some(v)) = (self.find_nearest_node(u_coord), self.find_nearest_node(v_coord)) {
+                        let key = EdgeKey(u, v);
+                        if let Some(&idx) = edge_to_index.get(&key) {
+                            edge_loads[idx].fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 }
+            }));
+            if result.is_err() {
+                let count = panic_count.fetch_add(1, Ordering::Relaxed);
+                log_error(&format!(
+                    "simulate_network_load - agent {}→{} panicked (total panics: {})",
+                    origin, dest, count + 1
+                ));
             }
         });
+
+        let total_panics = panic_count.load(Ordering::Relaxed);
+        if total_panics > 0 {
+            log_warn(&format!(
+                "simulate_network_load - {} agents panicked out of {}",
+                total_panics, commutes.len()
+            ));
+        }
 
         // Reconstruct the human-readable hashmap
         let mut final_loads = HashMap::with_capacity(index_to_edge.len());
@@ -6083,6 +6374,8 @@ struct AppState {
     edge_loads: Arc<arc_swap::ArcSwap<HashMap<EdgeKey, usize>>>,
     /// Application configuration (TfL API key, endpoints, etc.).
     config: Arc<Config>,
+    /// Data-oriented transit grid for SIMD-accelerated spatial queries.
+    transit_grid: Arc<arc_swap::ArcSwap<TransitNetworkGrid>>,
 }
 
 // LOAD-BEARING HACK: AppState must be Send + Sync for Axum's State<AppState>
@@ -6119,6 +6412,19 @@ impl AppState {
             routing_graph: Arc::new(arc_swap::ArcSwap::new(Arc::new(RoutingGraph::new()))),
             edge_loads: Arc::new(arc_swap::ArcSwap::new(Arc::new(HashMap::new()))),
             config: Arc::new(config),
+            transit_grid: Arc::new(arc_swap::ArcSwap::new(Arc::new(TransitNetworkGrid {
+                node_count: 0,
+                coords_x: Vec::new(),
+                coords_y: Vec::new(),
+                node_ids: Vec::new(),
+                zone_ids: Vec::new(),
+                edge_offsets: vec![0],
+                edge_targets: Vec::new(),
+                edge_weights: Vec::new(),
+                edge_line_ids: Vec::new(),
+                line_names: Vec::new(),
+                line_colors: Vec::new(),
+            }))),
         };
 
         log_info("AppState::new completed - application state initialized");
@@ -7405,6 +7711,7 @@ async fn run_server(
         .route("/api/ai/add-station", post(ai_add_station))
         .route("/api/ai/link-stations", post(ai_link_stations))
         .route("/api/disruptions", get(get_disruptions))
+        .route("/api/disruptions/apply", post(apply_disruption))
         .route("/api/tracks", get(get_tracks))
         .route("/api/basemap", get(get_basemap_lines))
         .route("/api/tracks/refresh", post(refresh_tracks))
@@ -9679,6 +9986,25 @@ async fn get_disruptions(State(state): State<AppState>) -> Json<ApiResponse<Valu
                 ),
                 "api",
             );
+            Json(ApiResponse::error(e.to_string()))
+        }
+    }
+}
+
+/// POST /api/disruptions/apply — apply a disruption by removing a line's nodes from the routing graph.
+#[tracing::instrument(name = "apply_disruption", skip_all)]
+async fn apply_disruption(
+    State(state): State<AppState>,
+    axum::extract::Path(line_id): axum::extract::Path<String>,
+) -> Json<ApiResponse<String>> {
+    log_info(&format!("POST /api/disruptions/apply called for line '{}'", line_id));
+    match handle_disruption(&state, &line_id).await {
+        Ok(msg) => {
+            log_info(&format!("apply_disruption - success: {}", msg));
+            Json(ApiResponse::success(msg))
+        }
+        Err(e) => {
+            log_error(&format!("apply_disruption - failed: {}", e));
             Json(ApiResponse::error(e.to_string()))
         }
     }
