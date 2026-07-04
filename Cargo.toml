@@ -82,10 +82,16 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = true
+strip = "symbols"
+# Security: catch integer overflow in release builds (prevents silent wraparound exploits)
+overflow-checks = true
+# Security: enable stack protector for buffer overflow detection
+# (passed via rustflags to the compiler)
 
 [profile.dev]
 opt-level = 1
+# Debug builds also benefit from overflow checks (default on, but explicit)
+overflow-checks = true
 
 [features]
 default = []

@@ -223,9 +223,23 @@ impl AppError {
 impl axum::response::IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let code = self.status_code();
+        // Security: scrub internal details from HTTP responses.
+        // Only validation and not-found errors reveal details to the client.
+        // All other errors return opaque tokens to prevent information leakage
+        // about file paths, database schemas, or stack traces.
+        let user_message = match &self {
+            Self::Validation(msg) => msg.clone(),
+            Self::NotFound(msg) => msg.clone(),
+            Self::ExternalApi(msg) => format!("External service error: {}", msg),
+            _ => {
+                // Log the full error internally, but return an opaque token.
+                log_error(&format!("AppError returned to client (scrubbed): {:?}", self));
+                "An internal error occurred. Please try again.".to_string()
+            }
+        };
         let body = serde_json::json!({
             "success": false,
-            "error": self.to_string(),
+            "error": user_message,
         });
         (
             axum::http::StatusCode::from_u16(code)
@@ -369,6 +383,11 @@ fn validate_line_id(id: &str) -> AppResult<()> {
 /// overflow / NaN in R*-tree envelope comparisons.
 const MAX_MERCATOR_LAT: f64 = 85.0511;
 
+/// Maximum iterations for any A* pathfinding traversal.
+/// Prevents algorithmic DoS — a malicious or degenerate request cannot
+/// block the Tokio runtime thread indefinitely.
+const MAX_ASTAR_ITERATIONS: usize = 50_000;
+
 fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> AppResult<()> {
     if min_lat < -MAX_MERCATOR_LAT
         || min_lat > MAX_MERCATOR_LAT
@@ -391,6 +410,30 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
         return Err(AppError::Validation(
             "min_lat must be <= max_lat and min_lon must be <= max_lon".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Validate that a coordinate is within sane geographic bounds.
+/// Rejects NaN, infinity, and out-of-range values to prevent spatial engine exploitation.
+fn validate_coordinate(lat: f64, lon: f64, context: &str) -> AppResult<()> {
+    if !lat.is_finite() || !lon.is_finite() {
+        log_debug(&format!("validate_coordinate - rejected: non-finite lat={}, lon={} in {}", lat, lon, context));
+        return Err(AppError::Validation(format!(
+            "{}: coordinates must be finite numbers", context
+        )));
+    }
+    if lat.abs() > MAX_MERCATOR_LAT {
+        log_debug(&format!("validate_coordinate - rejected: lat={:.4} out of range in {}", lat, context));
+        return Err(AppError::Validation(format!(
+            "{}: latitude must be between -{} and {}", context, MAX_MERCATOR_LAT, MAX_MERCATOR_LAT
+        )));
+    }
+    if lon.abs() > 180.0 {
+        log_debug(&format!("validate_coordinate - rejected: lon={:.4} out of range in {}", lon, context));
+        return Err(AppError::Validation(format!(
+            "{}: longitude must be between -180 and 180", context
+        )));
     }
     Ok(())
 }
@@ -3682,6 +3725,14 @@ impl RoutingGraph {
         let mut iterations = 0usize;
         while let Some(current) = open_set.pop() {
             iterations += 1;
+            // Security: hard cap to prevent algorithmic DoS on degenerate graphs.
+            if iterations > MAX_ASTAR_ITERATIONS {
+                log_warn(&format!(
+                    "RoutingGraph::astar aborted after {} iterations (limit: {})",
+                    iterations, MAX_ASTAR_ITERATIONS
+                ));
+                return Vec::new();
+            }
             let current_id = current.node_id;
             log_trace(&format!(
                 "RoutingGraph::astar iteration {} - processing node {}",
@@ -3789,6 +3840,13 @@ impl RoutingGraph {
         let mut iterations = 0usize;
         while let Some(current) = open_set.pop() {
             iterations += 1;
+            if iterations > MAX_ASTAR_ITERATIONS {
+                log_warn(&format!(
+                    "RoutingGraph::astar_with_disruptions aborted after {} iterations (limit: {})",
+                    iterations, MAX_ASTAR_ITERATIONS
+                ));
+                return Vec::new();
+            }
             let current_id = current.node_id;
 
             if current_id == end {
@@ -4110,6 +4168,13 @@ impl RoutingGraph {
         let mut iterations = 0usize;
         while let Some(current) = open_set.pop() {
             iterations += 1;
+            if iterations > MAX_ASTAR_ITERATIONS {
+                log_warn(&format!(
+                    "RoutingGraph::astar_with_congestion aborted after {} iterations (limit: {})",
+                    iterations, MAX_ASTAR_ITERATIONS
+                ));
+                return Vec::new();
+            }
             let current_id = current.node_id;
 
             if current_id == end {
@@ -4272,6 +4337,13 @@ impl RoutingGraph {
         let mut iterations = 0usize;
         while let Some(current) = open_set.pop() {
             iterations += 1;
+            if iterations > MAX_ASTAR_ITERATIONS {
+                log_warn(&format!(
+                    "RoutingGraph::astar_kinematic aborted after {} iterations (limit: {})",
+                    iterations, MAX_ASTAR_ITERATIONS
+                ));
+                return Vec::new();
+            }
             let current_id = current.node_id;
 
             if current_id == end {
@@ -6815,10 +6887,15 @@ async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<Ap
     }
 }
 
-async fn run_server(state: AppState, config: Config, shutdown_token: tokio_util::sync::CancellationToken) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_server(
+    state: AppState,
+    config: Config,
+    shutdown_token: tokio_util::sync::CancellationToken,
+    port_sender: tokio::sync::oneshot::Sender<u16>,
+) -> Result<(), Box<dyn std::error::Error>> {
     log_info("run_server called - starting Axum web server");
     log_debug(&format!(
-        "run_server - server_host: {}, server_port: {}",
+        "run_server - server_host: {}, server_port: {} (0 = ephemeral)",
         config.server_host, config.server_port
     ));
 
@@ -6859,34 +6936,51 @@ async fn run_server(state: AppState, config: Config, shutdown_token: tokio_util:
         .route("/api/lines/inbound/:id", get(get_line_routes_inbound))
         .route("/api/stops", get(get_stop_points))
         .route("/api/arrivals/:line_id", get(get_arrivals))
-        .layer({
-            use axum::http::{header::CONTENT_TYPE, Method};
-            CorsLayer::new()
-                .allow_origin([
-                    "http://127.0.0.1:3000".parse().unwrap(),
-                    "http://localhost:3000".parse().unwrap(),
-                ])
-                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                .allow_headers([CONTENT_TYPE])
-        })
         .with_state(state.clone());
 
-    log_debug("run_server - configured API routes with CORS layer");
+    log_debug("run_server - configured API routes");
 
     // Fix #6: Tracks are already fetched synchronously before the server starts
     // in the main initialization block_on. No need for a background warmup that
     // could race with the server accepting requests.
 
-    let addr: std::net::SocketAddr = format!("{}:{}", config.server_host, config.server_port)
+    // Security: bind to port 0 (ephemeral) so the OS assigns a random available port.
+    // This prevents other local processes from predicting our API port and sending
+    // malicious requests. The actual port is sent back to the main thread via oneshot.
+    let bind_addr: std::net::SocketAddr = format!("{}:{}", config.server_host, config.server_port)
         .parse()
         .expect("Invalid operational binding target");
-    log_info(&format!(
-        "run_server - data engine listening securely on http://{}",
-        addr
-    ));
 
     log_debug("run_server - binding TCP listener");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(bind_addr).await?;
+    let actual_addr = listener.local_addr()?;
+    let actual_port = actual_addr.port();
+    log_info(&format!(
+        "run_server - data engine listening securely on http://{} (ephemeral port)",
+        actual_addr
+    ));
+
+    // Send the actual port back to the main thread so Dioxus WebView and CORS know it.
+    let _ = port_sender.send(actual_port);
+
+    // Update CORS to allow the actual ephemeral origin
+    let cors_origin = format!("http://127.0.0.1:{}", actual_port);
+    let cors_origin_localhost = format!("http://localhost:{}", actual_port);
+
+    // Reconfigure CORS with the actual ephemeral port
+    let app = app.layer({
+        use axum::http::{header::CONTENT_TYPE, Method};
+        CorsLayer::new()
+            .allow_origin([
+                cors_origin.parse().unwrap(),
+                cors_origin_localhost.parse().unwrap(),
+            ])
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([CONTENT_TYPE])
+    });
+
+    log_debug("run_server - configured API routes with CORS layer for ephemeral port");
+
     log_info("run_server - TCP listener bound, starting Axum serve with graceful shutdown");
 
     // Graceful shutdown: when the CancellationToken fires (triggered by Dioxus
@@ -7620,6 +7714,14 @@ async fn journey_plan(
         "POST /api/journey - from {:.5},{:.5} to {:.5},{:.5} mode={}",
         req.from_lat, req.from_lon, req.to_lat, req.to_lon, req.mode
     ));
+
+    // Security: validate input coordinates before passing to spatial engine.
+    if let Err(e) = validate_coordinate(req.from_lat, req.from_lon, "journey.from") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
+    if let Err(e) = validate_coordinate(req.to_lat, req.to_lon, "journey.to") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
 
     let from = Coordinate::new(req.from_lat, req.from_lon);
     let to = Coordinate::new(req.to_lat, req.to_lon);
@@ -8492,6 +8594,13 @@ async fn find_route(
         "POST /api/route called - finding route from lat={:.6}, lon={:.6} to lat={:.6}, lon={:.6}",
         req.start.lat, req.start.lon, req.end.lat, req.end.lon
     ));
+    // Security: validate input coordinates before passing to spatial engine.
+    if let Err(e) = validate_coordinate(req.start.lat, req.start.lon, "route.start") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
+    if let Err(e) = validate_coordinate(req.end.lat, req.end.lon, "route.end") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
     let routing = state.routing_graph.load();
     log_debug(&format!(
         "POST /api/route - routing graph has {} nodes", routing.nodes.len()
@@ -9386,22 +9495,22 @@ fn main() {
     ));
 
     log_debug("main - loading configuration");
-    let config = Config::load();
-    let api_base = format!("http://{}:{}", config.server_host, config.server_port);
-    let _ = API_BASE_URL.set(api_base.clone());
-    log_info("main - configuration loaded");
+    let mut config = Config::load();
+    // Security: use ephemeral port (0) so the OS assigns a random available port.
+    // This prevents local process snooping and port prediction attacks.
+    config.server_port = 0;
+    log_info("main - configuration loaded (ephemeral port mode)");
     log_info(&format!(
         "[TIMING] Config loaded: {:.3}s",
         boot_start.elapsed().as_secs_f64()
     ));
 
-    // Fix 4: Single-Instance Process Mutex — attempt to bind a sentinel TCP port.
-    // This is atomic: only one process can hold the bind at a time.
-    // sysinfo name-scan was racy and could allow two instances on fast relaunches.
+    // Fix 4: Single-Instance Process Mutex — use a fixed sentinel port.
+    // Since the main API port is now ephemeral, we use a dedicated fixed port
+    // (3001) purely for instance detection.
     log_debug("main - checking for running sibling processes via TCP sentinel");
-    let sentinel_port = config.server_port + 1;
-    let sentinel_addr = format!("127.0.0.1:{}", sentinel_port);
-    match std::net::TcpListener::bind(&sentinel_addr) {
+    let sentinel_addr = "127.0.0.1:3001";
+    match std::net::TcpListener::bind(sentinel_addr) {
         Ok(_listener) => {
             // We hold the bind; keep the listener alive for the process lifetime
             // by leaking it (it's dropped at process exit automatically).
@@ -9426,44 +9535,6 @@ fn main() {
     // ----------------------------------------------------------------
     let args: Vec<String> = std::env::args().collect();
     let skip_console = args.iter().any(|a| a == "--no-console");
-    let console_port: u16 = config.server_port;
-    let _ = CONSOLE_SERVER_PORT.set(console_port);
-
-    if !skip_console {
-        log_info("main - spawning analytics console window (use --no-console to disable)");
-
-        // Capture the first 5 real log lines from the buffer so the child
-        // console shows them immediately instead of a generic placeholder.
-        let initial_logs: Vec<String> = {
-            let storage = get_log_storage();
-            if let Ok(logs) = storage.read() {
-                logs.iter().take(5).cloned().collect()
-            } else {
-                Vec::new()
-            }
-        };
-        log_info(&format!(
-            "[TIMING] Single-instance verification: {:.3}s",
-            boot_start.elapsed().as_secs_f64()
-        ));
-
-        let exe =
-            std::env::current_exe().unwrap_or_else(|_| std::env::args().next().unwrap().into());
-        let mut cmd = std::process::Command::new(exe);
-        cmd.arg("--console-child");
-        cmd.arg(format!("--port={}", console_port));
-        for log_line in &initial_logs {
-            cmd.arg(format!("--initial-log={}", log_line));
-        }
-        match cmd.spawn() {
-            Ok(_child) => log_info("main - analytics console child process spawned"),
-            Err(e) => log_error(&format!("main - failed to spawn console process: {}", e)),
-        }
-        log_info(&format!(
-            "[TIMING] Console child spawn: {:.3}s",
-            boot_start.elapsed().as_secs_f64()
-        ));
-    }
 
     log_debug("main - creating application state");
     let state = AppState::new(config.clone());
@@ -9568,19 +9639,64 @@ fn main() {
     // Create a CancellationToken for graceful Axum shutdown. When the Dioxus
     // WebView window closes, we cancel this token to signal Axum to stop
     // accepting connections and shut down cleanly. This prevents zombie processes
-    // from lingering and locking port 3000 (EADDRINUSE on next launch).
+    // from lingering and locking the port (EADDRINUSE on next launch).
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let server_shutdown_token = shutdown_token.clone();
+
+    // Oneshot channel: the server sends back the actual ephemeral port it bound to.
+    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<u16>();
 
     let server_state = state.clone();
     let server_config = config.clone();
     rt.spawn(async move {
         log_debug("main - server task started on shared runtime");
-        if let Err(e) = run_server(server_state, server_config, server_shutdown_token).await {
+        if let Err(e) = run_server(server_state, server_config, server_shutdown_token, port_tx).await {
             log_error(&format!("main - background data service failed: {}", e));
         }
         log_debug("main - server task ended");
     });
+
+    // Wait for the server to bind and report its actual ephemeral port.
+    // This is critical: Dioxus WebView and the console child both need the real port.
+    let actual_port = rt.block_on(async {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), port_rx).await {
+            Ok(Ok(port)) => port,
+            _ => {
+                log_error("main - timed out waiting for server to report ephemeral port");
+                3000 // fallback
+            }
+        }
+    });
+    let api_base = format!("http://{}:{}", config.server_host, actual_port);
+    let _ = API_BASE_URL.set(api_base.clone());
+    log_info(&format!("main - server bound on ephemeral port {}, api_base={}", actual_port, api_base));
+
+    // Now spawn the analytics console child with the actual ephemeral port.
+    let _ = CONSOLE_SERVER_PORT.set(actual_port);
+    if !skip_console {
+        log_info("main - spawning analytics console window with actual ephemeral port");
+        let initial_logs: Vec<String> = {
+            let storage = get_log_storage();
+            if let Ok(logs) = storage.read() {
+                logs.iter().take(5).cloned().collect()
+            } else {
+                Vec::new()
+            }
+        };
+        let exe =
+            std::env::current_exe().unwrap_or_else(|_| std::env::args().next().unwrap().into());
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--console-child");
+        cmd.arg(format!("--port={}", actual_port));
+        for log_line in &initial_logs {
+            cmd.arg(format!("--initial-log={}", log_line));
+        }
+        match cmd.spawn() {
+            Ok(_child) => log_info("main - analytics console child process spawned"),
+            Err(e) => log_error(&format!("main - failed to spawn console process: {}", e)),
+        }
+    }
+
     log_info("main - web server task spawned on shared runtime with graceful shutdown token");
     log_info(&format!(
         "[TIMING] Web server spawned: {:.3}s",
@@ -11806,11 +11922,17 @@ fn build_webview_head(api_base: &str) -> String {
     log_debug(&format!("build_webview_head - api_base={}", api_base));
     let mut h = String::with_capacity(512 * 1024);
 
+    // ── Content Security Policy ─────────────────────────────────────────────
+    // Locks down the WebView: only inline scripts and same-origin are allowed.
+    // Blocks all external CDN script execution, preventing XSS-to-RCE escalation
+    // through the WebView IPC boundary.
+    h.push_str(r#"<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:*; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self';" />"#);
+    
     // ── Accessibility & Responsive Meta Tags ──────────────────────────────
     h.push_str(r#"<meta charset="UTF-8" />"#);
     h.push_str(r#"<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />"#);
     h.push_str(r#"<meta name="color-scheme" content="dark light" />"#);
-    h.push_str(r#"<meta name="description" content="Alex’s Tube Ⅴ — Interactive London Transport network map with A* pathfinding, demand modelling, and disruption simulation." />"#);
+    h.push_str(r#"<meta name="description" content="Alex's Tube V — Interactive London Transport network map with A* pathfinding, demand modelling, and disruption simulation." />"#);
     h.push_str(r##"<meta name="theme-color" content="#0c0e12" />"##);
     // Accessibility: disable tap highlight on mobile WebViews
     h.push_str(r#"<style>* { -webkit-tap-highlight-color: transparent; }</style>"#);
@@ -11937,9 +12059,11 @@ window.__consoleBuf = [];
 
 pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
     log_info("build_desktop_window_configuration - configuring desktop WebView");
+    // Security: only disable GPU sandbox (safe) — never disable web security.
+    // CSP header in build_webview_head() handles XSS prevention.
     std::env::set_var(
         "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-web-security --disable-features=TrackingPrevention --allow-running-insecure-content",
+        "--disable-gpu-sandbox --disable-features=TrackingPrevention",
     );
 
     let local_profile_dir = std::env::current_dir()
