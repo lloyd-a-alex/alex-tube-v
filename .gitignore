@@ -1,21 +1,42 @@
-# Rust
-/target/
-**/*.rs.bk
-Cargo.lock
+# =============================================================================
+# Alex's Tube V — .gitignore
+# =============================================================================
 
-# IDE
+# Rust build artifacts
+/target/
+/target_new/
+**/*.rs.bk
+
+# Cargo: track lockfile for reproducible binary builds
+# (Cargo.lock IS committed for applications)
+
+# IDE / Editor
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+*.sublime-*
 
-# OS
+# OS junk
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db
 
-# Build artifacts
-/target_new/
+# Qoder agent worktrees
+.worktrees/
 
-# Code
-/separate-project-dont-touch/
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Qoder cache
+.qoder/
+
+# Misc
+*.log
+c++.txt
+combined_code.txt
+separate-project-dont-touch/
