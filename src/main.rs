@@ -12898,12 +12898,20 @@ pub fn App() -> Element {
                     if evt.key() == Key::Escape {
                         if show_omnibox() {
                             show_omnibox.set(false);
+                        } else if *is_keyboard_help_open.read() {
+                            is_keyboard_help_open.set(false);
                         } else if context_menu.read().is_some() {
                             context_menu.set(None);
                         } else if show_search_results() {
                             show_search_results.set(false);
                         } else if show_transit_score() {
                             show_transit_score.set(false);
+                        } else if *is_journey_planner_open.read() {
+                            is_journey_planner_open.set(false);
+                        } else if *is_cost_estimator_open.read() {
+                            is_cost_estimator_open.set(false);
+                            cost_drawing_mode.set(false);
+                            eval(&call_window_js("clearCostDrawing"));
                         } else if *create_station_mode.read() {
                             create_station_mode.set(false);
                         } else if *construction_mode.read() {
@@ -13674,6 +13682,7 @@ pub fn App() -> Element {
 
         // ---- AI Urban Planner panel ---------------------------------------
         div {
+            class: "ai-planner-panel",
             style: "position: absolute; top: 250px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.92); padding: 15px; border-radius: 12px; border: 1px solid rgba(0,188,212,0.35); color: #fff; width: 280px; box-shadow: 0 0 24px rgba(0,188,212,0.15);",
             div { style: "font-weight: bold; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #00bcd4; margin-bottom: 10px;", "AI Urban Planner" }
 
@@ -13885,6 +13894,7 @@ pub fn App() -> Element {
 
         // B. Basemap Switcher Panel Overlay (Top Right)
         div {
+            class: "basemap-panel",
             style: "position: absolute; top: 10px; right: 10px; z-index: 9000; background: rgba(8,10,14,.92); border: 1px solid rgba(255,255,255,.18); border-radius: 10px; padding: 8px 10px; font-family: Inter,sans-serif; min-width: 160px; box-shadow: 0 6px 20px rgba(0,0,0,.5); pointer-events: auto;",
             div { style: "font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #00bcd4; font-weight: 800; margin-bottom: 8px;", "Basemap" }
             div { style: "display: flex; gap: 5px; margin-bottom: 6px;",
@@ -14173,6 +14183,7 @@ pub fn App() -> Element {
 
         // E. Isochrone Tool Control Panel (Bottom Left)
         div {
+            class: "isochrone-panel",
             style: "position: fixed; bottom: 20px; left: 20px; z-index: 9000; background: rgba(8,10,14,.9); border: 1px solid rgba(255,255,255,.15); border-radius: 10px; padding: 10px; font-family: Inter,sans-serif; min-width: 160px; pointer-events: auto;",
             div { style: "font-size: 10px; color: #00bcd4; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;", "Isochrone" }
             select {
