@@ -11684,31 +11684,32 @@ pub fn ConsoleStandaloneApp() -> Element {
         let mut log_stream = log_stream.clone();
         async move {
             log_debug(&format!("ConsoleStandaloneApp - starting log stream polling on port {}", port));
+
+            // Show a clean boot message while the engine starts up
+            log_stream.set("Booting engine...\n".to_string());
+
+            // Grace period: let the Axum server bind and start accepting
+            // connections before we start polling. Prevents the ugly
+            // "retrying" countdown from flashing on screen at launch.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
             let resilience_client = reqwest::Client::builder()
                 .timeout(Duration::from_millis(200))
                 .build()
                 .unwrap();
 
-            // Retry loop: try up to 30 times (?15 seconds) before giving up.
+            // Retry loop: try up to 30 times (~15 seconds) before giving up.
             // The parent process may take a moment to start the HTTP server.
             let mut retries_remaining: u32 = 30;
             let target_url = format!("http://127.0.0.1:{}/api/logs", port);
+            let mut connected = false;
 
             loop {
-                // On the first attempt show a connecting message; on subsequent
-                // retries show a countdown so the user knows we're still trying.
-                if retries_remaining < 30 {
-                    let msg = format!(
-                        "Engine not ready yet ? retrying ({} left)...\n",
-                        retries_remaining
-                    );
-                    log_stream.set(msg);
-                }
-
                 match resilience_client.get(&target_url).send().await {
                     Ok(response) => {
-                        if retries_remaining < 30 {
-                            log_stream.set(String::new()); // clear retry banner
+                        if !connected {
+                            connected = true;
+                            log_stream.set(String::new()); // clear boot message
                         }
                         retries_remaining = 30; // reset for future disconnects
 
@@ -11740,6 +11741,15 @@ pub fn ConsoleStandaloneApp() -> Element {
                             break;
                         }
                         retries_remaining -= 1;
+                        // Only show reconnect message if we were previously connected
+                        // (i.e., this is a mid-session disconnect, not initial boot)
+                        if connected {
+                            let msg = format!(
+                                "Reconnecting... ({} attempts remaining)\n",
+                                retries_remaining
+                            );
+                            log_stream.set(msg);
+                        }
                         tokio::time::sleep(Duration::from_millis(500)).await;
                     }
                 }
