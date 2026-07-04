@@ -129,6 +129,7 @@ use std::time::Instant;
 
 use axum::{
     extract::State,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -6887,6 +6888,88 @@ async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<Ap
     }
 }
 
+/// Detect whether a User-Agent string belongs to a known web crawler or bot.
+/// Used by the root `/` route to serve rich static HTML for SEO embeds.
+fn is_crawler_ua(ua: &str) -> bool {
+    let ua_lower = ua.to_lowercase();
+    const BOTS: &[&str] = &[
+        "googlebot", "bingbot", "slurp", "duckduckbot", "baiduspider",
+        "yandexbot", "facebot", "facebookexternalhit", "twitterbot",
+        "linkedinbot", "slackbot", "discordbot", "telegrambot",
+        "whatsapp", "applebot", "semrushbot", "ahrefsbot", "mj12bot",
+        "screaming frog", "rogerbot", "embedly", "pinterest", "tumblr",
+        "outbrain", "flipboard", "redditbot", "wechat", "line",
+    ];
+    BOTS.iter().any(|b| ua_lower.contains(b))
+}
+
+/// Build the full static HTML page served to crawlers at `/`.
+/// Contains all Open Graph, Twitter Card, Schema.org, and canonical metadata
+/// so that Discord, Twitter/X, Slack, iMessage, WhatsApp, and search engines
+/// render a rich preview card without executing JavaScript.
+fn build_crawler_html() -> String {
+    let mut html = String::with_capacity(8192);
+    html.push_str("<!DOCTYPE html>\n<html lang=\"en-GB\">\n<head>\n");
+    html.push_str("<meta charset=\"UTF-8\" />\n");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n");
+    html.push_str("<title>Alex\u{2019}s Tube \u{2164} \u{2014} London Transport Network Engine</title>\n");
+    html.push_str("<meta name=\"description\" content=\"Advanced London Transport visualiser and spatial analysis engine. Interactive transit maps with A* pathfinding, demand modelling, and disruption simulation.\" />\n");
+    html.push_str("<meta name=\"robots\" content=\"index, follow, max-image-preview:large\" />\n");
+    html.push_str("<link rel=\"canonical\" href=\"https://shuttleapp.rs\" />\n");
+    // Open Graph
+    html.push_str("<meta property=\"og:site_name\" content=\"Alex\u{2019}s Tube \u{2164}\" />\n");
+    html.push_str("<meta property=\"og:type\" content=\"website\" />\n");
+    html.push_str("<meta property=\"og:title\" content=\"Alex\u{2019}s Tube \u{2164} \u{2014} London Transport Network Engine\" />\n");
+    html.push_str("<meta property=\"og:description\" content=\"Interactive map of the Underground, Overground, DLR, and Elizabeth line with dynamic spatial analysis and catchment analytics.\" />\n");
+    html.push_str("<meta property=\"og:url\" content=\"https://shuttleapp.rs\" />\n");
+    html.push_str("<meta property=\"og:image\" content=\"https://shuttleapp.rs/assets/og-preview.png\" />\n");
+    html.push_str("<meta property=\"og:image:type\" content=\"image/png\" />\n");
+    html.push_str("<meta property=\"og:image:width\" content=\"1200\" />\n");
+    html.push_str("<meta property=\"og:image:height\" content=\"630\" />\n");
+    html.push_str("<meta property=\"og:image:alt\" content=\"Visual rendering of London Transport Network routing graph\" />\n");
+    // Twitter / X
+    html.push_str("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
+    html.push_str("<meta name=\"twitter:title\" content=\"Alex\u{2019}s Tube \u{2164} \u{2014} London Transport Network Engine\" />\n");
+    html.push_str("<meta name=\"twitter:description\" content=\"London Transport spatial analysis engine. Real-time pathfinding, demand modelling, and transit desert detection.\" />\n");
+    html.push_str("<meta name=\"twitter:image\" content=\"https://shuttleapp.rs/assets/og-preview.png\" />\n");
+    // Apple
+    html.push_str("<meta name=\"apple-mobile-web-app-title\" content=\"Alex Tube \u{2164}\" />\n");
+    html.push_str("<meta name=\"apple-mobile-web-app-capable\" content=\"yes\" />\n");
+    html.push_str("<meta name=\"apple-mobile-web-app-status-bar-style\" content=\"black-translucent\" />\n");
+    // Schema.org JSON-LD
+    html.push_str(r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Alex's Tube "#);
+    html.push_str("\u{2164}");
+    html.push_str(r#"","description":"London Transport network visualiser and spatial analysis engine featuring A* pathfinding and geographic indexing.","applicationCategory":"DeveloperApplication","operatingSystem":"All","browserRequirements":"Requires JavaScript and HTML5 Canvas.","offers":{"@type":"Offer","price":"0.00","priceCurrency":"GBP"}}</script>"#);
+    html.push_str("\n</head>\n<body>\n");
+    html.push_str("<h1>Alex\u{2019}s Tube \u{2164}</h1>\n");
+    html.push_str("<p>London Transport Network Engine \u{2014} interactive map with A* pathfinding, demand modelling, and disruption simulation.</p>\n");
+    html.push_str("<p><a href=\"https://shuttleapp.rs\">Launch application</a></p>\n");
+    html.push_str("</body>\n</html>");
+    html
+}
+
+/// Axum handler for the root `/` route.
+/// Detects crawler User-Agents and serves rich static HTML for embed previews.
+/// Normal browsers receive a lightweight landing page with a link to the app.
+async fn serve_root(
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    let ua = headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if is_crawler_ua(ua) {
+        log_info("Root route: serving crawler SEO payload");
+        axum::response::Html(build_crawler_html()).into_response()
+    } else {
+        log_debug("Root route: serving standard landing page");
+        axum::response::Html(
+            r#"<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Alex's Tube V</title><meta name="description" content="London Transport Network Engine"><meta property="og:title" content="Alex's Tube V"><meta property="og:description" content="Interactive London Transport map with spatial analysis."><meta property="og:image" content="https://shuttleapp.rs/assets/og-preview.png"><link rel="canonical" href="https://shuttleapp.rs"></head><body style="background:#0c0e12;color:#f0f4f8;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:2rem;margin-bottom:0.5rem">Alex&rsquo;s Tube &#8547;</h1><p>London Transport Network Engine</p><a href="https://shuttleapp.rs" style="color:#00bcd4">Launch application</a></div></body></html>"#
+        ).into_response()
+    }
+}
+
 async fn run_server(
     state: AppState,
     config: Config,
@@ -6899,9 +6982,10 @@ async fn run_server(
         config.server_host, config.server_port
     ));
 
-    // No static file routes — Leaflet and all assets are embedded in the binary.
-    // The Dioxus WebView renders everything; Axum serves only API endpoints.
+    // Root route serves SEO-rich HTML for crawlers (Discord, Twitter, Slack, etc.)
+    // API endpoints serve the Dioxus WebView data layer.
     let app = Router::new()
+        .route("/", get(serve_root))
         .route("/api/lines", get(get_lines))
         .route("/api/lines/load", post(load_line))
         .route("/api/lines/save", post(save_line))
@@ -11934,6 +12018,38 @@ fn build_webview_head(api_base: &str) -> String {
     h.push_str(r#"<meta name="color-scheme" content="dark light" />"#);
     h.push_str(r#"<meta name="description" content="Alex's Tube V — Interactive London Transport network map with A* pathfinding, demand modelling, and disruption simulation." />"#);
     h.push_str(r##"<meta name="theme-color" content="#0c0e12" />"##);
+
+    // ── Open Graph (Discord, Slack, Facebook, iMessage, Teams) ──────────────
+    h.push_str(r#"<meta property="og:site_name" content="Alex's Tube V" />"#);
+    h.push_str(r#"<meta property="og:type" content="website" />"#);
+    h.push_str(r#"<meta property="og:title" content="Alex's Tube V — London Transport Network Engine" />"#);
+    h.push_str(r#"<meta property="og:description" content="Interactive map of the Underground, Overground, DLR, and Elizabeth line with dynamic spatial analysis and catchment analytics." />"#);
+    h.push_str(r#"<meta property="og:url" content="https://shuttleapp.rs" />"#);
+    h.push_str(r#"<meta property="og:image" content="https://shuttleapp.rs/assets/og-preview.png" />"#);
+    h.push_str(r#"<meta property="og:image:type" content="image/png" />"#);
+    h.push_str(r#"<meta property="og:image:width" content="1200" />"#);
+    h.push_str(r#"<meta property="og:image:height" content="630" />"#);
+    h.push_str(r#"<meta property="og:image:alt" content="Visual rendering of London Transport Network routing graph" />"#);
+
+    // ── Twitter / X Card ────────────────────────────────────────────────────
+    h.push_str(r#"<meta name="twitter:card" content="summary_large_image" />"#);
+    h.push_str(r#"<meta name="twitter:title" content="Alex's Tube V — London Transport Network Engine" />"#);
+    h.push_str(r#"<meta name="twitter:description" content="London Transport spatial analysis engine. Real-time pathfinding, demand modelling, and transit desert detection." />"#);
+    h.push_str(r#"<meta name="twitter:image" content="https://shuttleapp.rs/assets/og-preview.png" />"#);
+
+    // ── Apple / iOS Smart App Previews ──────────────────────────────────────
+    h.push_str(r#"<meta name="apple-mobile-web-app-title" content="Alex Tube V" />"#);
+    h.push_str(r#"<meta name="apple-mobile-web-app-capable" content="yes" />"#);
+    h.push_str(r#"<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />"#);
+
+    // ── Search Engine Optimisation ──────────────────────────────────────────
+    h.push_str(r#"<meta name="robots" content="index, follow, max-image-preview:large" />"#);
+    h.push_str(r#"<link rel="canonical" href="https://shuttleapp.rs" />"#);
+    h.push_str(r#"<title>Alex's Tube V — London Transport Network Engine</title>"#);
+
+    // ── Schema.org JSON-LD Structured Data ──────────────────────────────────
+    h.push_str(r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Alex's Tube V","description":"London Transport network visualiser and spatial analysis engine featuring A* pathfinding and geographic indexing.","applicationCategory":"DeveloperApplication","operatingSystem":"All","browserRequirements":"Requires JavaScript and HTML5 Canvas.","offers":{"@type":"Offer","price":"0.00","priceCurrency":"GBP"}}</script>"#);
+
     // Accessibility: disable tap highlight on mobile WebViews
     h.push_str(r#"<style>* { -webkit-tap-highlight-color: transparent; }</style>"#);
 
