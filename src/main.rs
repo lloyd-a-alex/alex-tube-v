@@ -13659,6 +13659,8 @@ pub fn App() -> Element {
                         spawn(async move {
                             let req = TransitScoreRequest { lat: coord.lat, lon: coord.lon };
                             if let Some(res) = post_api::<_, TransitScoreResponse>("/api/transit-score", &req).await {
+                                let announcement = format!("Transit score: {:.0} percent, grade {}", res.score * 100.0, res.grade);
+                                eval(&format!("window.announceToScreenReader({});", serde_json::to_string(&announcement).unwrap()));
                                 transit_score_data.set(Some(res));
                             } else {
                                 show_transit_score.set(false);
@@ -13897,6 +13899,8 @@ pub fn App() -> Element {
                                 "Added {} stations | deserts {} -> {} ({:.1}% eliminated)",
                                 added, resp.deserts_before, resp.deserts_after, resp.coverage_gain
                             ));
+                            let sr_announce = format!("Coverage updated: added {} stations, {:.1} percent coverage gain", added, resp.coverage_gain);
+                            eval(&format!("window.announceToScreenReader({});", serde_json::to_string(&sr_announce).unwrap()));
                             show_toast(&mut toasts, &mut toast_id_counter,
                                 &format!("AI placed {} stations ({:.0}% of deserts eliminated)", added, resp.coverage_gain), "success");
                         } else {
@@ -13950,6 +13954,8 @@ pub fn App() -> Element {
                                 "Coverage {:.1}% | {} served / {} residential | {} deserts | {} stations",
                                 stats.coverage_pct, stats.served, stats.total_residential, stats.deserts, stats.station_count
                             ));
+                            let sr_announce = format!("Coverage: {:.1} percent, {} deserts remaining", stats.coverage_pct, stats.deserts);
+                            eval(&format!("window.announceToScreenReader({});", serde_json::to_string(&sr_announce).unwrap()));
                         }
                     });
                     catchment_enabled.set(true);

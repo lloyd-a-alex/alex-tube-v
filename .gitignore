@@ -16,3 +16,6 @@ Thumbs.db
 
 # Build artifacts
 /target_new/
+
+# Code
+/separate-project-dont-touch/
