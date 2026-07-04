@@ -11438,6 +11438,199 @@ pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> = std::sync::Lazy
 
 /* INLINED THEME MIN CSS */
 :root{--color-primary:#00bcd4;--color-primary-hover:#00acc1;--color-primary-dark:#008ba3;--color-primary-glow:rgba(0,188,212,0.4);--color-primary-glow-strong:rgba(0,188,212,0.6);--color-success:#4caf50;--color-success-bg:rgba(76,175,80,0.15);--color-warning:#ff9800;--color-error:#f44336;--color-error-bg:rgba(244,67,54,0.15);--color-bg:#050505;--color-surface:rgba(10,10,12,0.85);--color-surface-solid:#111;--color-surface-dark:rgba(10,10,15,0.95);--color-surface-elevated:rgba(15,15,18,0.85);--color-surface-hover:rgba(255,255,255,0.1);--color-surface-subtle:rgba(255,255,255,0.03);--color-surface-muted:rgba(255,255,255,0.05);--color-border:rgba(255,255,255,0.08);--color-border-light:rgba(255,255,255,0.1);--color-border-medium:rgba(255,255,255,0.15);--color-border-solid:#333;--color-border-input:#444;--color-text:#fff;--color-text-secondary:#ddd;--color-text-muted:#aaa;--color-text-dim:#888;--color-text-terminal:#0f0;--shadow-sm:0 4px 12px rgba(0,0,0,0.4);--shadow-md:0 8px 24px rgba(0,0,0,0.6);--shadow-lg:0 16px 40px rgba(0,0,0,0.8);--shadow-xl:0 20px 60px rgba(0,0,0,0.8);--shadow-glow:0 4px 20px var(--color-primary-glow);--radius-sm:4px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;--radius-full:50%;--space-xs:4px;--space-sm:8px;--space-md:12px;--space-lg:16px;--space-xl:20px;--space-2xl:24px;--space-3xl:30px;--font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'JetBrains Mono','Fira Code','Courier New',monospace;--font-size-xs:9px;--font-size-sm:11px;--font-size-base:13px;--font-size-md:14px;--font-size-lg:15px;--font-size-xl:18px;--ease-out:cubic-bezier(0.19,1,0.22,1);--ease-bounce:cubic-bezier(0.175,0.885,0.32,1.275);--transition-fast:.2s ease;--transition-smooth:.3s var(--ease-out);--transition-bounce:.4s var(--ease-bounce);--z-map:1;--z-controls:1000;--z-logger:10000;--z-modal:11000;--z-toast:12000;--z-loading:20000}*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-transform:translateZ(0);transform:translateZ(0);backface-visibility:hidden;perspective:1000}html,body{width:100%;height:100%;overflow:hidden;font-family:var(--font-family);background:#000;cursor:crosshair;-webkit-font-smoothing:antialiased}#map-viewport{width:100vw;height:100vh;position:absolute;top:0;left:0;z-index:var(--z-map);background:#0d0d11}.legend-container{position:absolute;top:var(--space-2xl);left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(16px);padding:var(--space-lg);border-radius:var(--radius-xl);border:1px solid var(--color-border);max-height:calc(100vh - 48px);overflow-y:auto;box-shadow:var(--shadow-lg);color:var(--color-text);min-width:260px;transition:opacity var(--transition-fast),transform var(--transition-fast)}.legend-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md);border-bottom:1px solid var(--color-border-light);padding-bottom:var(--space-sm)}.legend-title{font-weight:800;font-size:var(--font-size-base);text-transform:uppercase;letter-spacing:1.5px;background:linear-gradient(135deg,var(--color-primary),#80deea);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.legend-item{display:flex;align-items:center;margin:6px 0;cursor:pointer;padding:6px var(--space-sm);border-radius:var(--radius-md);transition:all var(--transition-fast)}.legend-item:hover{background:var(--color-surface-hover);transform:translateX(4px)}.legend-color{width:12px;height:12px;border-radius:var(--radius-sm);margin-right:var(--space-md);box-shadow:0 0 6px rgba(0,188,212,0.4);flex-shrink:0}.legend-name{font-size:var(--font-size-sm);font-weight:600;color:var(--color-text-secondary)}.catchment-toggle-container{margin-top:var(--space-md);padding:var(--space-sm);background:rgba(255,255,255,0.03);border-radius:var(--radius-md);border:1px solid var(--color-border);display:flex;flex-direction:column;gap:var(--space-xs)}.catchment-toggle-header{display:flex;justify-content:space-between;align-items:center;font-size:var(--font-size-sm);font-weight:700;color:var(--color-text)}.switch{position:relative;display:inline-block;width:36px;height:20px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#333;transition:.3s;border-radius:20px}.slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background-color:#fff;transition:.3s;border-radius:50%}input:checked+.slider{background-color:var(--color-error)}input:checked+.slider:before{transform:translateX(16px)}.tfl-bottom-sheet{position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(0);width:100%;max-width:450px;background:rgba(18,18,20,0.96);backdrop-filter:blur(20px);border-top-left-radius:var(--radius-xl);border-top-right-radius:var(--radius-xl);box-shadow:var(--shadow-xl);z-index:1005;transition:transform var(--transition-bounce);color:var(--color-text);padding:var(--space-xl) var(--space-2xl) var(--space-3xl) var(--space-2xl);border:1px solid var(--color-border);border-bottom:none}.tfl-bottom-sheet.slide-down{transform:translateX(-50%) translateY(100%)}.sheet-handle{width:40px;height:4px;background:rgba(255,255,255,0.2);border-radius:2px;margin:0 auto var(--space-md) auto}.sheet-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)}.sheet-header h2{font-size:20px;font-weight:800;color:var(--color-text)}.badge-status{padding:4px var(--space-sm);background:var(--color-success-bg);color:var(--color-success);border:1px solid var(--color-success);font-size:var(--font-size-xs);font-weight:800;border-radius:var(--radius-sm);text-transform:uppercase}.custom-context-dropdown{position:fixed;background:var(--color-surface-dark);border:1px solid var(--color-border-medium);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);backdrop-filter:blur(10px);padding:var(--space-xs) 0;z-index:10000;min-width:180px}.menu-item{padding:8px var(--space-lg);font-size:var(--font-size-sm);color:var(--color-text-secondary);cursor:pointer;transition:background var(--transition-fast),color var(--transition-fast)}.menu-item:hover{background:var(--color-primary);color:#000}#logger-wrapper{position:fixed;bottom:var(--space-2xl);right:var(--space-2xl);z-index:var(--z-logger);display:flex;flex-direction:column;align-items:flex-end}#logger-fab{width:52px;height:52px;background:linear-gradient(135deg,var(--color-primary),var(--color-primary-dark));border-radius:var(--radius-full);display:flex;justify-content:center;align-items:center;font-size:22px;cursor:pointer;box-shadow:var(--shadow-glow);transition:all var(--transition-fast);border:2px solid rgba(255,255,255,0.1)}#logger-fab:hover{transform:scale(1.1)}#logger-panel{position:absolute;bottom:66px;right:0;width:480px;height:380px;background:var(--color-surface-dark);border:1px solid var(--color-border-solid);border-radius:var(--radius-lg);display:flex;flex-direction:column;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transform:translateY(20px) scale(0.95);transform-origin:bottom right;transition:opacity var(--transition-smooth),transform var(--transition-smooth)}#logger-wrapper:hover #logger-panel,#logger-panel.pinned{opacity:1;pointer-events:all;transform:translateY(0) scale(1)}#log-content{flex:1;overflow-y:auto;padding:var(--space-md);padding-bottom:95px!important;color:var(--color-text-terminal);font-family:var(--font-mono);font-size:var(--font-size-sm);line-height:1.5;background:#040406}#logger-actions{display:flex;gap:var(--space-sm);padding:var(--space-md);background:rgba(0,0,0,0.5);border-top:1px solid var(--color-border-solid)}#system-stats-widget{position:absolute;bottom:var(--space-2xl);left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(12px);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:var(--space-md);box-shadow:var(--shadow-md);transition:all .3s ease}.stat-grid{display:flex;gap:20px}.stat-item{display:flex;flex-direction:column;align-items:center;min-width:60px}.stat-label{font-size:9px;font-weight:800;color:var(--color-text-dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}.stat-value{font-size:16px;font-weight:800;color:var(--color-primary);font-family:var(--font-mono)}#fps-counter-widget{position:fixed;top:24px;right:320px;z-index:var(--z-controls);background:rgba(10,10,15,0.85);backdrop-filter:blur(8px);border:1px solid var(--color-border);padding:6px 12px;border-radius:var(--radius-md);color:#0f0;font-family:var(--font-mono);font-size:var(--font-size-sm);font-weight:700;box-shadow:var(--shadow-sm);pointer-events:none}.toast-container{position:fixed;top:var(--space-xl);right:var(--space-xl);z-index:var(--z-toast);display:flex;flex-direction:column;gap:var(--space-sm);pointer-events:none}.toast{background:rgba(15,15,20,0.9);backdrop-filter:blur(12px);border:1px solid var(--color-border-medium);padding:var(--space-md) var(--space-xl);border-radius:var(--radius-md);color:var(--color-text);font-size:var(--font-size-sm);font-weight:600;box-shadow:var(--shadow-md);transform:translateY(-20px);opacity:0;transition:all .3s var(--ease-bounce);pointer-events:auto}.toast.show{transform:translateY(0);opacity:1}.toast.success{border-left:4px solid var(--color-success)}.toast.error{border-left:4px solid var(--color-error)}.toast.info{border-left:4px solid var(--color-primary)}.loading-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;background:#030305;z-index:var(--z-loading);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:var(--space-2xl)}.spinner{width:48px;height:48px;border:3px solid rgba(0,188,212,0.1);border-radius:var(--radius-full);border-top-color:var(--color-primary);animation:spin .8s linear infinite}.status-container{background:rgba(10,10,12,0.6);border:1px solid var(--color-border);padding:var(--space-xl);border-radius:var(--radius-lg);width:100%;max-width:400px}.status-header{color:var(--color-text-muted);font-size:var(--font-size-xs);font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:var(--space-md)}.status-row{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;font-size:var(--font-size-sm);color:var(--color-text-secondary)}.status-badge{font-family:var(--font-mono);font-size:var(--font-size-xs);text-transform:uppercase;font-weight:700}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{to{opacity:.4}}.logger-btn{flex:1;padding:6px var(--space-sm);background:rgba(255,255,255,0.08);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-secondary);font-size:var(--font-size-xs);font-weight:600;cursor:pointer;transition:all var(--transition-fast)}.logger-btn:hover{background:rgba(255,255,255,0.15);color:var(--color-text)}.btn-highlight{background:rgba(0,188,212,0.15);border-color:var(--color-primary);color:var(--color-primary)}.btn-highlight:hover{background:rgba(0,188,212,0.3)}.sheet-body p{font-size:var(--font-size-sm);color:var(--color-text-secondary);margin:4px 0}.station-icon,.hub-icon{background:none!important;border:none!important;width:16px!important;height:16px!important;display:flex!important;align-items:center!important;justify-content:center!important}.nr-icon{background:transparent!important;border:none!important;display:flex!important;align-items:center!important;justify-content:center!important}.station-icon div,.hub-icon div{flex-shrink:0;transition:transform .2s ease}.station-icon:hover div,.hub-icon:hover div{transform:scale(1.4);cursor:pointer}
+
+/* ================================================================
+   ACCESSIBILITY FOUNDATION
+   ================================================================ */
+
+/* --- Skip Navigation Link ---
+   Hidden until focused via keyboard; lets screen-reader and keyboard
+   users jump past the title bar directly to the map content. */
+.skip-link{
+  position:absolute;top:-100%;left:50%;transform:translateX(-50%);
+  z-index:99999;padding:10px 24px;background:var(--color-primary);color:#000;
+  font-weight:800;font-size:14px;border-radius:0 0 8px 8px;
+  text-decoration:none;transition:top .2s ease;
+}
+.skip-link:focus{top:0;}
+
+/* --- Focus-Visible Rings ---
+   Every interactive element gets a high-contrast cyan ring when
+   focused via keyboard (Tab). Mouse clicks do NOT trigger this
+   thanks to the :focus-visible pseudo-class. */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible,
+.ctx-btn:focus-visible,
+.menu-item:focus-visible,
+.legend-item:focus-visible,
+.sr-item:focus-visible,
+.station-node-link:focus-visible{
+  outline:2px solid var(--color-primary) !important;
+  outline-offset:2px;
+  box-shadow:0 0 0 4px var(--color-primary-glow) !important;
+}
+
+/* Never allow outline:none without a replacement */
+[style*="outline: none"]:focus-visible,
+[style*="outline:none"]:focus-visible{
+  outline:2px solid var(--color-primary) !important;
+  outline-offset:2px;
+}
+
+/* --- Screen-Reader-Only Utility ---
+   Visually hidden but accessible to assistive technology. */
+.sr-only{
+  position:absolute !important;width:1px !important;height:1px !important;
+  padding:0 !important;margin:-1px !important;overflow:hidden !important;
+  clip:rect(0,0,0,0) !important;white-space:nowrap !important;border:0 !important;
+}
+
+/* --- Touch Target Enforcement ---
+   All buttons meet the 44x44px WCAG 2.5.5 minimum touch target. */
+button{min-height:36px;min-width:36px;}
+#alex-toolbar button{min-height:44px;min-width:44px;}
+.ctx-btn{min-height:36px;}
+.menu-item{min-height:36px;padding-top:10px;padding-bottom:10px;}
+
+/* --- prefers-reduced-motion ---
+   Users who request reduced motion get zero animations and zero
+   transitions. Layout stays intact, only motion is removed. */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:0.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:0.01ms !important;
+    scroll-behavior:auto !important;
+  }
+  .tactical-crt-overlay{display:none !important;}
+  .spring-enter,.spring-enter-right,.spring-pop{animation:none !important;}
+}
+
+/* --- High Contrast / Forced Colours (Windows HC Mode) --- */
+@media (forced-colors: active){
+  button,.ctx-btn,.menu-item,.legend-item,.sr-item{
+    border:1px solid ButtonText !important;
+    color:ButtonText !important;
+    background:ButtonFace !important;
+  }
+  button:focus-visible,.menu-item:focus-visible{
+    outline:2px solid Highlight !important;
+  }
+  .toast{border:1px solid CanvasText !important;}
+  .loading-overlay{background:Canvas !important;color:CanvasText !important;}
+}
+
+/* --- Selectable Text in Content Areas --- */
+.sheet-body p,.sheet-header h2,.status-row,.legend-name,
+.sr-item div,.station-node-link,#log-content span{
+  -webkit-user-select:text;user-select:text;
+}
+
+/* --- Touch Optimisations --- */
+button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
+  -webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;
+}
+
+/* --- Scrollable Panels: Momentum Scrolling --- */
+#log-content,.legend-container,#jp-result,#cost-result,#search-results{
+  -webkit-overflow-scrolling:touch;
+}
+
+/* ================================================================
+   RESPONSIVE BREAKPOINTS
+   ================================================================ */
+
+/* --- Tablet & Below (768px) --- */
+@media (max-width:768px){
+  /* Journey planner: full-width bottom sheet */
+  #journey-planner-panel{
+    width:100% !important;height:auto !important;max-height:70vh !important;
+    top:auto !important;bottom:0 !important;right:0 !important;left:0 !important;
+    border-left:none !important;border-top:1px solid rgba(255,255,255,.12) !important;
+    border-radius:16px 16px 0 0 !important;
+  }
+  /* Cost estimator: full-width bottom sheet */
+  #cost-estimator-panel{
+    width:100% !important;height:auto !important;max-height:70vh !important;
+    top:auto !important;bottom:0 !important;left:0 !important;right:0 !important;
+    border-right:none !important;border-top:1px solid rgba(255,255,255,.12) !important;
+    border-radius:16px 16px 0 0 !important;
+  }
+  /* Legend: smaller, repositioned */
+  .legend-container{
+    left:8px !important;top:52px !important;min-width:200px !important;
+    max-width:calc(100vw - 16px) !important;max-height:50vh !important;
+  }
+  /* Toolbar: horizontal at bottom center */
+  #alex-toolbar{
+    flex-direction:row !important;bottom:12px !important;right:auto !important;
+    left:50% !important;transform:translateX(-50%) !important;
+    gap:6px !important;
+  }
+  /* Isochrone: above stats */
+  .isochrone-panel{
+    bottom:70px !important;left:8px !important;
+  }
+  /* Stats HUD: scrollable */
+  #network-stats-hud{
+    max-width:calc(100vw - 16px) !important;overflow-x:auto !important;
+    gap:14px !important;
+  }
+  /* AI planner: narrower */
+  .ai-planner-panel{
+    width:calc(100vw - 16px) !important;right:8px !important;top:auto !important;
+    bottom:80px !important;
+  }
+  /* Basemap switcher: below search */
+  .basemap-panel{
+    right:8px !important;top:56px !important;min-width:140px !important;
+  }
+  /* Search bar: full width */
+  .search-bar-wrap{
+    width:calc(100vw - 16px) !important;
+  }
+  /* CRT overlay: disable on small screens for performance */
+  .tactical-crt-overlay{display:none !important;}
+}
+
+/* --- Phone (480px and below) --- */
+@media (max-width:480px){
+  .legend-container{
+    min-width:160px !important;padding:10px !important;
+    font-size:11px !important;
+  }
+  #network-stats-hud{
+    padding:6px 10px !important;gap:10px !important;
+    font-size:10px !important;
+  }
+  #network-stats-hud > div > div:first-child{
+    font-size:13px !important;
+  }
+  .toast-container{
+    right:8px !important;left:8px !important;top:auto !important;
+    bottom:80px !important;
+  }
+  .toast{font-size:12px !important;padding:10px 14px !important;}
+}
+
+/* --- Print Styles ---
+   Hide all interactive chrome, show only the map. */
+@media print{
+  #alex-toolbar,.legend-container,.toast-container,
+  #logger-wrapper,#fps-counter-widget,.loading-overlay,
+  .tactical-crt-overlay,.skip-link,#network-stats-hud,
+  .isochrone-panel,.basemap-panel,.search-bar-wrap,
+  .ai-planner-panel,.tfl-bottom-sheet,#journey-planner-panel,
+  #cost-estimator-panel,#kb-help-modal,.custom-context-dropdown{
+    display:none !important;
+  }
+  #map-viewport{position:static !important;width:100% !important;height:100vh !important;}
+  body{background:#fff !important;}
+}
 "#.to_string()
 });
 
