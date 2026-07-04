@@ -13417,7 +13417,7 @@ pub fn App() -> Element {
                 id: "map-viewport",
                 role: "application",
                 "aria-label": "London Transport interactive map",
-                style: "z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden; padding-top: 42px;"
+                style: "position: absolute; top: 42px; left: 0; right: 0; bottom: 0; z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden;"
             }
 
             div { id: "fps-counter-widget", "PERF: -- FPS" }
@@ -14115,7 +14115,7 @@ pub fn App() -> Element {
             class: "search-bar-wrap",
             role: "search",
             "aria-label": "Station search",
-            style: "position: fixed; top: 16px; left: 50%; transform: translateX(-50%); z-index: 11000; width: 360px; max-width: calc(100vw - 32px); pointer-events: auto;",
+            style: "position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 11000; width: 360px; max-width: calc(100vw - 32px); pointer-events: auto;",
             div {
                 style: "position: relative",
                 input {
