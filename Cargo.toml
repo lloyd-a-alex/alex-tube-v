@@ -34,7 +34,7 @@ toml = "0.8"
 # Geometry & Spatial
 geo = "0.28"
 geo-types = "0.7"
-rstar = "0.12"
+rstar = "0.13"
 
 # Async Utilities
 futures = "0.3"
