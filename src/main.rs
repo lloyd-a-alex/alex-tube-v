@@ -11086,6 +11086,9 @@ fn main() {
             }
         };
         let embedded_count = seed_stations.len();
+        // Pin loaded station data to physical RAM after mmap cache loading
+        pin_memory_to_ram(seed_stations.as_ptr() as *const u8, seed_stations.len() * std::mem::size_of::<Station>());
+        log_info("Seed station data pinned to physical RAM after mmap cache loading");
         match state.cache.load_free_stations() {
             Ok(free_stations) => {
                 log_info(&format!(
@@ -11148,6 +11151,13 @@ fn main() {
         let stations_snap = state.stations.load();
         let lines_snap = state.lines.load();
         let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
+
+        // Pin grid SoA arrays to physical RAM — defeat OS page-fault latency
+        pin_memory_to_ram(grid.coords_x.as_ptr() as *const u8, grid.coords_x.len() * std::mem::size_of::<f32>());
+        pin_memory_to_ram(grid.coords_y.as_ptr() as *const u8, grid.coords_y.len() * std::mem::size_of::<f32>());
+        pin_memory_to_ram(grid.edge_offsets.as_ptr() as *const u8, grid.edge_offsets.len() * std::mem::size_of::<usize>());
+        log_info("TransitNetworkGrid SoA arrays pinned to physical RAM");
+
         state.transit_grid.store(Arc::new(grid));
         log_info(&format!("[TIMING] TransitNetworkGrid built: {:.3}s", boot_start.elapsed().as_secs_f64()));
     }
