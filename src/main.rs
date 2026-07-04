@@ -4781,7 +4781,7 @@ impl RoutingGraph {
                         a.1.coord
                             .distance_to(coord)
                             .partial_cmp(&b.1.coord.distance_to(coord))
-                            .unwrap()
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .map(|(id, _)| *id)
             }
@@ -4791,7 +4791,7 @@ impl RoutingGraph {
                     .coord
                     .distance_to(coord)
                     .partial_cmp(&self.nodes[&b].coord.distance_to(coord))
-                    .unwrap()
+                    .unwrap_or(std::cmp::Ordering::Equal)
             })
         };
 
@@ -11138,15 +11138,19 @@ impl MmapCacheStore {
 
     /// Zero-copy read of transit grid pods from the mapped region.
     /// The raw disk bytes ARE the Rust struct — bytemuck cast is free.
-    pub fn read_tracks_zero_copy(&self, byte_offset: usize, count: usize) -> &[TransitGridPod] {
-        let byte_length = count * std::mem::size_of::<TransitGridPod>();
-        assert!(
-            byte_offset + byte_length <= self.len,
-            "MmapCacheStore: track read out of bounds (offset={} len={} need={})",
-            byte_offset, self.len, byte_length
-        );
-        let slice = &self.mmap[byte_offset..(byte_offset + byte_length)];
-        bytemuck::cast_slice(slice)
+    /// Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
+    pub fn read_tracks_zero_copy(&self, byte_offset: usize, count: usize) -> Option<&[TransitGridPod]> {
+        let byte_length = count.checked_mul(std::mem::size_of::<TransitGridPod>())?;
+        let end = byte_offset.checked_add(byte_length)?;
+        if end > self.len {
+            log_warn(&format!(
+                "MmapCacheStore: read_tracks_zero_copy out of bounds (offset={} count={} len={})",
+                byte_offset, count, self.len
+            ));
+            return None;
+        }
+        let slice = &self.mmap[byte_offset..end];
+        Some(bytemuck::cast_slice(slice))
     }
 }
 
@@ -12277,6 +12281,7 @@ window.initMap = async function() {
         window.tileProviderIndex = 0;
         window.tileFailureCount = 0;
         window.tileSuccessCount = 0;
+        window.tileProviderCycles = 0;
         window.installBaseTileLayer = function(index) {
             if (window.tileLayer && window.tileLayer._timeoutId) {
                 clearTimeout(window.tileLayer._timeoutId);
@@ -12284,7 +12289,15 @@ window.initMap = async function() {
             if (window.tileLayer) {
                 try { window.map.removeLayer(window.tileLayer); } catch(e) {}
             }
+            // Guard: if we've cycled through ALL providers already, stop trying.
+            // This prevents an infinite fallback loop when the user is offline.
+            if (window.tileProviderCycles >= window.tileProviders.length) {
+                console.warn('All tile providers exhausted — staying on last working or blank tile layer');
+                window.midLog("106", "WARN", "All basemap providers failed — offline mode");
+                return;
+            }
             window.tileProviderIndex = index % window.tileProviders.length;
+            if (index >= window.tileProviders.length) { window.tileProviderCycles++; }
             var provider = window.tileProviders[window.tileProviderIndex];
             window.tileFailureCount = 0;
             window.tileSuccessCount = 0;
@@ -12324,6 +12337,7 @@ window.initMap = async function() {
 
         window.activeBaseKind = 'street';
         window.satProviderIdx = 0;
+        window.satProviderCycles = 0;
         window.satProviders = [
             { name: 'ESRI World Imagery',
               url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -12341,11 +12355,16 @@ window.initMap = async function() {
             if (mode === 'satellite') {
                 var p = window.satProviders[window.satProviderIdx];
                 window.currentBaseLayer = L.tileLayer(p.url, p.opts);
-                var failCount = 0, okCount = 0;
-                window.currentBaseLayer.on('tileload', function() { okCount++; });
+                var satFailCount = 0, satOkCount = 0;
+                window.currentBaseLayer.on('tileload', function() { satOkCount++; });
                 window.currentBaseLayer.on('tileerror', function() {
-                    failCount++;
-                    if (failCount >= 4 && okCount === 0) {
+                    satFailCount++;
+                    if (satFailCount >= 4 && satOkCount === 0) {
+                        if (window.satProviderCycles >= window.satProviders.length) {
+                            console.warn('Satellite: all providers exhausted — offline mode');
+                            return;
+                        }
+                        window.satProviderCycles++;
                         window.satProviderIdx = (window.satProviderIdx + 1) % window.satProviders.length;
                         console.warn('Satellite: auto-switching to ' + window.satProviders[window.satProviderIdx].name);
                         window.setBaseMode('satellite');
