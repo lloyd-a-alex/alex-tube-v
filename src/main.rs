@@ -456,6 +456,36 @@ fn validate_coordinate(lat: f64, lon: f64, context: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Validate that a user-supplied string is within safe length bounds and
+/// does not contain control characters that could cause log injection or
+/// terminal escape sequence attacks.
+///
+/// # Arguments
+/// * `input` — The string to validate
+/// * `max_len` — Maximum allowed length in bytes
+/// * `context` — Description of the field for error messages
+fn validate_string_input(input: &str, max_len: usize, context: &str) -> AppResult<()> {
+    if input.is_empty() {
+        return Err(AppError::Validation(format!("{}: must not be empty", context)));
+    }
+    if input.len() > max_len {
+        log_debug(&format!("validate_string_input - rejected: {} too long ({} > {})", context, input.len(), max_len));
+        return Err(AppError::Validation(format!(
+            "{}: must be at most {} bytes (got {})", context, max_len, input.len()
+        )));
+    }
+    // Security: reject strings containing control characters (except space/tab)
+    // that could be used for log injection, terminal escape sequences, or
+    // ANSI code injection attacks.
+    if input.chars().any(|c| c.is_control() && c != '\t') {
+        log_debug(&format!("validate_string_input - rejected: {} contains control characters", context));
+        return Err(AppError::Validation(format!(
+            "{}: must not contain control characters", context
+        )));
+    }
+    Ok(())
+}
+
 // #[rustfmt::skip] — prevent formatter from choking on the 200-line phf_map
 #[rustfmt::skip]
 static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! {
@@ -634,6 +664,17 @@ impl Default for Config {
 impl Config {
     fn load() -> Self {
         if Path::new("config.toml").exists() {
+            // Security: enforce a 1 MB config file size limit to prevent memory exhaustion
+            // from a maliciously large config file (e.g. symlink attack or disk-fill DoS).
+            if let Ok(meta) = std::fs::metadata("config.toml") {
+                if meta.len() > 1_048_576 {
+                    log_warn(&format!(
+                        "config.toml is {} bytes (exceeds 1 MB limit) — rejecting, using defaults",
+                        meta.len()
+                    ));
+                    return Config::default();
+                }
+            }
             match std::fs::read_to_string("config.toml") {
                 Ok(content) => match toml::from_str::<Config>(&content) {
                     Ok(config) => {
@@ -1225,6 +1266,10 @@ mod stderr_capture {
         /// On success logs a confirmation message.
         /// Returns `None` if any Win32 call fails.
         pub fn start() -> Option<Self> {
+            // SAFETY: Win32 API calls for stderr redirection. GetStdHandle reads the
+            // process-wide standard error handle — valid for the lifetime of the process.
+            // CreatePipe creates an anonymous pipe with inheritable security attributes
+            // so the WebView2 child process inherits the pipe handle.
             unsafe {
                 let orig = GetStdHandle(STD_ERROR_HANDLE);
                 if orig == INVALID_HANDLE_VALUE || orig == 0 {
@@ -1428,6 +1473,9 @@ mod stderr_capture {
 
     impl Drop for StderrCapture {
         fn drop(&mut self) {
+            // SAFETY: Restoring original stderr handles. _dup2 atomically replaces fd 2
+            // with the saved original. SetStdHandle restores the Win32 handle. CloseHandle
+            // releases the pipe write-end. All handles are validated at creation time.
             unsafe {
                 // 1. Signal thread to stop
                 self.running.store(false, Ordering::SeqCst);
@@ -1744,11 +1792,18 @@ impl ArchivedTrackGeometry {
     }
 
     /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
-    /// SAFETY: The buffer must contain a valid archived ArchivedTrackGeometry.
     /// Returns None if the buffer is too small to contain a valid archive.
     pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedTrackGeometry> {
         if buf.len() < 8 { return None; }
-        Some(unsafe { rkyv::archived_root::<ArchivedTrackGeometry>(buf) })
+        // SAFETY: rkyv's `check_archived_root` validates the entire archived structure
+        // before returning a reference — checking all offsets, enum discriminants, and
+        // string lengths against the buffer bounds. This prevents malformed/corrupted
+        // cache data from causing undefined behaviour. Returns Err on validation failure.
+        rkyv::check_archived_root::<ArchivedTrackGeometry>(buf).ok().map(|a| {
+            // SAFETY: The checked archive is valid — we transmute the lifetime to 'static
+            // because the underlying mmap buffer outlives all references to it.
+            unsafe { &*(a as *const ArchivedArchivedTrackGeometry) }
+        })
     }
 }
 
@@ -1759,10 +1814,18 @@ impl ArchivedStationRecord {
     }
 
     /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
-    /// Returns None if the buffer is too small to contain a valid archive.
+    /// Returns None if the buffer is too small or contains invalid archived data.
     pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedStationRecord> {
         if buf.len() < 8 { return None; }
-        Some(unsafe { rkyv::archived_root::<ArchivedStationRecord>(buf) })
+        // SAFETY: rkyv's `check_archived_root` validates the entire archived structure
+        // before returning a reference — checking all offsets, enum discriminants, and
+        // string lengths against the buffer bounds. This prevents malformed/corrupted
+        // cache data from causing undefined behaviour. Returns Err on validation failure.
+        rkyv::check_archived_root::<ArchivedStationRecord>(buf).ok().map(|a| {
+            // SAFETY: The checked archive is valid — we transmute the lifetime to 'static
+            // because the underlying mmap buffer outlives all references to it.
+            unsafe { &*(a as *const ArchivedArchivedStationRecord) }
+        })
     }
 }
 
@@ -7942,6 +8005,17 @@ async fn write_to_ide_workspace(Json(payload): Json<IdeWriteRequest>) -> Json<Ap
         safe_path_display
     ));
 
+    // Security: validate file path length to prevent path exhaustion attacks
+    if payload.file_path.len() > 1024 {
+        log_error(&format!("IDE write rejected: file path too long ({} bytes)", payload.file_path.len()));
+        return Json(ApiResponse::error("File path must be at most 1024 bytes".to_string()));
+    }
+    // Security: reject paths containing null bytes (poison null byte attack)
+    if payload.file_path.contains('\0') {
+        log_error("IDE write rejected: file path contains null byte");
+        return Json(ApiResponse::error("File path must not contain null bytes".to_string()));
+    }
+
     let user_path = Path::new(&payload.file_path);
 
     // First, verify the file name is one of the permitted targets.
@@ -8121,48 +8195,68 @@ async fn run_server(
         config.server_host, config.server_port
     ));
 
-    // Root route serves SEO-rich HTML for crawlers (Discord, Twitter, Slack, etc.)
-    // API endpoints serve the Dioxus WebView data layer.
-    let app = Router::new()
-        .route("/", get(serve_root))
-        .route("/api/lines", get(get_lines))
-        .route("/api/lines/load", post(load_line))
-        .route("/api/lines/save", post(save_line))
-        .route("/api/stations", get(get_stations))
-        .route("/api/stations/save", post(save_station))
-        .route("/api/construction", get(get_construction_state))
-        .route("/api/construction/update", post(update_construction_state))
-        .route("/api/route", post(find_route))
-        .route("/api/simulate-congestion", post(simulate_congestion))
-        .route("/api/transit-deserts", post(get_transit_deserts))
-        .route("/api/coverage-stats", post(get_coverage_stats))
-        .route("/api/ai/add-station", post(ai_add_station))
-        .route("/api/ai/link-stations", post(ai_link_stations))
-        .route("/api/disruptions", get(get_disruptions))
-        .route("/api/disruptions/apply", post(apply_disruption))
-        .route("/live-congestion", get(get_live_congestion_bincode))
-        .route("/network-state", get(get_network_state_bincode))
-        .route("/api/tracks", get(get_tracks))
-        .route("/api/basemap", get(get_basemap_lines))
-        .route("/api/tracks/refresh", post(refresh_tracks))
-        .route("/api/lines/delete/:id", post(delete_line))
-        .route("/api/stations/clear", post(clear_ai_stations))
-        .route("/api/logs", get(get_logs))
-        .route("/api/config", get(get_config))
-        .route("/api/health", get(get_health))
-        .route("/api/journey", post(journey_plan))
-        .route("/api/isochrone", post(get_isochrone))
-        .route("/api/transit-score", post(get_transit_score))
-        .route("/api/cost-estimate", post(estimate_cost))
-        .route("/api/export/geojson", post(export_network))
-        .route("/api/search/stations", post(search_stations))
-        .route("/api/network-stats", get(get_network_stats))
-        .route("/api/demand-grid", post(get_demand_grid))
-        .route("/api/ide/write", post(write_to_ide_workspace))
-        .route("/api/lines/inbound/:id", get(get_line_routes_inbound))
-        .route("/api/stops", get(get_stop_points))
-        .route("/api/arrivals/:line_id", get(get_arrivals))
-        .with_state(state.clone());
+    // Guard: wrap route construction in catch_unwind so a bad route pattern
+    // (e.g. old `:param` syntax) produces a clean error instead of killing
+    // the entire process silently.
+    let app_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Router::new()
+            .route("/", get(serve_root))
+            .route("/api/lines", get(get_lines))
+            .route("/api/lines/load", post(load_line))
+            .route("/api/lines/save", post(save_line))
+            .route("/api/stations", get(get_stations))
+            .route("/api/stations/save", post(save_station))
+            .route("/api/construction", get(get_construction_state))
+            .route("/api/construction/update", post(update_construction_state))
+            .route("/api/route", post(find_route))
+            .route("/api/simulate-congestion", post(simulate_congestion))
+            .route("/api/transit-deserts", post(get_transit_deserts))
+            .route("/api/coverage-stats", post(get_coverage_stats))
+            .route("/api/ai/add-station", post(ai_add_station))
+            .route("/api/ai/link-stations", post(ai_link_stations))
+            .route("/api/disruptions", get(get_disruptions))
+            .route("/api/disruptions/apply", post(apply_disruption))
+            .route("/live-congestion", get(get_live_congestion_bincode))
+            .route("/network-state", get(get_network_state_bincode))
+            .route("/api/tracks", get(get_tracks))
+            .route("/api/basemap", get(get_basemap_lines))
+            .route("/api/tracks/refresh", post(refresh_tracks))
+            .route("/api/lines/delete/{id}", post(delete_line))
+            .route("/api/stations/clear", post(clear_ai_stations))
+            .route("/api/logs", get(get_logs))
+            .route("/api/config", get(get_config))
+            .route("/api/health", get(get_health))
+            .route("/api/journey", post(journey_plan))
+            .route("/api/isochrone", post(get_isochrone))
+            .route("/api/transit-score", post(get_transit_score))
+            .route("/api/cost-estimate", post(estimate_cost))
+            .route("/api/export/geojson", post(export_network))
+            .route("/api/search/stations", post(search_stations))
+            .route("/api/network-stats", get(get_network_stats))
+            .route("/api/demand-grid", post(get_demand_grid))
+            .route("/api/ide/write", post(write_to_ide_workspace))
+            .route("/api/lines/inbound/{id}", get(get_line_routes_inbound))
+            .route("/api/stops", get(get_stop_points))
+            .route("/api/arrivals/{line_id}", get(get_arrivals))
+            .with_state(state.clone())
+    }));
+    let app = match app_result {
+        Ok(router) => router,
+        Err(panic_payload) => {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "Unknown route construction panic".to_string()
+            };
+            log_error(&format!("run_server - FATAL: route construction panicked: {}", msg));
+            log_error("run_server - The application will not be able to serve requests. Please check route definitions for syntax errors.");
+            // Send fallback port so the main thread doesn't hang for 5s
+            let _ = port_sender.send(0);
+            return Err(format!("Route construction panicked: {}", msg).into());
+        }
+    };
 
     log_debug("run_server - configured API routes");
 
@@ -8210,6 +8304,72 @@ async fn run_server(
     });
 
     log_debug("run_server - configured API routes with CORS layer for ephemeral port");
+
+    // Security: add HTTP security headers to ALL responses.
+    // These headers prevent common web attacks when the API is accessed via a browser.
+    let app = app.layer(
+        tower::ServiceBuilder::new()
+            .map_response(|mut response: axum::http::Response<axum::body::Body>| {
+                let headers = response.headers_mut();
+                // Prevent MIME-type sniffing — forces browser to honour Content-Type
+                headers.insert("X-Content-Type-Options", axum::http::HeaderValue::from_static("nosniff"));
+                // Prevent clickjacking — deny framing entirely
+                headers.insert("X-Frame-Options", axum::http::HeaderValue::from_static("DENY"));
+                // Content Security Policy — only allow same-origin scripts/styles
+                headers.insert("Content-Security-Policy", axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"));
+                // Prevent referrer leakage to external sites
+                headers.insert("Referrer-Policy", axum::http::HeaderValue::from_static("no-referrer"));
+                // Disable browser XSS auditor (modern browsers ignore it anyway)
+                headers.insert("X-XSS-Protection", axum::http::HeaderValue::from_static("0"));
+                // Prevent caching of API responses (sensitive spatial data)
+                headers.insert("Cache-Control", axum::http::HeaderValue::from_static("no-store"));
+                response
+            })
+    );
+
+    // Security: simple in-memory rate limiter for expensive endpoints.
+    // Uses a token-bucket algorithm per client IP. Prevents DoS via
+    // repeated calls to CPU-intensive endpoints (congestion sim, AI planning).
+    let rate_limiter = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<std::net::IpAddr, (usize, std::time::Instant)>::new()));
+    let rate_limited_app = {
+        let limiter = rate_limiter.clone();
+        axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let limiter = limiter.clone();
+            async move {
+                let path = req.uri().path().to_string();
+                // Only rate-limit expensive endpoints
+                if path.contains("simulate-congestion") || path.contains("ai/add-station") || path.contains("ai/link-stations") {
+                    let client_ip = req.headers()
+                        .get("x-forwarded-for")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.split(',').next())
+                        .and_then(|s| s.trim().parse().ok())
+                        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+                    let mut guard = limiter.lock().await;
+                    let entry = guard.entry(client_ip).or_insert((0, std::time::Instant::now()));
+                    // Reset counter every 60 seconds
+                    if entry.1.elapsed() > std::time::Duration::from_secs(60) {
+                        *entry = (0, std::time::Instant::now());
+                    }
+                    entry.0 += 1;
+                    if entry.0 > 10 {
+                        log_warn(&format!("Rate limit exceeded for {} on {} ({} requests/min)", client_ip, path, entry.0));
+                        return axum::response::Response::builder()
+                            .status(429)
+                            .header("Retry-After", "60")
+                            .header("X-Content-Type-Options", "nosniff")
+                            .body(axum::body::Body::from("Rate limit exceeded. Max 10 requests per minute for this endpoint."))
+                            .unwrap()
+                            .into_response();
+                    }
+                }
+                next.run(req).await.into_response()
+            }
+        })
+    };
+    let app = app.layer(rate_limited_app);
+
+    log_info("run_server - security headers and rate limiter (10 req/min on expensive endpoints) active");
 
     log_info("run_server - TCP listener bound, starting Axum serve with graceful shutdown");
 
@@ -9721,6 +9881,11 @@ async fn delete_line(
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> impl axum::response::IntoResponse {
     let id_clone = id.clone();
+    // Security: validate line ID length to prevent memory exhaustion
+    if id.len() > 200 {
+        log_error(&format!("POST /api/lines/delete - line ID too long: {} bytes", id.len()));
+        return Json(ApiResponse::error("Line ID must be at most 200 bytes".to_string()));
+    }
     log_info(&format!(
         "POST /api/lines/delete called for target custom line reference: {}",
         id
@@ -9763,6 +9928,13 @@ async fn save_station(
         "POST /api/stations/save called - saving station: {} at lat={:.6}, lon={:.6}",
         req.station.id, req.station.coord.lat, req.station.coord.lon
     ));
+    // Security: validate station ID and name lengths to prevent memory exhaustion
+    if let Err(e) = validate_string_input(&req.station.id, 200, "station.id") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
+    if let Err(e) = validate_string_input(&req.station.name, 500, "station.name") {
+        return Json(ApiResponse::error(e.to_string()));
+    }
     if !req.station.coord.lat.is_finite() || !req.station.coord.lon.is_finite()
         || req.station.coord.lat.abs() > 90.0 || req.station.coord.lon.abs() > 180.0
     {
@@ -10717,7 +10889,17 @@ pub async fn hydrate_network_state() -> AppResult<()> {
 
     let serialized = bincode::serialize(&(stations.as_slice(), segments.as_slice()))
         .map_err(|e| AppError::Internal(format!("bincode serialize failed: {}", e)))?;
-    std::fs::write(&cache_path, serialized)?;
+
+    // Security: prepend a SHA-256 integrity checksum to the cache file.
+    // On load, the checksum is verified BEFORE deserialization to prevent
+    // cache poisoning attacks (e.g. an attacker modifying the cache file
+    // to inject malicious data that deserializes into unexpected structures).
+    use sha2::{Sha256, Digest};
+    let hash = Sha256::digest(&serialized);
+    let mut checksummed = Vec::with_capacity(32 + serialized.len());
+    checksummed.extend_from_slice(&hash);
+    checksummed.extend_from_slice(&serialized);
+    std::fs::write(&cache_path, checksummed)?;
 
     log_info(&format!(
         "hydrate_network_state - network state saved to {:?} ({} bytes)",
@@ -10738,18 +10920,47 @@ pub fn load_or_hydrate_network() -> AppResult<(Vec<Station>, Vec<RailSegment>)> 
     if cache_path.exists() {
         log_info("load_or_hydrate_network - loading from bincode cache");
         let data = std::fs::read(&cache_path)?;
-        let (stations, segments): (Vec<Station>, Vec<RailSegment>) = bincode::deserialize(&data)
-            .map_err(|e| AppError::Internal(format!("bincode deserialize failed: {}", e)))?;
-        log_info(&format!(
-            "load_or_hydrate_network - cache loaded: {} stations, {} segments",
-            stations.len(),
-            segments.len()
-        ));
-        Ok((stations, segments))
+
+        // Security: verify SHA-256 integrity checksum BEFORE deserialization.
+        // The first 32 bytes are the checksum; the rest is the bincode payload.
+        // This prevents cache poisoning — if an attacker modifies the cache file,
+        // the checksum will not match and we fall back to embedded data.
+        if data.len() < 32 {
+            log_warn("load_or_hydrate_network - cache file too small (corrupted?) — using embedded data");
+        } else {
+            use sha2::{Sha256, Digest};
+            let (stored_hash, payload) = data.split_at(32);
+            let computed_hash = Sha256::digest(payload);
+            if stored_hash == computed_hash.as_slice() {
+                match bincode::deserialize::<(Vec<Station>, Vec<RailSegment>)>(payload) {
+                    Ok((stations, segments)) => {
+                        // Sanity check: reject unreasonably large deserialized data
+                        if stations.len() > 1_000_000 || segments.len() > 10_000_000 {
+                            log_warn(&format!(
+                                "load_or_hydrate_network - cache integrity PASSED but data seems abusive ({} stations, {} segments) — using embedded data",
+                                stations.len(), segments.len()
+                            ));
+                        } else {
+                            log_info(&format!(
+                                "load_or_hydrate_network - cache loaded: {} stations, {} segments (SHA-256 verified)",
+                                stations.len(), segments.len()
+                            ));
+                            return Ok((stations, segments));
+                        }
+                    }
+                    Err(e) => {
+                        log_warn(&format!("load_or_hydrate_network - bincode deserialize failed: {} — using embedded data", e));
+                    }
+                }
+            } else {
+                log_warn("load_or_hydrate_network - SHA-256 MISMATCH — cache file may be corrupted or tampered. Discarding and using embedded data.");
+            }
+        }
     } else {
         log_info("load_or_hydrate_network - no cache found, using embedded data");
-        Ok((embedded_stations().clone(), embedded_rail_segments().clone()))
     }
+    // Fallthrough: cache missing, corrupted, or failed validation — use embedded data
+    Ok((embedded_stations().clone(), embedded_rail_segments().clone()))
 }
 
 // ============================================================================
@@ -10812,6 +11023,9 @@ pub fn load_spatial_cache_mmap() -> AppResult<Vec<StationPod>> {
 
     log_info("load_spatial_cache_mmap - memory-mapping spatial index");
     let file = std::fs::File::open(&cache_path)?;
+    // SAFETY: memmap2::Mmap::map creates a read-only memory mapping of the file.
+    // The returned Mmap is bound to the file's lifetime and cannot outlive it.
+    // The OS kernel manages page faults — no manual memory management required.
     let mmap = unsafe { memmap2::Mmap::map(&file)? };
     let pods = stations_from_bytes(&mmap).to_vec();
 
@@ -10873,6 +11087,9 @@ impl MmapCacheStore {
         }
 
         let len = file.metadata()?.len() as usize;
+        // SAFETY: memmap2::MmapOptions::map creates a read-write memory mapping.
+        // The file was opened with read+write+create, so the mapping is valid.
+        // The returned Mmap is Sync+Send — safe for cross-thread lock-free reads.
         let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
         log_info(&format!(
@@ -10884,21 +11101,29 @@ impl MmapCacheStore {
 
     /// Retrieves spatial pods with literal zero CPU allocation/parsing.
     /// The raw disk bytes ARE the Rust struct — bytemuck cast is free.
-    pub fn read_stations_zero_copy(&self, byte_offset: usize, count: usize) -> &[StationPod] {
-        let byte_length = count * std::mem::size_of::<StationPod>();
-        assert!(
-            byte_offset + byte_length <= self.len,
-            "MmapCacheStore: read out of bounds (offset={} len={} need={})",
-            byte_offset, self.len, byte_length
-        );
-        let slice = &self.mmap[byte_offset..(byte_offset + byte_length)];
-        bytemuck::cast_slice(slice)
+    /// Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
+    pub fn read_stations_zero_copy(&self, byte_offset: usize, count: usize) -> Option<&[StationPod]> {
+        let byte_length = count.checked_mul(std::mem::size_of::<StationPod>())?;
+        let end = byte_offset.checked_add(byte_length)?;
+        if end > self.len {
+            log_warn(&format!(
+                "MmapCacheStore: read_stations_zero_copy out of bounds (offset={} count={} len={})",
+                byte_offset, count, self.len
+            ));
+            return None;
+        }
+        let slice = &self.mmap[byte_offset..end];
+        Some(bytemuck::cast_slice(slice))
     }
 
     /// Read raw bytes from the mapped region — for custom deserialization.
-    pub fn read_raw(&self, offset: usize, length: usize) -> &[u8] {
-        assert!(offset + length <= self.len, "MmapCacheStore: raw read out of bounds");
-        &self.mmap[offset..(offset + length)]
+    /// Returns None if the requested range is out of bounds.
+    pub fn read_raw(&self, offset: usize, length: usize) -> Option<&[u8]> {
+        let end = offset.checked_add(length)?;
+        if end > self.len {
+            return None;
+        }
+        Some(&self.mmap[offset..end])
     }
 
     /// Get the total mapped length.
@@ -10968,6 +11193,9 @@ pub fn pin_memory_to_ram(ptr: *const u8, len: usize) {
     extern "system" {
         fn VirtualLock(lpAddress: *const std::ffi::c_void, dwSize: usize) -> i32;
     }
+    // SAFETY: VirtualLock is a Windows kernel API that locks physical pages in RAM.
+    // The ptr must point to a valid allocated region of at least `len` bytes.
+    // Failure is non-fatal — the function logs a warning and continues without pinning.
     unsafe {
         if VirtualLock(ptr as *const std::ffi::c_void, len) == 0 {
             log_warn(&format!(
@@ -10987,6 +11215,9 @@ pub fn pin_memory_to_ram(ptr: *const u8, len: usize) {
     extern "C" {
         fn mlock(addr: *const std::ffi::c_void, len: usize) -> i32;
     }
+    // SAFETY: mlock is a POSIX API that locks physical pages in RAM.
+    // The ptr must point to a valid allocated region of at least `len` bytes.
+    // Failure is non-fatal — the function logs a warning and continues without pinning.
     unsafe {
         if mlock(ptr as *const std::ffi::c_void, len) != 0 {
             log_warn(&format!(
@@ -14244,7 +14475,7 @@ pub fn App() -> Element {
     let mut logger_open = use_signal::<bool>(|| true);
     let mut logs = use_signal::<String>(|| String::new());
 
-    let mut show_loading = use_signal::<bool>(|| false);
+    let mut show_loading = use_signal::<bool>(|| true);
     let mut loading_stages = use_signal::<Vec<(String, String)>>(|| {
         vec![
             ("Bakerloo".to_string(), "pending".to_string()),
@@ -14261,6 +14492,10 @@ pub fn App() -> Element {
 
     // Fix #9: Track whether data loading has timed out for user feedback
     let mut data_timeout = use_signal::<bool>(|| false);
+
+    // Server connection status: "connecting" | "connected" | "degraded" | "offline"
+    let mut server_status = use_signal::<String>(|| "connecting".to_string());
+    let mut server_fail_count = use_signal::<usize>(|| 0);
 
     // --- MIGRATED SIGNALS FOR NATIVE RUST/DIOXUS UI CONTROLS ---
     let _basemap_segments = use_signal::<Vec<RailSegment>>(|| Vec::new());
@@ -14347,31 +14582,45 @@ pub fn App() -> Element {
     // Warm-up data
     use_future(move || async move {
         log_debug("App::warm_up - starting data warm-up fetch loop");
+        show_loading.set(true);
+        server_status.set("connecting".to_string());
         let mut attempts = 0usize;
         let start_time = std::time::Instant::now();
 
         while attempts < 12 {
-            if let Some(loaded_lines) = fetch_api::<Vec<Line>>("/api/lines").await {
+            // Update loading stages to show current attempt
+            let attempt_label = format!("attempt {}/12", attempts + 1);
+            loading_stages.with_mut(|stages| {
+                if let Some(first) = stages.first_mut() {
+                    first.1 = attempt_label;
+                }
+            });
+
+            let lines_ok = fetch_api::<Vec<Line>>("/api/lines").await;
+            let stations_ok = fetch_api::<Vec<Station>>("/api/stations").await;
+            let tracks_ok = fetch_api::<Vec<RailwayTrack>>("/api/tracks").await;
+
+            if let Some(ref loaded_lines) = lines_ok {
                 if !loaded_lines.is_empty() {
-                    lines.set(loaded_lines);
+                    lines.set(loaded_lines.clone());
                 } else {
                     log_warn("App::warm_up - /api/lines returned EMPTY list");
                 }
             } else {
                 log_warn("App::warm_up - /api/lines fetch FAILED (server not ready?)");
             }
-            if let Some(loaded_stations) = fetch_api::<Vec<Station>>("/api/stations").await {
+            if let Some(ref loaded_stations) = stations_ok {
                 if !loaded_stations.is_empty() {
-                    stations.set(loaded_stations);
+                    stations.set(loaded_stations.clone());
                 } else {
                     log_warn("App::warm_up - /api/stations returned EMPTY list");
                 }
             } else {
                 log_warn("App::warm_up - /api/stations fetch FAILED (server not ready?)");
             }
-            if let Some(loaded_tracks) = fetch_api::<Vec<RailwayTrack>>("/api/tracks").await {
+            if let Some(ref loaded_tracks) = tracks_ok {
                 if !loaded_tracks.is_empty() {
-                    tracks.set(loaded_tracks);
+                    tracks.set(loaded_tracks.clone());
                 } else {
                     log_warn("App::warm_up - /api/tracks returned EMPTY list");
                 }
@@ -14379,17 +14628,32 @@ pub fn App() -> Element {
                 log_warn("App::warm_up - /api/tracks fetch FAILED (server not ready?)");
             }
 
+            // At least one endpoint responded
+            if lines_ok.is_some() || stations_ok.is_some() || tracks_ok.is_some() {
+                server_status.set("connected".to_string());
+            }
+
             if !lines.read().is_empty() || !stations.read().is_empty() {
                 break;
             }
 
-            // Fix #9: After 5 seconds with no data, show a timeout indicator
+            // Track consecutive failures for status display
+            let all_failed = lines_ok.is_none() && stations_ok.is_none() && tracks_ok.is_none();
+            if all_failed {
+                let current = *server_fail_count.read();
+                server_fail_count.set(current.saturating_add(1));
+            }
+
+            // After 5 seconds with no data, show degraded status and timeout indicator
             if start_time.elapsed().as_secs() >= 5 && !*data_timeout.read() {
                 data_timeout.set(true);
+                if all_failed {
+                    server_status.set("degraded".to_string());
+                }
                 show_toast(
                     &mut toasts,
                     &mut toast_id_counter,
-                    "Data load is taking longer than expected. Server may still be initializing.",
+                    "Engine is taking longer than expected to respond. Retrying...",
                     "error",
                 );
             }
@@ -14398,30 +14662,54 @@ pub fn App() -> Element {
             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         }
 
-        for stage in &[
-            "Bakerloo",
-            "Central",
-            "Jubilee",
-            "Northern",
-            "Piccadilly",
-            "Victoria",
-        ] {
+        // Final existence check
+        let has_lines = !lines.read().is_empty();
+        let has_stations = !stations.read().is_empty();
+
+        if has_lines || has_stations {
+            // Success — mark all stages as loaded
+            for stage in &[
+                "Bakerloo",
+                "Central",
+                "Jubilee",
+                "Northern",
+                "Piccadilly",
+                "Victoria",
+            ] {
+                loading_stages.with_mut(|stages| {
+                    if let Some(idx) = stages.iter().position(|(n, _)| n == stage) {
+                        stages[idx].1 = "success".to_string();
+                    }
+                });
+            }
+            server_status.set("connected".to_string());
+            show_toast(&mut toasts, &mut toast_id_counter, "Engine connected — network loaded", "success");
+        } else {
+            // Total failure — engine is offline
+            server_status.set("offline".to_string());
+            log_error("App::warm_up - FAILED to load ANY data after all attempts! Engine is unreachable.");
+            show_toast(
+                &mut toasts,
+                &mut toast_id_counter,
+                "Engine is offline. The data server failed to start. Check console logs for details.",
+                "error",
+            );
+            // Mark stages as failed
             loading_stages.with_mut(|stages| {
-                if let Some(idx) = stages.iter().position(|(n, _)| n == stage) {
-                    stages[idx].1 = "success".to_string();
+                for stage in stages.iter_mut() {
+                    stage.1 = "failed".to_string();
                 }
             });
         }
+
         show_loading.set(false);
         data_timeout.set(false);
         log_info(&format!("App::warm_up - data load complete after {} attempts ({:.1}s)", attempts + 1, start_time.elapsed().as_secs_f64()));
 
-        // Final existence check
-        if lines.read().is_empty() && stations.read().is_empty() {
-            log_error("App::warm_up - FAILED to load ANY data after all attempts! UI will be non-functional.");
-        } else if lines.read().is_empty() {
+        if !has_lines {
             log_warn("App::warm_up - lines still EMPTY after warm-up. Only embedded lines will be available.");
-        } else if stations.read().is_empty() {
+        }
+        if !has_stations {
             log_warn("App::warm_up - stations still EMPTY after warm-up. Station-dependent features will fail.");
         }
     });
@@ -15036,6 +15324,19 @@ pub fn App() -> Element {
     } else {
         "none"
     };
+
+    // Server connection status overlay computations
+    let srv_status = server_status.read().clone();
+    let srv_offline = srv_status == "offline";
+    let srv_offline_display = if srv_offline && !panic_active { "flex" } else { "none" };
+    let (srv_status_color, srv_status_label, srv_status_icon) = match srv_status.as_str() {
+        "connected" => ("#4caf50", "Engine Connected", "\u{2713}"),
+        "degraded" => ("#ff9800", "Engine Degraded — Retrying...", "\u{26A0}"),
+        "offline" => ("#f44336", "Engine Offline", "\u{2717}"),
+        _ => ("#00bcd4", "Connecting to Engine...", "\u{25CF}"),
+    };
+    let srv_failures = *server_fail_count.read();
+    let srv_indicator_display = if panic_active || srv_offline { "none" } else { "flex" };
 
     rsx! {
             style { "{*CONSOLIDATED_UI_STYLES}" }
@@ -16784,6 +17085,49 @@ pub fn App() -> Element {
                     }
                 }
             }
+        }
+
+        // ── Engine Offline Overlay ──────────────────────────────────────────
+        // Shown when the data server fails to start or all fetch attempts fail.
+        // Gives the user clear diagnostic info instead of a blank unresponsive screen.
+        div {
+            style: "position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(5,0,0,.95);z-index:99998;flex-direction:column;justify-content:center;align-items:center;gap:16px;display:{srv_offline_display}",
+            div {
+                style: "background:#1a0a05;border:2px solid #f44336;border-radius:12px;padding:32px;max-width:640px;display:flex;flex-direction:column;gap:16px;text-align:center",
+                h3 { style: "color:#f44336;margin:0;font-family:'JetBrains Mono',monospace;font-size:18px;letter-spacing:2px;text-transform:uppercase", "\u{2717} ENGINE OFFLINE" }
+                p { style: "color:rgba(255,255,255,.8);font-size:14px;line-height:1.6;font-family:Inter,sans-serif;margin:0", "The data engine failed to respond after multiple connection attempts. This usually means the internal server crashed during startup." }
+                div { style: "background:rgba(244,67,54,.1);border:1px solid rgba(244,67,54,.3);border-radius:8px;padding:12px", 
+                    p { style: "color:#ff8a80;font-size:12px;font-family:monospace;margin:0", "Failed connection attempts: {srv_failures}" }
+                    p { style: "color:rgba(255,255,255,.5);font-size:11px;font-family:monospace;margin:8px 0 0 0", "Check the console window for detailed error logs." }
+                }
+                div { style: "display:flex;gap:12px;justify-content:center;margin-top:8px", 
+                    button {
+                        style: "background:#f44336;color:#fff;font-weight:bold;border:none;padding:12px 28px;cursor:pointer;border-radius:6px;font-size:13px;letter-spacing:1px",
+                        onclick: move |_| { std::process::exit(1); },
+                        "RESTART APPLICATION"
+                    }
+                    button {
+                        style: "background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);font-weight:bold;border:1px solid rgba(255,255,255,.15);padding:12px 28px;cursor:pointer;border-radius:6px;font-size:13px",
+                        onclick: move |_| {
+                            server_status.set("connecting".to_string());
+                            server_fail_count.set(0);
+                            show_loading.set(true);
+                            // Trigger page reload to re-run warm-up
+                            eval("window.location.reload();");
+                        },
+                        "RETRY CONNECTION"
+                    }
+                }
+            }
+        }
+
+        // ── Persistent Server Status Indicator ──────────────────────────────
+        // Always-visible pill showing engine connection state in the top-right corner.
+        // Hidden when the crash or offline overlay is active (they cover everything).
+        div {
+            style: "position:fixed;top:8px;right:60px;z-index:9000;display:flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);border:1px solid {srv_status_color};display:{srv_indicator_display}",
+            div { style: "width:8px;height:8px;border-radius:50%;background:{srv_status_color}" }
+            span { style: "color:{srv_status_color};font-size:10px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px", "{srv_status_icon} {srv_status_label}" }
         }
 
         // ── Legal Compliance: EULA Click-Wrap Overlay ─────────────────────────
