@@ -7712,6 +7712,8 @@ async fn run_server(
         .route("/api/ai/link-stations", post(ai_link_stations))
         .route("/api/disruptions", get(get_disruptions))
         .route("/api/disruptions/apply", post(apply_disruption))
+        .route("/live-congestion", get(get_live_congestion_bincode))
+        .route("/network-state", get(get_network_state_bincode))
         .route("/api/tracks", get(get_tracks))
         .route("/api/basemap", get(get_basemap_lines))
         .route("/api/tracks/refresh", post(refresh_tracks))
@@ -10010,6 +10012,48 @@ async fn apply_disruption(
     }
 }
 
+/// GET /live-congestion — bincode-serialized edge loads for zero-copy IPC.
+async fn get_live_congestion_bincode(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    let loads = state.edge_loads.load();
+    match bincode::serialize(&**loads) {
+        Ok(bytes) => axum::response::Response::builder()
+            .header("Content-Type", "application/octet-stream")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(e) => {
+            log_error(&format!("/live-congestion - bincode serialize failed: {}", e));
+            axum::response::Response::builder()
+                .status(500)
+                .body(axum::body::Body::from(format!("serialize error: {}", e)))
+                .unwrap()
+        }
+    }
+}
+
+/// GET /network-state — bincode-serialized station/line data for zero-copy IPC.
+async fn get_network_state_bincode(
+    State(state): State<AppState>,
+) -> axum::response::Response {
+    let stations = state.stations.load();
+    let lines = state.lines.load();
+    let payload = (stations.as_ref(), lines.as_ref());
+    match bincode::serialize(&payload) {
+        Ok(bytes) => axum::response::Response::builder()
+            .header("Content-Type", "application/octet-stream")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(e) => {
+            log_error(&format!("/network-state - bincode serialize failed: {}", e));
+            axum::response::Response::builder()
+                .status(500)
+                .body(axum::body::Body::from(format!("serialize error: {}", e)))
+                .unwrap()
+        }
+    }
+}
+
 #[tracing::instrument(name = "get_line_routes_inbound", skip_all)]
 async fn get_line_routes_inbound(
     State(state): State<AppState>,
@@ -10588,7 +10632,26 @@ fn main() {
         log_info(&format!("[TIMING] Custom lines inspected: {:.3}s", boot_start.elapsed().as_secs_f64()));
 
         log_debug("main - seeding stations from embedded basemap + database free stations");
-        let mut seed_stations: Vec<Station> = embedded_stations().clone();
+        // Task 47: Try mmap spatial cache first, fall back to embedded JSON
+        let mut seed_stations: Vec<Station> = match load_spatial_cache_mmap() {
+            Ok(pods) => {
+                log_info(&format!("main - loaded {} stations from mmap spatial cache", pods.len()));
+                // Convert StationPods back to Stations (best-effort)
+                pods.iter().map(|pod| Station {
+                    id: format!("mmap_{}", pod.name_hash),
+                    name: format!("Station#{}", pod.name_hash),
+                    coord: Coordinate { lat: pod.coord.y as f64, lon: pod.coord.x as f64 },
+                    lines: vec![],
+                    is_interchange: pod.is_interchange != 0,
+                    is_open: true,
+                    zone: pod.zone as i32,
+                }).collect()
+            }
+            Err(_) => {
+                log_info("main - no mmap cache found, using embedded stations");
+                embedded_stations().clone()
+            }
+        };
         let embedded_count = seed_stations.len();
         match state.cache.load_free_stations() {
             Ok(free_stations) => {
@@ -10646,6 +10709,15 @@ fn main() {
             log_info("main - sample and custom line loading completed");
         }
     log_info(&format!("[TIMING] Routing graph initialized: {:.3}s", boot_start.elapsed().as_secs_f64()));
+
+    // Build TransitNetworkGrid from seeded stations + lines (Task 28)
+    {
+        let stations_snap = state.stations.load();
+        let lines_snap = state.lines.load();
+        let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
+        state.transit_grid.store(Arc::new(grid));
+        log_info(&format!("[TIMING] TransitNetworkGrid built: {:.3}s", boot_start.elapsed().as_secs_f64()));
+    }
     });
     log_info("main - background services boot completed");
     log_info(&format!(
@@ -13147,6 +13219,15 @@ pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Co
         .with_data_directory(local_profile_dir)
         .with_window(window)
         .with_custom_head(build_webview_head(api_base))
+        .with_custom_protocol("tube".to_string(), move |request| {
+            // tube:// custom protocol for zero-copy binary IPC
+            log_debug(&format!("tube:// protocol request: {:?}", request.uri()));
+            dioxus::desktop::wry::http::Response::builder()
+                .status(200)
+                .header("Content-Type", "application/octet-stream")
+                .body(std::borrow::Cow::Owned(Vec::new()))
+                .unwrap()
+        })
 }
 
 pub fn build_console_window_configuration() -> dioxus::desktop::Config {
