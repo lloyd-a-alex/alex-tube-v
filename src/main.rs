@@ -850,6 +850,27 @@ fn log_to_storage(message: &str, is_error: bool) {
     if message.contains("fetch_residential_areas failed") {
         return;
     }
+    // ── Rate limiting: suppress repeated identical messages ──────────────
+    // If the same message was logged within the last 2 seconds, silently drop it.
+    // This prevents log flooding from A* failures, JS error storms, etc.
+    // from overwhelming the server and triggering EMERGENCY DISCONNECT.
+    {
+        static RATE_LIMIT: OnceLock<std::sync::Mutex<(String, Instant, u32)>> = OnceLock::new();
+        let limiter = RATE_LIMIT.get_or_init(|| std::sync::Mutex::new((String::new(), Instant::now(), 0)));
+        if let Ok(mut state) = limiter.lock() {
+            let is_dup = state.0 == message && state.1.elapsed() < Duration::from_secs(2);
+            if is_dup {
+                state.2 += 1;
+                if state.2 > 5 {
+                    return;
+                }
+            } else {
+                state.0 = message.to_string();
+                state.1 = Instant::now();
+                state.2 = 0;
+            }
+        }
+    }
     if is_error {
         eprintln!("{}", message);
     } else {
@@ -933,7 +954,21 @@ fn log_error(message: &str) {
     // network operation.
     if message.contains("could not find nearest nodes for routing")
         || message.contains("RoutingGraph::astar - end node")
+        || message.contains("RoutingGraph::astar - start node")
         || message.contains("RoutingGraph::find_nearest_node")
+        || message.contains("failed to find path")
+        || message.contains("aborted after") && message.contains("iterations")
+        || message.contains("astar_with_disruptions - end node")
+        || message.contains("astar_with_disruptions - start node")
+        || message.contains("astar_with_congestion - end node")
+        || message.contains("astar_with_congestion - start node")
+        || message.contains("astar_kinematic - end node")
+        || message.contains("astar_kinematic - start node")
+        || message.contains("reconstruct_path - node")
+        || message.contains("reconstruct_path - predecessor")
+        || message.contains("astar_with_disruptions failed")
+        || message.contains("astar_with_congestion failed")
+        || message.contains("astar_kinematic failed")
     {
         log_debug(message);
         return;
@@ -995,6 +1030,16 @@ fn log_warn(message: &str) {
         || message.contains("cached tracks are empty")
         || message.contains("could not find nearest nodes for routing")
         || message.contains("RoutingGraph::find_nearest_node")
+        || message.contains("failed to find path")
+        || message.contains("aborted after") && message.contains("iterations")
+        || message.contains("astar_with_disruptions - ")
+        || message.contains("astar_with_congestion - ")
+        || message.contains("astar_kinematic - ")
+        || message.contains("astar_with_disruptions failed")
+        || message.contains("astar_with_congestion failed")
+        || message.contains("astar_kinematic failed")
+        || message.contains("track list is EMPTY")
+        || message.contains("spatial grid empty")
     {
         log_debug(message);
         return;
@@ -4347,7 +4392,7 @@ impl RoutingGraph {
     /// For near-planar graphs like rail networks, the effective complexity
     /// approaches O(V log V).
     fn astar(&self, start: usize, end: usize) -> Vec<Coordinate> {
-        log_info(&format!(
+        log_trace(&format!(
             "RoutingGraph::astar called - start={}, end={}",
             start, end
         ));
@@ -4400,7 +4445,7 @@ impl RoutingGraph {
             ));
 
             if current_id == end {
-                log_info(&format!(
+                log_trace(&format!(
                     "RoutingGraph::astar reached goal after {} iterations",
                     iterations
                 ));
@@ -4464,7 +4509,7 @@ impl RoutingGraph {
         end: usize,
         disrupted_nodes: &HashSet<usize>,
     ) -> Vec<Coordinate> {
-        log_info(&format!(
+        log_trace(&format!(
             "RoutingGraph::astar_with_disruptions called - start={}, end={}, {} disrupted nodes",
             start, end, disrupted_nodes.len()
         ));
@@ -4510,7 +4555,7 @@ impl RoutingGraph {
             let current_id = current.node_id;
 
             if current_id == end {
-                log_info(&format!(
+                log_trace(&format!(
                     "RoutingGraph::astar_with_disruptions reached goal after {} iterations ({} disruptions avoided)",
                     iterations, disruptions_avoided
                 ));
@@ -4811,7 +4856,7 @@ impl RoutingGraph {
         edge_loads: &HashMap<EdgeKey, usize>,
         capacity_threshold: usize,
     ) -> Vec<Coordinate> {
-        log_info(&format!(
+        log_trace(&format!(
             "RoutingGraph::astar_with_congestion called - start={}, end={}, threshold={}, {} loaded edges",
             start, end, capacity_threshold, edge_loads.len()
         ));
@@ -4858,7 +4903,7 @@ impl RoutingGraph {
             let current_id = current.node_id;
 
             if current_id == end {
-                log_info(&format!(
+                log_trace(&format!(
                     "RoutingGraph::astar_with_congestion reached goal after {} iterations ({} congestion bypasses)",
                     iterations, congestion_bypasses
                 ));
@@ -4979,7 +5024,7 @@ impl RoutingGraph {
         live_loads: &HashMap<EdgeKey, usize>,
         capacity_threshold: usize,
     ) -> Vec<Coordinate> {
-        log_info(&format!(
+        log_trace(&format!(
             "RoutingGraph::astar_kinematic called - start={}, end={}, threshold={}, {} loaded edges",
             start, end, capacity_threshold, live_loads.len()
         ));
@@ -5027,7 +5072,7 @@ impl RoutingGraph {
             let current_id = current.node_id;
 
             if current_id == end {
-                log_info(&format!(
+                log_trace(&format!(
                     "RoutingGraph::astar_kinematic reached goal after {} iterations ({} congestion bypasses, {} interchange penalties)",
                     iterations, congestion_bypasses, interchange_penalties
                 ));
@@ -11086,9 +11131,20 @@ function copyText(text) {
 
 static MAP_INIT_JS: &str = r##"
 window.addEventListener('error', function(e) {
-    console.error('Global JS error:', e.message, e.filename, e.lineno);
+    var isRes = e.target && (e.target instanceof HTMLScriptElement || e.target instanceof HTMLLinkElement);
+    var detail = isRes
+        ? (e.target.src || e.target.href || 'resource') + ' load-failed'
+        : (e.message || (e.error ? (e.error.stack || String(e.error)) : ('Error[' + (e.type || 'error') + '] at ' + (e.filename || '?') + ':' + e.lineno + ':' + e.colno)));
+    console.error('Global JS error:', detail, e.filename, e.lineno);
     if (window.dioxus && window.dioxus.send) {
-        window.dioxus.send({ event: 'js_error', msg: e.message, file: e.filename, line: e.lineno });
+        window.dioxus.send({ event: 'js_error', msg: detail, file: e.filename, line: e.lineno });
+    }
+});
+window.addEventListener('unhandledrejection', function(e) {
+    var reason = e.reason ? (e.reason.message || e.reason.stack || String(e.reason)) : 'Unhandled Promise rejection';
+    console.error('Unhandled rejection:', reason);
+    if (window.dioxus && window.dioxus.send) {
+        window.dioxus.send({ event: 'js_error', msg: 'Promise: ' + reason, file: '', line: 0 });
     }
 });
 
@@ -13100,6 +13156,8 @@ if (typeof window.midLog !== 'function') {
     };
 }
 window.__consoleBuf = [];
+window.__lastConsoleMsg = '';
+window.__consoleDupCount = 0;
 (function() {
     var methods = ['log', 'warn', 'error', 'info', 'debug'];
     methods.forEach(function(m) {
@@ -13107,6 +13165,14 @@ window.__consoleBuf = [];
         console[m] = function() {
             var args = Array.prototype.slice.call(arguments);
             var msg = args.map(function(a) { return typeof a === 'string' ? a : JSON.stringify(a); }).join(' ');
+            // JS-side dedup: suppress identical consecutive messages
+            if (msg === window.__lastConsoleMsg) {
+                window.__consoleDupCount++;
+                if (window.__consoleDupCount > 3) return; // allow first 3, then suppress
+            } else {
+                window.__lastConsoleMsg = msg;
+                window.__consoleDupCount = 0;
+            }
             if (window.__consoleBuf === null) {
                 if (window.__consoleFwd) { try { window.__consoleFwd(m, msg); } catch(ex) {} }
             } else {
@@ -13118,13 +13184,21 @@ window.__consoleBuf = [];
     });
     window.addEventListener('error', function(e) {
         var isRes = e.target && (e.target instanceof HTMLScriptElement || e.target instanceof HTMLLinkElement);
-        var txt = isRes ? (e.target.src || e.target.href || 'resource') + ' load-failed' : (e.message || 'JS error');
+        var txt = isRes ? (e.target.src || e.target.href || 'resource') + ' load-failed' : (e.message || (e.error ? (e.error.stack || String(e.error)) : ('Error[' + (e.type || 'error') + '] at ' + (e.filename || '?') + ':' + e.lineno + ':' + e.colno)));
         var lvl = isRes ? 'warn' : 'error';
+        // Dedup: skip if same as last error message
+        if (txt === window.__lastConsoleMsg && window.__consoleDupCount > 3) return;
+        window.__lastConsoleMsg = txt;
+        window.__consoleDupCount = 0;
         if (window.__consoleBuf === null && window.__consoleFwd) { try { window.__consoleFwd(lvl, txt); } catch(ex) {} }
         else if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: lvl, msg: txt });
     }, true);
     window.addEventListener('unhandledrejection', function(e) {
-        var txt = e.reason ? (e.reason.message || String(e.reason)) : 'Unhandled Promise';
+        var txt = e.reason ? (e.reason.message || e.reason.stack || String(e.reason)) : 'Unhandled Promise rejection';
+        // Dedup: skip if same as last message
+        if (txt === window.__lastConsoleMsg && window.__consoleDupCount > 3) return;
+        window.__lastConsoleMsg = txt;
+        window.__consoleDupCount = 0;
         if (window.__consoleBuf === null && window.__consoleFwd) { try { window.__consoleFwd('error', txt); } catch(ex) {} }
         else if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: 'error', msg: txt });
     });
@@ -13303,20 +13377,22 @@ pub fn ConsoleStandaloneApp() -> Element {
                 .build()
                 .unwrap();
 
-            // Retry loop: try up to 30 times (~15 seconds) before giving up.
+            // Retry loop: try up to 60 times (~60 seconds with backoff) before giving up.
             // The parent process may take a moment to start the HTTP server.
-            let mut retries_remaining: u32 = 30;
+            let mut retries_remaining: u32 = 60;
             let target_url = format!("http://127.0.0.1:{}/api/logs", port);
             let mut connected = false;
+            let mut backoff_ms: u64 = 200; // start fast, back off exponentially
 
             loop {
                 match resilience_client.get(&target_url).send().await {
                     Ok(response) => {
                         if !connected {
                             connected = true;
+                            backoff_ms = 200; // reset backoff on connect
                             log_stream.set(String::new()); // clear boot message
                         }
-                        retries_remaining = 30; // reset for future disconnects
+                        retries_remaining = 60; // reset for future disconnects
 
                         if let Ok(api_response) = response.json::<ApiResponse<String>>().await {
                             if let Some(refreshed_text) = api_response.data {
@@ -13328,15 +13404,18 @@ pub fn ConsoleStandaloneApp() -> Element {
                         // Normal polling interval once connected
                         tokio::time::sleep(Duration::from_millis(400)).await;
                     }
-                    Err(_) => {
+                    Err(e) => {
                         if retries_remaining == 0 {
                             let mut current_logs = log_stream.read().clone();
-                            if !current_logs.contains("[EMERGENCY DISCONNECT FREEZE]") {
+                            if !current_logs.contains("[ENGINE DISCONNECTED]") {
                                 current_logs.push_str(
                                     "\n\n======================================================================\n",
                                 );
                                 current_logs.push_str(
-                                    "[EMERGENCY DISCONNECT FREEZE] Main Application Process Terminated.\n",
+                                    &format!("[ENGINE DISCONNECTED] Lost connection after exhausting retries: {}\n", e),
+                                );
+                                current_logs.push_str(
+                                    "The engine process may have exited. Check task manager.\n",
                                 );
                                 current_logs.push_str(
                                     "Diagnostic state frozen safely. Active trace window locked.",
@@ -13346,6 +13425,9 @@ pub fn ConsoleStandaloneApp() -> Element {
                             break;
                         }
                         retries_remaining -= 1;
+                        // Exponential backoff: 200ms -> 400ms -> 800ms -> ... capped at 3s
+                        let wait = backoff_ms.min(3000);
+                        backoff_ms = (backoff_ms * 2).min(5000);
                         // Only show reconnect message if we were previously connected
                         // (i.e., this is a mid-session disconnect, not initial boot)
                         if connected {
@@ -13355,7 +13437,7 @@ pub fn ConsoleStandaloneApp() -> Element {
                             );
                             log_stream.set(msg);
                         }
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
                     }
                 }
             }
@@ -14119,6 +14201,10 @@ pub fn App() -> Element {
                                 msg.get("level").and_then(|v| v.as_str()),
                                 msg.get("msg").and_then(|v| v.as_str()),
                             ) {
+                                // Skip empty or generic "JS error" messages with no useful info
+                                if msg_text.is_empty() || msg_text == "JS error" || msg_text == "Script error." {
+                                    continue;
+                                }
                                 let formatted = format!("[WebView Console] {}", msg_text);
                                 match level {
                                     "error" => log_error(&formatted),
@@ -14126,6 +14212,18 @@ pub fn App() -> Element {
                                     "info" | "log" => log_info(&formatted),
                                     "debug" => log_debug(&formatted),
                                     _ => log_info(&formatted),
+                                }
+                            }
+                        }
+                        "js_error" => {
+                            // Dedicated handler for JS errors forwarded from MAP_INIT_JS
+                            // Captures actual error detail, not just generic "JS error"
+                            if let Some(detail) = msg.get("msg").and_then(|v| v.as_str()) {
+                                if !detail.is_empty() && detail != "JS error" && detail != "Script error." {
+                                    let file = msg.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let line = msg.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let formatted = format!("[WebView JS Error] {} ({}:{})", detail, file, line);
+                                    log_error(&formatted);
                                 }
                             }
                         }
