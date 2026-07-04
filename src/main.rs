@@ -5804,7 +5804,7 @@ impl AppState {
                         // Fall through to API fetch below so the routing graph re-curves it
                     } else {
                         log_info(&format!(
-                            "AppState::load_line_routes - cache hit validated with physical truth mapping for {}",
+                            "AppState::load_line_routes - cache hit validated for {}",
                             line_id
                         ));
                         return Ok(line);
@@ -13234,7 +13234,7 @@ pub fn App() -> Element {
                     }
                     span {
                         style: "color: rgba(255,255,255,0.5); font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.5px;",
-                        "PHYSICAL TRUTH ENGINE"
+                        "NETWORK ANALYSIS ENGINE"
                     }
                 }
                 div {
