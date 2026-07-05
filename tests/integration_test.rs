@@ -218,7 +218,8 @@ fn test_bytemuck_pod_casting() {
     };
     // Pod → bytes → Pod round-trip
     let bytes: &[u8] = bytemuck::bytes_of(&pod);
-    assert_eq!(bytes.len(), 16); // 4+4+1+1+2+8 = 20? No: repr(C) alignment
+    // repr(C) layout: coord(8) + zone(1) + is_interchange(1) + padding(2) + align(4) + name_hash(8) = 24
+    assert_eq!(bytes.len(), 24);
     let restored: &StationPod = bytemuck::from_bytes(bytes);
     assert_eq!(restored.zone, 3);
     assert_eq!(restored.name_hash, 0xDEADBEEF_CAFEBABE);

@@ -1922,87 +1922,6 @@ mod primitives {
     }
 
     // ============================================================================
-    // WAIT-FREE TELEMETRY CHANNEL
-    // ============================================================================
-    // Uses crossbeam bounded channel with try_send. If the UI is lagging and
-    // the channel is full, telemetry frames are silently dropped — the backend
-    // never blocks on UI backpressure.
-
-    /// Real-time performance telemetry frame sent from the backend to the UI HUD.
-    ///
-    /// Captured at ~30fps by the [`TelemetryBroadcaster`]. Each frame is a
-    /// point-in-time snapshot of the engine's vital statistics — routing latency,
-    /// graph size, worker pool utilisation, and AI injection count.
-    ///
-    /// # Performance
-    ///
-    /// `Copy`-semantically cheap (56 bytes, all POD fields). The broadcaster uses
-    /// `crossbeam_channel` with `try_send` — emission never blocks the backend,
-    /// even if the UI thread stalls.
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    pub struct TelemetryFrame {
-        /// Wall-clock timestamp (milliseconds since UNIX epoch).
-        pub timestamp_ms: u64,
-        /// Last A* pathfinding duration (microseconds). Spike = graph fragmentation.
-        pub astar_duration_us: u64,
-        /// Total nodes in the routing graph (each node = one station/merge point).
-        pub routing_graph_nodes: usize,
-        /// Total directed edges in the routing graph.
-        pub routing_graph_edges: usize,
-        /// Current number of active Tokio worker threads (should match CPU count).
-        pub active_tokio_workers: usize,
-        /// SQLite WAL (Write-Ahead Log) queue depth. High = write contention.
-        pub sqlite_wal_queue: usize,
-        /// Number of AI-proposed junction stations injected this session.
-        pub ai_junctions_injected: usize,
-    }
-
-    /// Wait-free telemetry broadcaster. Backend calls `emit()` which never blocks.
-    /// The UI reads the latest frame via `try_recv()`.
-    #[allow(dead_code)]
-    pub struct TelemetryBroadcaster {
-        pub(crate) sender: crossbeam_channel::Sender<TelemetryFrame>,
-        pub(crate) receiver: crossbeam_channel::Receiver<TelemetryFrame>,
-    }
-
-    #[allow(dead_code)]
-    impl TelemetryBroadcaster {
-        pub fn new(capacity: usize) -> Self {
-            let (sender, receiver) = crossbeam_channel::bounded(capacity);
-            log_info(&format!(
-                "TelemetryBroadcaster::new - created with capacity={}",
-                capacity
-            ));
-            Self { sender, receiver }
-        }
-
-        /// Emit a telemetry frame. If the channel is full (UI lagging), the frame
-        /// is silently dropped — the backend NEVER blocks on UI backpressure.
-        pub fn emit(&self, frame: TelemetryFrame) {
-            if self.sender.try_send(frame).is_err() {
-                // Channel full or disconnected — drop the frame silently
-                log_trace(
-                    "TelemetryBroadcaster::emit - frame dropped (channel full or disconnected)",
-                );
-            }
-        }
-
-        /// Try to receive the latest frame. Returns None if no frame is available.
-        pub fn try_recv(&self) -> Option<TelemetryFrame> {
-            self.receiver.try_recv().ok()
-        }
-
-        /// Drain all pending frames and return the most recent one.
-        pub fn drain_latest(&self) -> Option<TelemetryFrame> {
-            let mut latest = None;
-            while let Ok(frame) = self.receiver.try_recv() {
-                latest = Some(frame);
-            }
-            latest
-        }
-    }
-
     /// A London Underground/Overground/DLR/Elizabeth/National Rail station.
     ///
     /// # Layout
@@ -2833,69 +2752,6 @@ mod spatial {
         // ============================================================================
         // TRANSIT DESERT DETECTION
         // ============================================================================
-        // Identifies geographic areas with poor transit coverage by sweeping a grid
-        // of query points across London and finding cells far from any station.
-        // Uses SIMD batch_distance_squared for fast sweep.
-
-        /// A detected transit desert: a grid cell with no station within threshold.
-        #[derive(Debug, Clone, Serialize)]
-        #[allow(dead_code)]
-        pub struct TransitDesert {
-            pub center_lon: f32,
-            pub center_lat: f32,
-            pub nearest_station_dist_m: f32,
-        }
-
-        /// Scan a regular grid across London for areas far from any station.
-        /// `grid_size` controls resolution (e.g. 50 = 50x50 = 2500 cells).
-        /// `threshold_m` is the minimum distance to consider a cell a "desert".
-        #[allow(dead_code)]
-        pub fn detect_transit_deserts(
-            grid: &TransitNetworkGrid,
-            grid_size: usize,
-            threshold_m: f32,
-        ) -> Vec<TransitDesert> {
-            // London bounding box (approximate)
-            const LON_MIN: f32 = -0.51;
-            const LON_MAX: f32 = 0.33;
-            const LAT_MIN: f32 = 51.28;
-            const LAT_MAX: f32 = 51.69;
-
-            let lon_step = (LON_MAX - LON_MIN) / grid_size as f32;
-            let lat_step = (LAT_MAX - LAT_MIN) / grid_size as f32;
-            let mut deserts = Vec::new();
-
-            for gi in 0..grid_size {
-                for gj in 0..grid_size {
-                    let cx = LON_MIN + (gi as f32 + 0.5) * lon_step;
-                    let cy = LAT_MIN + (gj as f32 + 0.5) * lat_step;
-
-                    // SIMD batch distance to all stations
-                    let dists = batch_distance_squared(cx, cy, &grid.coords_x, &grid.coords_y);
-                    let min_dist_sq = dists.iter().cloned().fold(f32::INFINITY, f32::min);
-                    // Convert squared degree distance to approximate meters
-                    // 1 degree lat ~ 111km, 1 degree lon ~ 70km at London lat
-                    let dist_m = (min_dist_sq).sqrt() * 111_000.0;
-
-                    if dist_m > threshold_m {
-                        deserts.push(TransitDesert {
-                            center_lon: cx,
-                            center_lat: cy,
-                            nearest_station_dist_m: dist_m,
-                        });
-                    }
-                }
-            }
-            log_info(&format!(
-                "detect_transit_deserts - found {} deserts (threshold: {}m, grid: {}x{})",
-                deserts.len(),
-                threshold_m,
-                grid_size,
-                grid_size
-            ));
-            deserts
-        }
-
         // ============================================================================
         // FIXED-POINT DETERMINISTIC GEOMETRY
         // ============================================================================
@@ -3147,7 +3003,10 @@ mod routing {
 
         pub(crate) const ROUNDEL_TRAMLINK: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.318 500" enable-background="new 0 0 615.318 500" xml:space="preserve"><g><path fill="#76BC21" d="M469.453,249.982c0,89.078-72.258,161.314-161.336,161.314c-89.1,0-161.299-72.236-161.299-161.314c0-89.063,72.199-161.277,161.299-161.277C397.195,88.705,469.453,160.918,469.453,249.982 M308.117,0C170.028,0,58.099,111.929,58.099,249.982C58.099,388.063,170.028,500,308.117,500c138.06,0,249.982-111.937,249.982-250.018C558.099,111.929,446.177,0,308.117,0"/><rect y="199.514" fill="#000F9F" width="615.318" height="101.133"/><g><polygon fill="#FFFFFF" points="228.255,233.198 213.25,233.198 213.25,276.09 203.142,276.09 203.142,233.198 188.101,233.198 188.101,224.195 228.255,224.195"/><path fill="#FFFFFF" d="M275.554,276.09H263.66l-14.324-20.707h-4.67v20.707h-10.108v-51.895h16.798c5.417,0,9.713,1.361,12.897,4.084c3.169,2.723,4.765,6.412,4.765,11.074c0,3.191-0.849,5.98-2.547,8.373c-1.698,2.401-4.113,4.172-7.254,5.336L275.554,276.09z M244.666,232.971v13.636h4.824c2.994,0,5.306-0.637,6.953-1.918c1.64-1.274,2.467-3.038,2.467-5.263c0-2.006-0.747-3.572-2.24-4.706c-1.493-1.142-3.572-1.727-6.229-1.749H244.666z"/><path fill="#FFFFFF" d="M327.706,276.09h-11.052l-3.726-9.962h-21.307l-3.762,9.962h-10.862l19.909-51.895h10.635L327.706,276.09z M309.437,256.943l-7.254-19.148l-7.144,19.148H309.437z"/><polygon fill="#FFFFFF" points="385.529,276.083 375.384,276.083 375.384,239.573 359.274,259.826 342.944,239.573 342.944,276.083 332.836,276.083 332.836,224.195 342.791,224.195 359.274,244.895 375.538,224.195 385.529,224.195"/><path fill="#FFFFFF" d="M416.719,236.689c-1.552-3.038-3.938-4.56-7.188-4.56c-1.61,0-2.935,0.432-3.96,1.295c-1.032,0.864-1.537,1.954-1.537,3.264c0,0.966,0.263,1.837,0.798,2.606c0.527,0.776,1.347,1.523,2.467,2.24c1.113,0.717,3.184,1.866,6.229,3.44c4.904,2.533,8.22,4.963,9.932,7.29c1.713,2.328,2.569,5.212,2.569,8.63c0,4.911-1.654,8.835-4.941,11.77c-3.294,2.942-7.619,4.406-12.955,4.406c-3.799,0-7.195-0.959-10.167-2.884c-2.972-1.925-5.233-4.611-6.778-8.059l8.322-4.897c1.954,4.355,4.941,6.536,8.959,6.536c2.203,0,3.967-0.556,5.299-1.669c1.332-1.12,1.998-2.606,1.998-4.487c0-1.544-0.527-2.906-1.596-4.084c-1.069-1.178-3.901-2.906-8.505-5.182c-4.509-2.203-7.605-4.421-9.296-6.668c-1.683-2.24-2.525-5.05-2.525-8.417c0-3.945,1.581-7.283,4.728-10.006c3.155-2.723,6.917-4.084,11.265-4.084c7.144,0,12.128,2.986,14.968,8.959L416.719,236.689z"/></g></g></svg>"##;
 
-        pub(crate) const ROUNDEL_NATIONAL_RAIL: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="62" height="39"><g stroke="#ED1C24" fill="none"><path d="M1,-8.9 46,12.4 16,26.6 61,47.9" stroke-width="6"/><path d="M0,12.4H62m0,14.2H0" stroke-width="6.4"/></g></svg>"##;
+        pub(crate) const ROUNDEL_NATIONAL_RAIL: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="50" viewBox="0 0 80 50">
+  <rect fill="#FF4200" width="80" height="50" x="0" y="0" />
+  <path fill="#FFF" d="M 71.666665,11.99972 L 71.666808,17.8331 H 54.583332 L 37.916664,26.1665 H 71.666808 L 71.666665,32 H 37.916664 L 60.00012,41.16674 H 45.000089 L 25.416666,31.99997 H 8.3333499 V 26.1665 H 25.416666 L 42.083333,17.8331 H 8.333333 L 8.333317,11.99993 H 42.083333 L 19.99994,2.83319 H 34.99997 L 54.583232,12.00014 Z" />
+</svg>"##;
 
         pub(crate) const ROUNDEL_EMIRATES_AIRLINE: &str = r##"
 <svg width="500" height="408" xmlns="http://www.w3.org/2000/svg">
@@ -13878,48 +13737,6 @@ window.initMap = async function() {
         // ============================================================
         // VIEWPORT TRANSLATION SYNC FOR CANVAS DURING PANNING
         // ============================================================
-        // This fixes the desynchronization where stations appear glued to screen
-        // while railway lines move during panning. We track the pan offset and
-        // apply CSS translate3d to the canvas during drag operations.
-        window._panStartPixel = null;
-        window._panStartCanvasTransform = null;
-
-        window.map.on('movestart', function() {
-            window._isInteracting = true;
-            clearTimeout(window._renderDebounceTimer);
-            console.log('[PERF] movestart - interaction begun');
-            
-            // Lock in the exact screen pixel origin when dragging starts
-            window._panStartPixel = window.map.project(window.map.getCenter(), window.map.getZoom());
-            
-            // Disable CSS transition on canvas to prevent rubber-banding
-            var stationCanvas = document.getElementById('station-render-canvas') || window._stationCanvas;
-            if (stationCanvas) {
-                stationCanvas.style.transition = 'none';
-            }
-        });
-
-        window.map.on('move', function() {
-            if (!window._panStartPixel) return;
-            
-            var stationCanvas = document.getElementById('station-render-canvas') || window._stationCanvas;
-            if (!stationCanvas) return;
-            
-            // Calculate the pixel delta from where we started
-            var currentPixel = window.map.project(window.map.getCenter(), window.map.getZoom());
-            var dx = window._panStartPixel.x - currentPixel.x;
-            var dy = window._panStartPixel.y - currentPixel.y;
-            
-            // Apply hardware-accelerated CSS transform to move canvas with map
-            stationCanvas.style.transform = 'translate3d(' + dx + 'px, ' + dy + 'px, 0)';
-        });
-
-        window.map.on('zoomstart', function() {
-            window._isInteracting = true;
-            clearTimeout(window._renderDebounceTimer);
-        });
-
-        // ============================================================
         // PRE-RENDER ROUNDEL IMAGES TO OFFSCREEN CANVASES
         // ============================================================
         window._roundelImages = {};
@@ -13951,10 +13768,23 @@ window.initMap = async function() {
                     var p = new Promise(function(resolve) {
                         img.onload = function() {
                             var offscreen = document.createElement('canvas');
+                            // Preserve aspect ratio to prevent flattening
+                            var aspectRatio = img.width / img.height;
+                            var drawWidth, drawHeight;
+                            if (aspectRatio > 1) {
+                                drawWidth = renderSize;
+                                drawHeight = renderSize / aspectRatio;
+                            } else {
+                                drawHeight = renderSize;
+                                drawWidth = renderSize * aspectRatio;
+                            }
                             offscreen.width = renderSize;
                             offscreen.height = renderSize;
                             var ctx2 = offscreen.getContext('2d');
-                            ctx2.drawImage(img, 0, 0, renderSize, renderSize);
+                            // Center the image in the canvas
+                            var offsetX = (renderSize - drawWidth) / 2;
+                            var offsetY = (renderSize - drawHeight) / 2;
+                            ctx2.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
                             URL.revokeObjectURL(url);
                             window._roundelImages[category] = offscreen;
                             resolve();
@@ -13968,7 +13798,7 @@ window.initMap = async function() {
             Promise.all(promises).then(function() {
                 window._roundelImagesReady = true;
                 console.log('[RENDER] Roundel images pre-rendered: ' + Object.keys(window._roundelImages).length + ' categories');
-                if (window._stationCanvas) window._stationCanvas.redraw();
+                if (window._stationCanvas) window._stationCanvas._redraw();
             });
         };
 
@@ -14029,66 +13859,108 @@ window.initMap = async function() {
         };
 
         // ============================================================
-        // CANVAS-BASED STATION RENDERING (zero DOM markers)
+        // NATIVE LEAFLET LAYER SUBCLASS FOR STATION RENDERING
         // ============================================================
+        // This fixes the jitter/coordinate problem by using proper Leaflet
+        // layer integration instead of fighting the GPU with manual transforms.
         window.allStations = [];
-        window._stationCanvas = (function() {
-            var canvas = document.createElement('canvas');
-            canvas.id = 'station-render-canvas';
-            canvas.className = 'leaflet-zoom-animated';
-            canvas.style.position = 'absolute';
-            canvas.style.willChange = 'transform';
-            canvas.style.pointerEvents = 'none';
-            var ctx = canvas.getContext('2d');
-            var _bounds = null;
-            var mergedStations = [];
-            var visibleHits = [];
+        
+        var StationCanvasLayer = L.Layer.extend({
+            initialize: function(stations) {
+                this.stations = stations || [];
+                this._canvas = null;
+                this._ctx = null;
+                this._topLeftOffset = null;
+                this._dpr = 1;
+                this._visibleHits = [];
+            },
 
-            var pane = window.map.getPane('stations');
-            pane.appendChild(canvas);
+            onAdd: function(map) {
+                this._map = map;
 
-            function update() {
-                var map = window.map;
-                var size = map.getSize();
-                var pad = 0.1;
-                var min = map.containerPointToLayerPoint(size.multiplyBy(-pad)).round();
-                _bounds = L.bounds(min, min.add(size.multiplyBy(1 + pad * 2)).round());
-                var bSize = _bounds.getSize();
+                // Create canvas element natively
+                this._canvas = L.DomUtil.create('canvas', 'leaflet-zoom-animated leaflet-layer');
+                this._canvas.style.pointerEvents = 'none';
+                this._canvas.style.position = 'absolute';
+                
+                // CRITICAL FIX: Inject into overlayPane so GPU handles panning
+                // This eliminates the 1-frame lag that causes jitter
+                map.getPanes().overlayPane.appendChild(this._canvas);
+
+                this._ctx = this._canvas.getContext('2d');
+
+                // Bind lifecycle events - only redraw on moveend, not move
+                // This lets the GPU handle smooth panning via CSS transforms
+                map.on('moveend', this._reset, this);
+                map.on('resize', this._reset, this);
+                map.on('zoomend', this._reset, this);
+
+                // Handle zoom animation for smooth scaling
+                if (map.options.zoomAnimation && L.Browser.any3d) {
+                    map.on('zoomanim', this._animateZoom, this);
+                }
+
+                this._reset();
+            },
+
+            onRemove: function(map) {
+                L.DomUtil.remove(this._canvas);
+                map.off('moveend', this._reset, this);
+                map.off('resize', this._reset, this);
+                map.off('zoomend', this._reset, this);
+                if (map.options.zoomAnimation) {
+                    map.off('zoomanim', this._animateZoom, this);
+                }
+            },
+
+            _reset: function() {
+                // Calculate canvas position relative to the moving map pane (layer space)
+                var topLeft = this._map.containerPointToLayerPoint([0, 0]);
+                L.DomUtil.setPosition(this._canvas, topLeft);
+
+                var size = this._map.getSize();
                 var dpr = window.devicePixelRatio || 1;
-                canvas.width = bSize.x * dpr;
-                canvas.height = bSize.y * dpr;
-                canvas.style.width = bSize.x + 'px';
-                canvas.style.height = bSize.y + 'px';
-                L.DomUtil.setPosition(canvas, _bounds.min);
-                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-            }
+                
+                this._canvas.width = size.x * dpr;
+                this._canvas.height = size.y * dpr;
+                this._canvas.style.width = size.x + 'px';
+                this._canvas.style.height = size.y + 'px';
 
-            function redraw() {
-                if (!window.map) return;
-                var t0 = performance.now();
-                update();
-                var map = window.map;
-                var dpr = window.devicePixelRatio || 1;
-                var bSize = _bounds.getSize();
+                this._topLeftOffset = topLeft;
+                this._dpr = dpr;
+                
+                this._redraw();
+            },
+
+            _redraw: function() {
+                if (!this._topLeftOffset || !this._ctx) return;
+
+                var ctx = this._ctx;
+                var map = this._map;
+                var dpr = this._dpr;
+                var topLeft = this._topLeftOffset;
+
+                ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
                 ctx.save();
-                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-                ctx.clearRect(0, 0, bSize.x, bSize.y);
-                ctx.restore();
-                visibleHits = [];
-                if (!mergedStations || !mergedStations.length) return;
+                ctx.scale(dpr, dpr);
+
+                this._visibleHits = [];
+                if (!this.stations || !this.stations.length) {
+                    ctx.restore();
+                    return;
+                }
+
                 var mapBounds = map.getBounds().pad(0.15);
                 var zoom = map.getZoom();
-                // Roundel sizes: bigger at deep zoom for readability
                 var stSize = zoom >= 17 ? 36 : zoom >= 15 ? 30 : zoom >= 13 ? 24 : zoom >= 11 ? 18 : 12;
                 var half = stSize / 2;
                 var rendered = 0;
                 var colors = { underground:'#E32017', overground:'#EE7C0E', elizabeth:'#6950A1', dlr:'#00A4A7', tram:'#84B817', 'national-rail':'#ED1C24', proposed:'#FFD700' };
 
-                // Build multi-roundel offset map: stations with same name but different categories
-                // get placed side-by-side instead of overlapping
+                // Build multi-roundel offset map
                 var nameToIndices = {};
-                for (var i = 0; i < mergedStations.length; i++) {
-                    var st = mergedStations[i];
+                for (var i = 0; i < this.stations.length; i++) {
+                    var st = this.stations[i];
                     var nn = (st.name || '').replace(/ \(.*?\)$/i, '')
                                .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
                                .replace(/ Station$/i, '')
@@ -14096,12 +13968,12 @@ window.initMap = async function() {
                     if (!nameToIndices[nn]) nameToIndices[nn] = [];
                     nameToIndices[nn].push(i);
                 }
-                // Assign horizontal pixel offsets for multi-roundel stations
-                var offsetX = new Array(mergedStations.length);
+
+                var offsetX = new Array(this.stations.length);
                 for (var nn in nameToIndices) {
                     var arr = nameToIndices[nn];
                     if (arr.length <= 1) { offsetX[arr[0]] = 0; continue; }
-                    var gap = 4; // pixels between roundels
+                    var gap = 4;
                     var totalWidth = arr.length * stSize + (arr.length - 1) * gap;
                     var startX = -totalWidth / 2 + stSize / 2;
                     for (var j = 0; j < arr.length; j++) {
@@ -14109,15 +13981,18 @@ window.initMap = async function() {
                     }
                 }
 
-                for (var i = 0; i < mergedStations.length; i++) {
-                    var st = mergedStations[i];
-                    if (st.lat < mapBounds.getSouth() || st.lat > mapBounds.getNorth() ||
-                        st.lon < mapBounds.getWest() || st.lon > mapBounds.getEast()) continue;
-                    var pt = map.latLngToLayerPoint([st.lat, st.lon]);
-                    // Apply horizontal offset for multi-roundel stations
-                    var ox = offsetX[i] || 0;
-                    var drawX = pt.x + ox;
-                    var drawY = pt.y;
+                for (var i = 0; i < this.stations.length; i++) {
+                    var st = this.stations[i];
+                    var latLng = L.latLng(st.lat, st.lon);
+                    
+                    // SPATIAL CULLING: Skip off-screen stations
+                    if (!mapBounds.contains(latLng)) continue;
+
+                    // THE COORDINATE FIX: Use layer points relative to canvas offset
+                    var layerPoint = map.latLngToLayerPoint(latLng);
+                    var drawX = layerPoint.x - topLeft.x + (offsetX[i] || 0);
+                    var drawY = layerPoint.y - topLeft.y;
+
                     var img = window._roundelImages[st.category];
                     if (img && window._roundelImagesReady) {
                         ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
@@ -14130,16 +14005,15 @@ window.initMap = async function() {
                         ctx.strokeStyle = colors[st.category] || '#E32017';
                         ctx.stroke();
                     }
-                    visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
+
+                    this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
                     rendered++;
-                    
-                    // Draw station name labels at deep zoom for readability
+
                     if (zoom >= 16 && st.name) {
                         ctx.save();
                         ctx.font = (zoom >= 17 ? '600 11px' : '500 10px') + " 'SF Mono', 'Consolas', sans-serif";
                         ctx.textAlign = 'center';
                         ctx.textBaseline = 'top';
-                        // Text shadow for readability over map tiles
                         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
                         ctx.fillText(st.name, drawX + 1, drawY + half + 5);
                         ctx.fillStyle = '#ffffff';
@@ -14147,29 +14021,39 @@ window.initMap = async function() {
                         ctx.restore();
                     }
                 }
-                var elapsed = (performance.now() - t0).toFixed(1);
-                console.log('[PERF][STATIONS] Canvas rendered ' + rendered + ' stations in ' + elapsed + 'ms (zoom=' + zoom + ')');
-            }
 
-            function setStations(stations) {
+                ctx.restore();
+                console.log('[PERF][STATIONS] Native layer rendered ' + rendered + ' stations (zoom=' + zoom + ')');
+            },
+
+            _animateZoom: function(e) {
+                var scale = this._map.getZoomScale(e.zoom);
+                var offset = this._map._latLngBoundsToNewLayerBounds(this._map.getBounds(), e.zoom, e.center).min;
+                L.DomUtil.setTransform(this._canvas, offset, scale);
+            },
+
+            setStations: function(stations) {
                 window.allStations = stations;
-                mergedStations = window._mergeStations(stations);
-                redraw();
-            }
+                this.stations = window._mergeStations(stations);
+                this._redraw();
+            },
 
-            function hitTest(containerPt) {
-                if (!_bounds || !visibleHits.length) return null;
-                var lp = window.map.containerPointToLayerPoint(containerPt);
-                for (var i = visibleHits.length - 1; i >= 0; i--) {
-                    var t = visibleHits[i];
-                    var dx = lp.x - t.x, dy = lp.y - t.y;
+            hitTest: function(containerPt) {
+                if (!this._visibleHits.length) return null;
+                var lp = this._map.containerPointToLayerPoint(containerPt);
+                var topLeft = this._topLeftOffset;
+                for (var i = this._visibleHits.length - 1; i >= 0; i--) {
+                    var t = this._visibleHits[i];
+                    var dx = (lp.x - topLeft.x) - t.x, dy = (lp.y - topLeft.y) - t.y;
                     if (dx*dx + dy*dy < t.r*t.r) return t.st;
                 }
                 return null;
             }
+        });
 
-            return { update: update, redraw: redraw, setStations: setStations, hitTest: hitTest };
-        })();
+        // Create and add the layer to the map
+        window._stationCanvas = new StationCanvasLayer([]);
+        window._stationCanvas.addTo(window.map);
 
         // Station tooltip (single shared DOM element)
         window._stationTooltip = document.createElement('div');
@@ -14193,7 +14077,7 @@ window.initMap = async function() {
         // Compatibility wrapper so IPC updateStations still works
         window.renderStations = function(stations) {
             if (stations) window._stationCanvas.setStations(stations);
-            else window._stationCanvas.redraw();
+            else window._stationCanvas._redraw();
         };
 
         window.stationRetries = 0;
@@ -15520,7 +15404,12 @@ window.__consoleDupCount = 0;
         /// process has no access to the parent's runtime.
         #[component]
         pub fn ConsoleStandaloneApp() -> Element {
-            log_info("ConsoleStandaloneApp - initialising standalone console");
+            // Log initialization only once on mount
+            use_effect(|| {
+                log_info("ConsoleStandaloneApp - initialising standalone console");
+                async move {}
+            });
+
             // Parse --port= from CLI args (set by parent process spawn)
             let port: u16 = std::env::args()
                 .filter_map(|a| {
@@ -16879,7 +16768,73 @@ window.__consoleDupCount = 0;
                             }
                         }
                         div {
-                            style: "display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag;",
+                            style: "display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag;",
+                            // Search Bar in Menu Bar
+                            div {
+                                style: "position: relative;",
+                                input {
+                                    id: "global-search",
+                                    placeholder: "🔍 Search stations, lines...",
+                                    "aria-label": "Search stations and lines",
+                                    autocomplete: "off",
+                                    style: "width: 280px; padding: 6px 12px; background: rgba(8,10,14,.8); border: 1px solid rgba(255,255,255,.15); border-radius: 16px; color: #fff; font-size: 12px; outline: none; transition: all 0.2s;",
+                                    value: "{search_query}",
+                                    oninput: move |e| {
+                                        let q = e.value().trim().to_string();
+                                        search_query.set(q.clone());
+                                        if q.len() < 2 {
+                                            search_results.set(Vec::new());
+                                            show_search_results.set(false);
+                                        } else {
+                                            let query_for_search = q.clone();
+                                            spawn(async move {
+                                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                                let req = StationSearchRequest { query: query_for_search, limit: 8 };
+                                                if let Some(results) = post_api::<_, Vec<StationSearchResult>>("/api/search/stations", &req).await {
+                                                    search_results.set(results);
+                                                    show_search_results.set(true);
+                                                }
+                                            });
+                                        }
+                                    }
+                                }
+                                {
+                                    if *show_search_results.read() && !search_results.read().is_empty() {
+                                        Some(rsx! {
+                                            div {
+                                                id: "search-results",
+                                                style: "position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: rgba(8,10,14,.98); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; overflow: hidden; box-shadow: 0 12px 32px rgba(0,0,0,.5); max-height: 280px; overflow-y: auto; z-index: 10001;",
+                                                {search_results.read().iter().map(|r| {
+                                                    let s = r.station.clone();
+                                                    let score_pct = (r.score * 100.0).round() as i64;
+                                                    let lines_label = s.lines.join(" · ");
+                                                    let lat = s.coord.lat;
+                                                    let lon = s.coord.lon;
+                                                    rsx! {
+                                                        div {
+                                                            key: "{s.id}",
+                                                            class: "sr-item",
+                                                            style: "padding: 8px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; color: #fff;",
+                                                            onclick: move |_| {
+                                                                eval(&map_set_view_js(lat, lon, 15));
+                                                                show_search_results.set(false);
+                                                                search_query.set(String::new());
+                                                            },
+                                                            div {
+                                                                div { style: "font-size: 12px; font-weight: 700; color: #fff;", "{s.name}" }
+                                                                div { style: "font-size: 10px; color: #888;", "{lines_label}" }
+                                                            }
+                                                            div { style: "font-size: 10px; color: #00bcd4; font-weight: 700;", "{score_pct}%" }
+                                                        }
+                                                    }
+                                                })}
+                                            }
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                }
+                            }
                             // Menu Bar
                             div {
                                 style: "display: flex; gap: 2px;",
@@ -18066,84 +18021,6 @@ window.__consoleDupCount = 0;
                 }
 
                 // --- MIGRATED NATIVE DIOXUS COMPONENT OVERLAYS ---
-
-                // A. Fuzzy Search Bar Dropdown
-                div {
-                    class: "search-bar-wrap",
-                    role: "search",
-                    "aria-label": "Station search",
-                    style: "position: fixed; top: 52px; left: 50%; transform: translateX(-50%); z-index: 11000; width: 360px; max-width: calc(100vw - 32px); pointer-events: auto;",
-                    div {
-                        style: "position: relative",
-                        input {
-                            id: "global-search",
-                            placeholder: "🔍 Search stations, lines...",
-                            "aria-label": "Search stations and lines",
-                            autocomplete: "off",
-                            style: "width: 100%; padding: 11px 16px; background: rgba(8,10,14,.92); border: 1px solid rgba(255,255,255,.15); border-radius: 24px; color: #fff; font-size: 14px; outline: none; box-shadow: 0 8px 24px rgba(0,0,0,.4); backdrop-filter: blur(12px);",
-                            value: "{search_query}",
-                            oninput: move |e| {
-                                let q = e.value().trim().to_string();
-                                search_query.set(q.clone());
-                                if q.len() < 2 {
-                                    search_results.set(Vec::new());
-                                    show_search_results.set(false);
-                                } else {
-                                    // Debounced search: wait 150ms before firing the API request.
-                                    // If the user keeps typing, the previous spawn is still running
-                                    // but its results will be overwritten by the newer one.
-                                    let query_for_search = q.clone();
-                                    spawn(async move {
-                                        // 150ms debounce delay — only the most recent keystroke's
-                                        // search will complete and update results
-                                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                                        let req = StationSearchRequest { query: query_for_search, limit: 8 };
-                                        if let Some(results) = post_api::<_, Vec<StationSearchResult>>("/api/search/stations", &req).await {
-                                            search_results.set(results);
-                                            show_search_results.set(true);
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                        {
-                            if *show_search_results.read() && !search_results.read().is_empty() {
-                                Some(rsx! {
-                                    div {
-                                        id: "search-results",
-                                        style: "position: absolute; top: calc(100% + 6px); left: 0; right: 0; background: rgba(8,10,14,.96); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; overflow: hidden; box-shadow: 0 12px 32px rgba(0,0,0,.5); max-height: 320px; overflow-y: auto;",
-                                        {search_results.read().iter().map(|r| {
-                                            let s = r.station.clone();
-                                            let score_pct = (r.score * 100.0).round() as i64;
-                                            let lines_label = s.lines.join(" · ");
-                                            let lat = s.coord.lat;
-                                            let lon = s.coord.lon;
-                                            rsx! {
-                                                div {
-                                                    key: "{s.id}",
-                                                    class: "sr-item",
-                                                    style: "padding: 10px 14px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; color: #fff;",
-                                                    onclick: move |_| {
-                                                        eval(&map_set_view_js(lat, lon, 15));
-                                                        show_search_results.set(false);
-                                                        search_query.set(String::new());
-                                                    },
-                                                    div {
-                                                        div { style: "font-size: 13px; font-weight: 700; color: #fff;", "{s.name}" }
-                                                        div { style: "font-size: 11px; color: #888;", "{lines_label}" }
-                                                    }
-                                                    div { style: "font-size: 10px; color: #00bcd4; font-weight: 700;", "{score_pct}%" }
-                                                }
-                                            }
-                                        })}
-                                    }
-                                })
-                            } else {
-                                None
-                            }
-                        }
-                    }
-                }
 
                 // B. Basemap Switcher Panel Overlay (Top Right)
                 div {
