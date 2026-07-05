@@ -2626,11 +2626,9 @@ mod spatial {
     }
 
     mod morton {
-        use super::transit_grid::{batch_distance_squared, TransitNetworkGrid};
         use crate::logger::*;
         use crate::primitives::*;
         use crate::routing::Node;
-        use serde::Serialize;
         use std::cmp::Ordering as CmpOrdering;
         use std::collections::HashMap;
 
@@ -15407,7 +15405,6 @@ window.__consoleDupCount = 0;
             // Log initialization only once on mount
             use_effect(|| {
                 log_info("ConsoleStandaloneApp - initialising standalone console");
-                async move {}
             });
 
             // Parse --port= from CLI args (set by parent process spawn)
