@@ -32,7 +32,7 @@ serde_json = "1.0"
 toml = "0.8"
 
 # Geometry & Spatial
-geo = "0.28"
+geo = "0.33"
 rstar = "0.12"
 
 # Async Utilities
