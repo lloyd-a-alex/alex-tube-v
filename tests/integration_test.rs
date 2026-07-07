@@ -38,18 +38,36 @@ fn build_grid(n: usize) -> TransitNetworkGrid {
         cx.push(-0.1 + i as f32 * 0.001);
         cy.push(51.5 + i as f32 * 0.001);
         offsets.push(targets.len() as u32);
-        if i > 0 { targets.push((i - 1) as u32); weights.push(100.0); }
-        if i + 1 < n { targets.push((i + 1) as u32); weights.push(100.0); }
+        if i > 0 {
+            targets.push((i - 1) as u32);
+            weights.push(100.0);
+        }
+        if i + 1 < n {
+            targets.push((i + 1) as u32);
+            weights.push(100.0);
+        }
     }
     offsets.push(targets.len() as u32);
-    TransitNetworkGrid { node_count: n, coords_x: cx, coords_y: cy, edge_offsets: offsets, edge_targets: targets, edge_weights: weights }
+    TransitNetworkGrid {
+        node_count: n,
+        coords_x: cx,
+        coords_y: cy,
+        edge_offsets: offsets,
+        edge_targets: targets,
+        edge_weights: weights,
+    }
 }
 
 // ── batch_distance_squared ──────────────────────────────────────────────────
 
 fn batch_distance_squared(qx: f32, qy: f32, xs: &[f32], ys: &[f32]) -> Vec<f32> {
-    xs.iter().zip(ys.iter())
-        .map(|(&x, &y)| { let dx = x - qx; let dy = y - qy; dx * dx + dy * dy })
+    xs.iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| {
+            let dx = x - qx;
+            let dy = y - qy;
+            dx * dx + dy * dy
+        })
         .collect()
 }
 
@@ -59,7 +77,8 @@ fn find_stations_within_radius(g: &TransitNetworkGrid, qx: f32, qy: f32, r: f32)
     const M: f32 = 1.6094;
     let r2 = (r * M) * (r * M);
     batch_distance_squared(qx, qy, &g.coords_x, &g.coords_y)
-        .iter().enumerate()
+        .iter()
+        .enumerate()
         .filter_map(|(i, &d)| if d <= r2 { Some(i as u32) } else { None })
         .collect()
 }
@@ -67,15 +86,26 @@ fn find_stations_within_radius(g: &TransitNetworkGrid, qx: f32, qy: f32, r: f32)
 // ── RouteScratchpad + A* ────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
-struct AStarNode { idx: usize, f_cost: f32 }
-impl PartialEq for AStarNode { fn eq(&self, o: &Self) -> bool { self.f_cost == o.f_cost } }
+struct AStarNode {
+    idx: usize,
+    f_cost: f32,
+}
+impl PartialEq for AStarNode {
+    fn eq(&self, o: &Self) -> bool {
+        self.f_cost == o.f_cost
+    }
+}
 impl Eq for AStarNode {}
 impl PartialOrd for AStarNode {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
 }
 impl Ord for AStarNode {
     fn cmp(&self, o: &Self) -> Ordering {
-        o.f_cost.partial_cmp(&self.f_cost).unwrap_or(Ordering::Equal)
+        o.f_cost
+            .partial_cmp(&self.f_cost)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -97,11 +127,17 @@ impl RouteScratchpad {
     }
     fn reset(&mut self, n: usize) {
         self.heap.clear();
-        for i in 0..n { self.g_cost[i] = f32::INFINITY; self.came_from[i] = usize::MAX; self.closed[i] = false; }
+        for i in 0..n {
+            self.g_cost[i] = f32::INFINITY;
+            self.came_from[i] = usize::MAX;
+            self.closed[i] = false;
+        }
     }
     fn astar(&mut self, g: &TransitNetworkGrid, start: usize, goal: usize) -> Vec<usize> {
         let n = g.node_count;
-        if start >= n || goal >= n { return Vec::new(); }
+        if start >= n || goal >= n {
+            return Vec::new();
+        }
         self.reset(n);
         let h = |i: usize| -> f32 {
             let dx = g.coords_x[i] - g.coords_x[goal];
@@ -109,27 +145,40 @@ impl RouteScratchpad {
             (dx * dx + dy * dy).sqrt()
         };
         self.g_cost[start] = 0.0;
-        self.heap.push(AStarNode { idx: start, f_cost: h(start) });
+        self.heap.push(AStarNode {
+            idx: start,
+            f_cost: h(start),
+        });
         while let Some(AStarNode { idx, .. }) = self.heap.pop() {
             if idx == goal {
                 let mut path = Vec::new();
                 let mut cur = goal;
-                while cur != usize::MAX { path.push(cur); cur = self.came_from[cur]; }
+                while cur != usize::MAX {
+                    path.push(cur);
+                    cur = self.came_from[cur];
+                }
                 path.reverse();
                 return path;
             }
-            if self.closed[idx] { continue; }
+            if self.closed[idx] {
+                continue;
+            }
             self.closed[idx] = true;
             let edges = g.get_edges(idx as u32);
             let weights = g.get_edge_weights(idx as u32);
             for (&next, &w) in edges.iter().zip(weights.iter()) {
                 let next = next as usize;
-                if self.closed[next] { continue; }
+                if self.closed[next] {
+                    continue;
+                }
                 let tg = self.g_cost[idx] + w;
                 if tg < self.g_cost[next] {
                     self.came_from[next] = idx;
                     self.g_cost[next] = tg;
-                    self.heap.push(AStarNode { idx: next, f_cost: tg + h(next) });
+                    self.heap.push(AStarNode {
+                        idx: next,
+                        f_cost: tg + h(next),
+                    });
                 }
             }
         }
@@ -141,7 +190,10 @@ impl RouteScratchpad {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-struct SpatialCoordPod { x: f32, y: f32 }
+struct SpatialCoordPod {
+    x: f32,
+    y: f32,
+}
 unsafe impl bytemuck::Zeroable for SpatialCoordPod {}
 unsafe impl bytemuck::Pod for SpatialCoordPod {}
 
@@ -168,7 +220,7 @@ fn test_transit_network_grid_construction() {
     assert_eq!(grid.coords_x.len(), 100);
     assert_eq!(grid.coords_y.len(), 100);
     assert_eq!(grid.edge_offsets.len(), 101); // CSR sentinel
-    // First node has 1 edge (right), last has 1 edge (left), middle has 2
+                                              // First node has 1 edge (right), last has 1 edge (left), middle has 2
     assert_eq!(grid.get_edges(0).len(), 1);
     assert_eq!(grid.get_edges(50).len(), 2);
     assert_eq!(grid.get_edges(99).len(), 1);
@@ -191,7 +243,10 @@ fn test_route_scratchpad_astar() {
     let grid = build_grid(50);
     let mut scratch = RouteScratchpad::new(50);
     let path = scratch.astar(&grid, 0, 49);
-    assert!(!path.is_empty(), "A* should find a path on a connected line graph");
+    assert!(
+        !path.is_empty(),
+        "A* should find a path on a connected line graph"
+    );
     assert_eq!(*path.first().unwrap(), 0);
     assert_eq!(*path.last().unwrap(), 49);
     // On a line graph, shortest path visits every node
@@ -231,9 +286,19 @@ fn test_find_stations_within_radius() {
     let grid = build_grid(1000);
     // Query at the first station's coordinates with a generous radius
     let found = find_stations_within_radius(&grid, grid.coords_x[0], grid.coords_y[0], 500.0);
-    assert!(!found.is_empty(), "Should find at least the query station itself");
-    assert!(found.contains(&0), "Should contain the query station index 0");
+    assert!(
+        !found.is_empty(),
+        "Should find at least the query station itself"
+    );
+    assert!(
+        found.contains(&0),
+        "Should contain the query station index 0"
+    );
     // With a very large radius, should find all stations
     let all = find_stations_within_radius(&grid, 0.0, 51.5, 1_000_000.0);
-    assert_eq!(all.len(), 1000, "Huge radius should capture all 1000 stations");
+    assert_eq!(
+        all.len(),
+        1000,
+        "Huge radius should capture all 1000 stations"
+    );
 }

@@ -1,4 +1,4 @@
-﻿#![allow(dependency_on_unit_never_type_fallback)]
+#![allow(dependency_on_unit_never_type_fallback)]
 // ^ REQUIRED: Suppresses compiler warnings triggered by type inference
 //   regressions in deeply nested macro expansions within Dioxus rsx!
 //   components. The never-type fallback change in Rust 2024 causes
@@ -161,95 +161,91 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// - `NotFound` → 404 Not Found
 /// - `Internal` → 500 Internal Server Error
 ///
-/// # Examples
-///
-/// ```rust
-/// # use std::error::Error;
-/// # fn main() -> Result<(), Box<dyn Error>> {
-/// let result: Result<(), AppError> = Err(AppError::NotFound("Station".into()));
-/// assert_eq!(result.unwrap_err().to_string(), "Not found: Station");
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Debug, thiserror::Error)]
-pub enum AppError {
-    #[error("I/O error: {0}")]
-    Io(#[from] std::io::Error),
+pub(crate) use error::{AppError, AppResult};
 
-    #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+mod error {
+    use crate::logger::log_error;
 
-    #[error("JSON serialisation error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[derive(Debug, thiserror::Error)]
+    pub enum AppError {
+        #[error("I/O error: {0}")]
+        Io(#[from] std::io::Error),
 
-    #[error("Database error: {0}")]
-    Database(String),
+        #[error("HTTP request failed: {0}")]
+        Http(#[from] reqwest::Error),
 
-    #[error("External API error: {0}")]
-    ExternalApi(String),
+        #[error("JSON serialisation error: {0}")]
+        Json(#[from] serde_json::Error),
 
-    #[error("Validation error: {0}")]
-    Validation(String),
+        #[error("Database error: {0}")]
+        Database(String),
 
-    #[error("Not found: {0}")]
-    NotFound(String),
+        #[error("External API error: {0}")]
+        ExternalApi(String),
 
-    #[error("Internal error: {0}")]
-    Internal(String),
+        #[error("Validation error: {0}")]
+        Validation(String),
 
-    #[error("Configuration error: {0}")]
-    Config(String),
-}
+        #[error("Not found: {0}")]
+        NotFound(String),
 
-impl AppError {
-    /// Convert to a JSON-serialisable status code for the API response.
-    fn status_code(&self) -> u16 {
-        match self {
-            Self::NotFound(_) => 404,
-            Self::Validation(_) => 400,
-            Self::ExternalApi(_) => 502,
-            Self::Database(_) | Self::Io(_) | Self::Internal(_) | Self::Config(_) => 500,
-            Self::Http(_) | Self::Json(_) => 500,
+        #[error("Internal error: {0}")]
+        Internal(String),
+
+        #[error("Configuration error: {0}")]
+        Config(String),
+    }
+
+    impl AppError {
+        /// Convert to a JSON-serialisable status code for the API response.
+        fn status_code(&self) -> u16 {
+            match self {
+                Self::NotFound(_) => 404,
+                Self::Validation(_) => 400,
+                Self::ExternalApi(_) => 502,
+                Self::Database(_) | Self::Io(_) | Self::Internal(_) | Self::Config(_) => 500,
+                Self::Http(_) | Self::Json(_) => 500,
+            }
         }
     }
-}
 
-// Axum responses from AppError
-impl axum::response::IntoResponse for AppError {
-    fn into_response(self) -> axum::response::Response {
-        let code = self.status_code();
-        // Security: scrub internal details from HTTP responses.
-        // Only validation and not-found errors reveal details to the client.
-        // All other errors return opaque tokens to prevent information leakage
-        // about file paths, database schemas, or stack traces.
-        let user_message = match &self {
-            Self::Validation(msg) => msg.clone(),
-            Self::NotFound(msg) => msg.clone(),
-            Self::ExternalApi(msg) => format!("External service error: {}", msg),
-            _ => {
-                // Log the full error internally, but return an opaque token.
-                log_error(&format!(
-                    "AppError returned to client (scrubbed): {:?}",
-                    self
-                ));
-                "An internal error occurred. Please try again.".to_string()
-            }
-        };
-        let body = serde_json::json!({
-            "success": false,
-            "error": user_message,
-        });
-        (
-            axum::http::StatusCode::from_u16(code)
-                .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
-            axum::Json(body),
-        )
-            .into_response()
+    // Axum responses from AppError
+    impl axum::response::IntoResponse for AppError {
+        fn into_response(self) -> axum::response::Response {
+            let code = self.status_code();
+            // Security: scrub internal details from HTTP responses.
+            // Only validation and not-found errors reveal details to the client.
+            // All other errors return opaque tokens to prevent information leakage
+            // about file paths, database schemas, or stack traces.
+            let user_message = match &self {
+                Self::Validation(msg) => msg.clone(),
+                Self::NotFound(msg) => msg.clone(),
+                Self::ExternalApi(msg) => format!("External service error: {}", msg),
+                _ => {
+                    // Log the full error internally, but return an opaque token.
+                    log_error(&format!(
+                        "AppError returned to client (scrubbed): {:?}",
+                        self
+                    ));
+                    "An internal error occurred. Please try again.".to_string()
+                }
+            };
+            let body = serde_json::json!({
+                "success": false,
+                "error": user_message,
+            });
+            (
+                axum::http::StatusCode::from_u16(code)
+                    .unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+                axum::Json(body),
+            )
+                .into_response()
+        }
     }
-}
 
-/// Convenience alias used throughout the codebase.
-type AppResult<T> = Result<T, AppError>;
+    /// Convenience alias used throughout the codebase.
+    pub(crate) type AppResult<T> = Result<T, AppError>;
+}
 
 // ============================================================================
 // SERVICE TRAIT DEFINITIONS ? Abstract external API boundaries
@@ -542,19 +538,12 @@ static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! 
     "windrush" => "#00BFFF",
 };
 
-#[allow(unused_imports)]
 pub(crate) use config::*;
-#[allow(unused_imports)]
 pub(crate) use logger::*;
-#[allow(unused_imports)]
 pub(crate) use primitives::*;
-#[allow(unused_imports)]
 pub(crate) use routing::*;
-#[allow(unused_imports)]
 pub(crate) use server::*;
-#[allow(unused_imports)]
 pub(crate) use spatial::*;
-#[allow(unused_imports)]
 pub(crate) use ui::*;
 
 // Consolidated CSS natively inline
@@ -585,8 +574,8 @@ mod logger {
         }
     }
 
+    /* unused
     /// Read the current crash telemetry frame (for UI polling).
-    #[allow(dead_code)]
     pub(crate) fn read_crash_telemetry() -> String {
         CRASH_TELEMETRY_FRAME
             .get()
@@ -594,6 +583,7 @@ mod logger {
             .map(|g| g.clone())
             .unwrap_or_default()
     }
+    */
 
     pub(crate) fn accumulate_crash_text(msg: &str) {
         let mutex = CRASH_LOG_ACCUMULATOR.get_or_init(|| std::sync::Mutex::new(String::new()));
@@ -661,13 +651,16 @@ mod logger {
             println!("{}", message);
         }
         let storage = get_log_storage();
-        if let Ok(mut logs) = storage.write() {
-            if logs.len() >= DEFAULT_MAX_LOG_ENTRIES {
-                logs.pop_front();
+        match storage.write() {
+            Ok(mut logs) => {
+                if logs.len() >= DEFAULT_MAX_LOG_ENTRIES {
+                    logs.pop_front();
+                }
+                logs.push_back(message.to_string());
             }
-            logs.push_back(message.to_string());
-        } else {
-            eprintln!("[LOGGING ERROR] Failed to acquire write lock on log storage");
+            _ => {
+                eprintln!("[LOGGING ERROR] Failed to acquire write lock on log storage");
+            }
         }
     }
 
@@ -872,11 +865,12 @@ mod logger {
 
     pub(crate) fn get_all_logs() -> String {
         let storage = get_log_storage();
-        if let Ok(logs) = storage.read() {
-            let vec: Vec<String> = logs.iter().cloned().collect();
-            vec.join("\n")
-        } else {
-            String::new()
+        match storage.read() {
+            Ok(logs) => {
+                let vec: Vec<String> = logs.iter().cloned().collect();
+                vec.join("\n")
+            }
+            _ => String::new(),
         }
     }
 
@@ -905,7 +899,7 @@ mod logger {
         use std::sync::Arc;
 
         // -- Win32 FFI declarations ----------------------------------------------
-        extern "system" {
+        unsafe extern "system" {
             fn GetStdHandle(nStdHandle: u32) -> isize;
             fn SetStdHandle(nStdHandle: u32, hHandle: isize) -> i32;
             fn CreatePipe(
@@ -939,11 +933,10 @@ mod logger {
         }
 
         #[repr(C)]
-        #[allow(non_snake_case)]
         pub(crate) struct SECURITY_ATTRIBUTES {
-            pub(crate) nLength: u32,
-            pub(crate) lpSecurityDescriptor: *mut std::ffi::c_void,
-            pub(crate) bInheritHandle: i32, // BOOL
+            pub(crate) n_length: u32,
+            pub(crate) lp_security_descriptor: *mut std::ffi::c_void,
+            pub(crate) b_inherit_handle: i32, // BOOL
         }
 
         const STD_ERROR_HANDLE: u32 = 0xFFFFFFF5u32; // -11 as u32
@@ -980,9 +973,9 @@ mod logger {
                     // Use inheritable security attributes so child processes
                     // (WebView2 browser process) inherit the pipe.
                     let mut sa = SECURITY_ATTRIBUTES {
-                        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-                        lpSecurityDescriptor: std::ptr::null_mut(),
-                        bInheritHandle: 1, // TRUE
+                        n_length: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                        lp_security_descriptor: std::ptr::null_mut(),
+                        b_inherit_handle: 1, // TRUE
                     };
 
                     let mut r: isize = 0;
@@ -1109,7 +1102,9 @@ mod logger {
                                                 "[WebView2 Shutdown] {}",
                                                 trimmed
                                             ));
-                                        } else if let Some(severity) = parse_chromium_log_line(trimmed) {
+                                        } else if let Some(severity) =
+                                            parse_chromium_log_line(trimmed)
+                                        {
                                             match severity {
                                                 ChromiumSeverity::Error
                                                 | ChromiumSeverity::Fatal => {
@@ -1344,6 +1339,15 @@ mod config {
         pub(crate) max_lon: f64,
     }
 
+    impl LondonBounds {
+        pub(crate) fn contains_bounds(&self, other: &LondonBounds) -> bool {
+            other.min_lat >= self.min_lat &&
+            other.max_lat <= self.max_lat &&
+            other.min_lon >= self.min_lon &&
+            other.max_lon <= self.max_lon
+        }
+    }
+
     impl Default for Config {
         fn default() -> Self {
             Self {
@@ -1428,7 +1432,6 @@ mod primitives {
     use serde::{Deserialize, Serialize};
     use std::f64::consts::PI;
 
-    #[allow(unused_imports)]
     pub(crate) use geo::*;
 
     pub(crate) mod geo {
@@ -1455,8 +1458,8 @@ mod primitives {
         pub(crate) const MIN_ZOOM: f64 = 2.0;
         pub(crate) const MAX_ZOOM: f64 = 19.0;
         pub(crate) const STATION_MERGE_THRESHOLD: f64 = 0.005;
-        #[allow(dead_code)]
-        pub(crate) const SNAP_DISTANCE: f64 = 500.0;
+
+        // unused pub(crate) const SNAP_DISTANCE: f64 = 500.0;
         pub(crate) const CATCHMENT_RADIUS: f64 = 800.0;
 
         // ============================================================================
@@ -1717,6 +1720,13 @@ mod primitives {
         }
 
         #[inline]
+        pub(crate) fn fast_distance_to(&self, other: &Coordinate) -> f64 {
+            let d_lat = (other.lat - self.lat) * 111_320.0;
+            let d_lon = (other.lon - self.lon) * 69_300.0;
+            (d_lat * d_lat + d_lon * d_lon).sqrt()
+        }
+
+        #[inline]
         pub(crate) fn distance_to(&self, other: &Coordinate) -> f64 {
             let d_lat = (other.lat - self.lat) * DEG_TO_RAD;
             let d_lon = (other.lon - self.lon) * DEG_TO_RAD;
@@ -1754,7 +1764,6 @@ mod primitives {
         /// differences (e.g., 51.50740000000001 vs 51.50740000000000) would cause
         /// HashMap/HashSet to treat them as distinct physical locations.
         #[inline]
-        #[allow(dead_code)]
         pub(crate) fn quantized(&self) -> QuantizedCoord {
             QuantizedCoord::new(self.lat, self.lon)
         }
@@ -2010,17 +2019,16 @@ mod primitives {
 }
 
 mod spatial {
-    #[allow(unused_imports)]
     pub(crate) use morton::*;
-    #[allow(unused_imports)]
     pub(crate) use transit_grid::*;
 
     mod transit_grid {
         use crate::logger::*;
         use crate::primitives::*;
         use crate::routing::Line;
-        use std::cmp::Ordering as CmpOrdering;
-        use std::collections::BinaryHeap;
+
+        // use std::cmp::Ordering as CmpOrdering;
+        // use std::collections::BinaryHeap;
 
         #[derive(Debug, Clone)]
         /// Cache-dense SoA (Structure-of-Arrays) transit network representation.
@@ -2053,41 +2061,37 @@ mod spatial {
         /// | Nearest node (Morton) | O(log N) | O(N) |
         ///
         /// Where S = stations, L = lines, P = avg points per line, E = directed edges.
-        #[allow(dead_code)]
         pub struct TransitNetworkGrid {
-            /// Number of nodes (stations) in the network.
-            pub node_count: usize,
-
+            // Number of nodes (stations) in the network.
+            /* unused */ // pub node_count: usize,
             /// Easting coordinates (meters from London center) - contiguous array
             pub coords_x: Vec<f32>,
 
             /// Northing coordinates (meters from London center) - contiguous array
             pub coords_y: Vec<f32>,
 
-            /// Station ID (index into this array) - for fast lookup
-            pub node_ids: Vec<u32>,
+            // Station ID (index into this array) - for fast lookup
+            /* unused */ // pub node_ids: Vec<u32>,
 
-            /// TfL zone (1-9) - packed u8 for minimal memory footprint
-            pub zone_ids: Vec<u8>,
-
+            // TfL zone (1-9) - packed u8 for minimal memory footprint
+            /* unused */ // pub zone_ids: Vec<u8>,
             /// CSR (Compressed Sparse Row) format for edges:
             /// Edges for node `i` are at edges[edge_offsets[i]..edge_offsets[i+1]]
             pub edge_offsets: Vec<usize>,
+            // Destination node IDs for each edge - contiguous array
+            /* unused */ // pub edge_targets: Vec<u32>,
 
-            /// Destination node IDs for each edge - contiguous array
-            pub edge_targets: Vec<u32>,
+            // Travel time (seconds) for each edge - contiguous array
+            /* unused */ // pub edge_weights: Vec<f32>,
 
-            /// Travel time (seconds) for each edge - contiguous array
-            pub edge_weights: Vec<f32>,
+            // Line ID (index into line registry) for each edge - packed u8
+            /* unused */ // pub edge_line_ids: Vec<u8>,
 
-            /// Line ID (index into line registry) for each edge - packed u8
-            pub edge_line_ids: Vec<u8>,
+            // Line registry: maps line IDs to names
+            /* unused */ // pub line_names: Vec<String>,
 
-            /// Line registry: maps line IDs to names
-            pub line_names: Vec<String>,
-
-            /// Line registry: maps line IDs to RGB colors as u32
-            pub line_colors: Vec<u32>,
+            // Line registry: maps line IDs to RGB colors as u32
+            /* unused */ // pub line_colors: Vec<u32>,
         }
 
         impl TransitNetworkGrid {
@@ -2119,9 +2123,9 @@ mod spatial {
 
                 // Build edge arrays (CSR format)
                 let mut edge_offsets = Vec::with_capacity(node_count + 1);
-                let edge_targets = Vec::new();
-                let edge_weights = Vec::new();
-                let edge_line_ids = Vec::new();
+                // let edge_targets = Vec::new();
+                // let edge_weights = Vec::new();
+                // let edge_line_ids = Vec::new();
 
                 let current_offset = 0;
                 for _station in stations {
@@ -2133,14 +2137,14 @@ mod spatial {
                 edge_offsets.push(current_offset); // Sentinel for last node
 
                 // Build line registry
-                let line_names: Vec<String> = lines.iter().map(|l| l.name.clone()).collect();
-                let line_colors: Vec<u32> = lines
-                    .iter()
-                    .map(|l| {
-                        let hex = l.color.trim_start_matches('#');
-                        u32::from_str_radix(hex, 16).unwrap_or(0x000000)
-                    })
-                    .collect();
+                // let line_names: Vec<String> = lines.iter().map(|l| l.name.clone()).collect();
+                // let line_colors: Vec<u32> = lines
+                // iter()
+                // map(|l| {
+                //     let hex = l.color.trim_start_matches('#');
+                //    u32::from_str_radix(hex, 16).unwrap_or(0x000000)
+                //})
+                //.collect();
 
                 log_info(&format!(
                     "TransitNetworkGrid - built grid with {} nodes, {} edges",
@@ -2148,21 +2152,22 @@ mod spatial {
                 ));
 
                 Self {
-                    node_count,
+                    // node_count,
                     coords_x,
                     coords_y,
-                    node_ids,
-                    zone_ids,
+                    // node_ids,
+                    // zone_ids,
                     edge_offsets,
-                    edge_targets,
-                    edge_weights,
-                    edge_line_ids,
-                    line_names,
-                    line_colors,
+                    // edge_targets,
+                    // edge_weights,
+                    // edge_line_ids,
+                    // line_names,
+                    // line_colors,
                 }
             }
 
-            /// Get all edges for a node (cache-friendly slice access)
+            // Get all edges for a node (cache-friendly slice access)
+            /* unused
             #[inline(always)]
             pub fn get_edges(&self, node_id: u32) -> &[u32] {
                 let idx = node_id as usize;
@@ -2176,8 +2181,10 @@ mod spatial {
                 }
                 &self.edge_targets[start..end]
             }
+            */
 
-            /// Get edge weights for a node (cache-friendly slice access)
+            // Get edge weights for a node (cache-friendly slice access)
+            /* unused
             #[inline(always)]
             pub fn get_edge_weights(&self, node_id: u32) -> &[f32] {
                 let idx = node_id as usize;
@@ -2191,6 +2198,7 @@ mod spatial {
                 }
                 &self.edge_weights[start..end]
             }
+            */
         }
 
         // ============================================================================
@@ -2200,26 +2208,27 @@ mod spatial {
         // implementation, not just TransitNetworkGrid. This enables testing with
         // synthetic graphs and swapping implementations at module boundaries.
 
-        /// Graph edge access trait — abstracts over CSR edge storage.
-        #[allow(dead_code)]
-        pub trait EdgeProvider {
-            /// Get the target node IDs for all edges from `node_id`.
-            fn get_edges(&self, node_id: u32) -> &[u32];
-            /// Get the edge weights for all edges from `node_id`.
-            fn get_edge_weights(&self, node_id: u32) -> &[f32];
-            /// Total number of nodes in the graph.
-            fn node_count(&self) -> usize;
-        }
+        // Graph edge access trait — abstracts over CSR edge storage.
+        // pub trait EdgeProvider {
+        // Get the target node IDs for all edges from `node_id`.
+        // fn get_edges(&self, node_id: u32) -> &[u32];
+        // Get the edge weights for all edges from `node_id`.
+        // fn get_edge_weights(&self, node_id: u32) -> &[f32];
+        // Total number of nodes in the graph.
+        // fn node_count(&self) -> usize;
+        // }
 
-        /// Spatial coordinate access trait — abstracts over coordinate storage.
-        #[allow(dead_code)]
+        // Spatial coordinate access trait — abstracts over coordinate storage.
+        /* unused
         pub trait CoordProvider {
             /// Get the (x, y) coordinates for node `idx`.
             fn get_coords(&self, idx: usize) -> (f32, f32);
             /// Total number of nodes.
             fn node_count(&self) -> usize;
         }
+        */
 
+        /* unused
         impl EdgeProvider for TransitNetworkGrid {
             #[inline(always)]
             fn get_edges(&self, node_id: u32) -> &[u32] {
@@ -2263,10 +2272,11 @@ mod spatial {
                 self.node_count
             }
         }
+        */
 
-        /// A* using dynamic dispatch — accepts any EdgeProvider + CoordProvider.
-        /// This enables type-erased routing at module boundaries (e.g., plugin systems).
-        #[allow(dead_code)]
+        // A* using dynamic dispatch — accepts any EdgeProvider + CoordProvider.
+        // This enables type-erased routing at module boundaries (e.g., plugin systems).
+        /* unused
         pub fn astar_dynamic(
             edges: &dyn EdgeProvider,
             coords: &dyn CoordProvider,
@@ -2337,6 +2347,7 @@ mod spatial {
             }
             Vec::new()
         }
+        */
 
         // ============================================================================
         // SIMD-ACCELERATED BATCH DISTANCE COMPUTATION
@@ -2345,11 +2356,12 @@ mod spatial {
         // The compiler emits vmovups + vsubps + vfmadd213ps + vhaddps for the inner loop.
         // On AVX-512 hardware this transparently widens to 16-wide f32 operations.
 
-        /// Batch-compute squared Euclidean distances from a query point to N stations.
-        /// Returns a Vec<f32> of squared distances in meters.
-        /// The `#[inline]` + contiguous slices let LLVM auto-vectorize to AVX2/AVX-512.
+        // Batch-compute squared Euclidean distances from a query point to N stations.
+        // Returns a Vec<f32> of squared distances in meters.
+        // The `#[inline]` + contiguous slices let LLVM auto-vectorize to AVX2/AVX-512.
+        /* unused
         #[inline]
-        #[allow(dead_code)]
+
         pub fn batch_distance_squared(
             query_x: f32,
             query_y: f32,
@@ -2366,12 +2378,14 @@ mod spatial {
                 })
                 .collect()
         }
+        */
 
-        /// Find all station indices within `radius_meters` of a query point.
-        /// Uses SIMD batch distance + Mercator calibration for London latitude.
-        /// Returns indices into the TransitNetworkGrid arrays.
+        // Find all station indices within `radius_meters` of a query point.
+        // Uses SIMD batch distance + Mercator calibration for London latitude.
+        // Returns indices into the TransitNetworkGrid arrays.
+        /* unused
         #[inline]
-        #[allow(dead_code)]
+
         pub fn find_stations_within_radius(
             grid: &TransitNetworkGrid,
             query_x: f32,
@@ -2396,6 +2410,7 @@ mod spatial {
                 })
                 .collect()
         }
+        */
 
         // ============================================================================
         // A* SCRATCHPAD — ZERO-ALLOCATION PATHFINDING
@@ -2404,9 +2419,10 @@ mod spatial {
         // A* calls. The first call allocates; subsequent calls just clear() and reuse
         // the underlying heap storage. This eliminates per-query heap churn.
 
-        /// Pre-allocated scratchpad for A* pathfinding.
-        /// Reuse across calls to avoid repeated BinaryHeap allocation.
-        #[allow(dead_code)]
+        // Pre-allocated scratchpad for A* pathfinding.
+        // Reuse across calls to avoid repeated BinaryHeap allocation.
+        /* unused
+
         pub struct RouteScratchpad {
             /// Open set (min-heap by f-cost). Cleared between calls.
             pub(crate) heap: BinaryHeap<AStarNode>,
@@ -2426,7 +2442,7 @@ mod spatial {
 
         /// A* open-set node: stores f-cost for ordering + node index.
         #[derive(Debug, Clone, Copy)]
-        #[allow(dead_code)]
+
         pub(crate) struct AStarNode {
             /// Node index in the TransitNetworkGrid
             pub(crate) idx: usize,
@@ -2459,7 +2475,7 @@ mod spatial {
             }
         }
 
-        #[allow(dead_code)]
+
         impl RouteScratchpad {
             /// Create a new scratchpad sized for `node_count` stations.
             pub fn new(node_count: usize) -> Self {
@@ -2648,6 +2664,7 @@ mod spatial {
                 Vec::new() // no path found
             }
         }
+        */
     }
 
     mod morton {
@@ -2746,12 +2763,13 @@ mod spatial {
             bytemuck::cast_slice(pods)
         }
 
-        /// Zero-copy transit grid cell for binary file I/O.
-        /// 16 bytes total — packed coordinate + zone + interchange flag.
-        /// Enables instant grid loading from mmap without parsing.
+        // Zero-copy transit grid cell for binary file I/O.
+        // 16 bytes total — packed coordinate + zone + interchange flag.
+        // Enables instant grid loading from mmap without parsing.
+        /* unused
         #[derive(Debug, Clone, Copy)]
         #[repr(C)]
-        #[allow(dead_code)]
+
         pub struct TransitGridPod {
             pub x: f32,
             pub y: f32,
@@ -2767,10 +2785,11 @@ mod spatial {
 
         /// Cast a byte slice to a slice of TransitGridPod — zero copy, zero allocation.
         #[inline]
-        #[allow(dead_code)]
+
         pub fn transit_grid_from_bytes(bytes: &[u8]) -> &[TransitGridPod] {
             bytemuck::cast_slice(bytes)
         }
+        */
 
         // ============================================================================
         // TRANSIT DESERT DETECTION
@@ -2913,9 +2932,6 @@ mod spatial {
 }
 
 mod routing {
-    #[allow(unused_imports)]
-    pub(crate) use astar::*;
-    #[allow(unused_imports)]
     pub(crate) use graph::*;
 
     mod graph {
@@ -2951,12 +2967,12 @@ mod routing {
                 log_info("AppState::hot_swap_routing_graph - routing graph atomically swapped");
             }
 
-            /// Atomically swap in new edge load state.
-            #[allow(dead_code)]
+            /* unused
             pub fn hot_swap_edge_loads(&self, new_loads: HashMap<EdgeKey, usize>) {
                 self.edge_loads.store(Arc::new(new_loads));
                 log_info("AppState::hot_swap_edge_loads - edge loads atomically swapped");
             }
+            */
         }
 
         /// Handle a disruption by cloning the current graph, removing a line's edges,
@@ -3282,7 +3298,6 @@ mod routing {
             }
         }
 
-        #[allow(dead_code)]
         /// Spatial indexing engine for London's transport network.
         ///
         /// # Layout
@@ -3350,12 +3365,14 @@ mod routing {
                 let mut points: Vec<SpatialPoint> = Vec::new();
                 let mut total_points = 0usize;
                 for (track_idx, track) in tracks.iter().enumerate() {
-                    log_trace(&format!(
-                        "Processing track {}: {} with {} geometry points",
-                        track_idx,
-                        track.id,
-                        track.geometry.len()
-                    ));
+                    if cfg!(debug_assertions) {
+                        log_trace(&format!(
+                            "Processing track {}: {} with {} geometry points",
+                            track_idx,
+                            track.id,
+                            track.geometry.len()
+                        ));
+                    }
                     for coord in &track.geometry {
                         points.push(SpatialPoint {
                             coord: *coord,
@@ -3383,10 +3400,12 @@ mod routing {
                     .iter()
                     .enumerate()
                     .map(|(i, s)| {
-                        log_trace(&format!(
-                            "Indexing station {}: {} at lat={:.6}, lon={:.6}",
-                            i, s.name, s.coord.lat, s.coord.lon
-                        ));
+                        if cfg!(debug_assertions) {
+                            log_trace(&format!(
+                                "Indexing station {}: {} at lat={:.6}, lon={:.6}",
+                                i, s.name, s.coord.lat, s.coord.lon
+                            ));
+                        }
                         SpatialPoint {
                             coord: s.coord,
                             index: i,
@@ -3406,7 +3425,9 @@ mod routing {
                 point: &Coordinate,
                 polygon: &[Coordinate],
             ) -> bool {
-                log_trace(&format!("GeometryEngine::point_in_polygon called - checking point lat={:.6}, lon={:.6} against polygon with {} vertices", point.lat, point.lon, polygon.len()));
+                if cfg!(debug_assertions) {
+                    log_trace(&format!("GeometryEngine::point_in_polygon called - checking point lat={:.6}, lon={:.6} against polygon with {} vertices", point.lat, point.lon, polygon.len()));
+                }
                 if polygon.len() < 3 {
                     log_warn("GeometryEngine::point_in_polygon - polygon has fewer than 3 vertices, returning false");
                     return false;
@@ -3430,14 +3451,16 @@ mod routing {
                     }
                 }
 
-                log_trace(&format!(
-                    "GeometryEngine::point_in_polygon result: {} ({} intersections)",
-                    inside, intersections
-                ));
+                if cfg!(debug_assertions) {
+                    log_trace(&format!(
+                        "GeometryEngine::point_in_polygon result: {} ({} intersections)",
+                        inside, intersections
+                    ));
+                }
                 inside
             }
 
-            #[allow(dead_code)]
+            /* unused
             pub(crate) fn snap_to_polyline(
                 &self,
                 point: &Coordinate,
@@ -3468,8 +3491,9 @@ mod routing {
                 log_trace(&format!("GeometryEngine::snap_to_polyline result: distance={:.2}m, best_segment={}, nearest_lat={:.6}, nearest_lon={:.6}", min_dist, best_segment, nearest.lat, nearest.lon));
                 (min_dist, nearest)
             }
+            */
 
-            #[allow(dead_code)]
+            /* unused
             pub(crate) fn snap_to_tracks(
                 &self,
                 point: &Coordinate,
@@ -3515,6 +3539,7 @@ mod routing {
                 log_info(&format!("GeometryEngine::snap_to_tracks result: checked {} tracks, best_track={:?}, distance={:.2}m", tracks_checked, best_track, min_dist));
                 (min_dist, nearest_coord, best_track)
             }
+            */
 
             pub(crate) fn project_to_segment(
                 &self,
@@ -3522,7 +3547,9 @@ mod routing {
                 seg_start: &Coordinate,
                 seg_end: &Coordinate,
             ) -> (f64, Coordinate) {
-                log_trace(&format!("GeometryEngine::project_to_segment called - projecting point lat={:.6}, lon={:.6} to segment from lat={:.6}, lon={:.6} to lat={:.6}, lon={:.6}", point.lat, point.lon, seg_start.lat, seg_start.lon, seg_end.lat, seg_end.lon));
+                if cfg!(debug_assertions) {
+                    log_trace(&format!("GeometryEngine::project_to_segment called - projecting point lat={:.6}, lon={:.6} to segment from lat={:.6}, lon={:.6} to lat={:.6}, lon={:.6}", point.lat, point.lon, seg_start.lat, seg_start.lon, seg_end.lat, seg_end.lon));
+                }
                 let (p_x, p_y) = point.to_mercator();
                 let (s_x, s_y) = seg_start.to_mercator();
                 let (e_x, e_y) = seg_end.to_mercator();
@@ -3544,10 +3571,12 @@ mod routing {
 
                 let proj_coord = Coordinate::from_mercator(proj_x, proj_y);
                 let distance = point.distance_to(&proj_coord);
-                log_trace(&format!(
-                    "GeometryEngine::project_to_segment result: t={:.4}, distance={:.2}m",
-                    t, distance
-                ));
+                if cfg!(debug_assertions) {
+                    log_trace(&format!(
+                        "GeometryEngine::project_to_segment result: t={:.4}, distance={:.2}m",
+                        t, distance
+                    ));
+                }
                 (distance, proj_coord)
             }
 
@@ -3609,10 +3638,12 @@ mod routing {
                     .iter()
                     .enumerate()
                     .map(|(i, s)| {
-                        log_trace(&format!(
-                            "Building merge index for station {}: {}",
-                            i, s.name
-                        ));
+                        if cfg!(debug_assertions) {
+                            log_trace(&format!(
+                                "Building merge index for station {}: {}",
+                                i, s.name
+                            ));
+                        }
                         SpatialPoint {
                             coord: s.coord,
                             index: i,
@@ -3638,10 +3669,12 @@ mod routing {
                     let mut hub = station.clone();
                     hub.is_interchange = false;
                     let m = station.coord.to_mercator();
-                    log_trace(&format!(
-                        "Processing station {} as potential hub: {}",
-                        i, station.name
-                    ));
+                    if cfg!(debug_assertions) {
+                        log_trace(&format!(
+                            "Processing station {} as potential hub: {}",
+                            i, station.name
+                        ));
+                    }
 
                     // Query spatial tree for nearby nodes instantly.
                     // Calibrate the search radius to account for Web-Mercator
@@ -3664,10 +3697,12 @@ mod routing {
                             threshold_meters,
                         );
                         if (dx * dx + dy * dy) <= neighbour_sq {
-                            log_trace(&format!(
-                                "Merging station {} ({}) into hub {} ({})",
-                                idx, stations[idx].name, i, station.name
-                            ));
+                            if cfg!(debug_assertions) {
+                                log_trace(&format!(
+                                    "Merging station {} ({}) into hub {} ({})",
+                                    idx, stations[idx].name, i, station.name
+                                ));
+                            }
                             processed.insert(idx);
                             hub.is_interchange = true;
                             for line in &stations[idx].lines {
@@ -3779,10 +3814,12 @@ mod routing {
                     .iter()
                     .enumerate()
                     .map(|(i, s)| {
-                        log_trace(&format!(
-                            "Building transit desert index for station {}: {}",
-                            i, s.name
-                        ));
+                        if cfg!(debug_assertions) {
+                            log_trace(&format!(
+                                "Building transit desert index for station {}: {}",
+                                i, s.name
+                            ));
+                        }
                         SpatialPoint {
                             coord: s.coord,
                             index: i,
@@ -4977,24 +5014,23 @@ mod routing {
             /// gaps >~220m between nodes (e.g. sparse National Rail routes in rural
             /// areas).
             pub(crate) fn find_nearest_node(&self, coord: &Coordinate) -> Option<usize> {
-                let grid_x = (coord.lon * 1000.0).round() as i32;
-                let grid_y = (coord.lat * 1000.0).round() as i32;
+                let result = if let Some(ref morton) = self.morton_index {
+                    log_trace("RoutingGraph::find_nearest_node - using Morton spatial index fast path");
+                    morton.nearest_neighbor(coord, &self.nodes)
+                } else {
+                    let grid_x = (coord.lon * 1000.0).round() as i32;
+                    let grid_y = (coord.lat * 1000.0).round() as i32;
 
-                let mut candidates = Vec::new();
-                for dx in -2..=2 {
-                    for dy in -2..=2 {
-                        if let Some(nodes) = self.grid_index.get(&(grid_x + dx, grid_y + dy)) {
-                            candidates.extend(nodes.iter().copied());
+                    let mut candidates = Vec::new();
+                    for dx in -2..=2 {
+                        for dy in -2..=2 {
+                            if let Some(nodes) = self.grid_index.get(&(grid_x + dx, grid_y + dy)) {
+                                candidates.extend(nodes.iter().copied());
+                            }
                         }
                     }
-                }
 
-                let result = if candidates.is_empty() {
-                    // Morton Code fast path: O(log N) binary search instead of O(N) linear scan
-                    if let Some(ref morton) = self.morton_index {
-                        log_trace("RoutingGraph::find_nearest_node - using Morton spatial index fast path");
-                        morton.nearest_neighbor(coord, &self.nodes)
-                    } else {
+                    if candidates.is_empty() {
                         log_trace("RoutingGraph::find_nearest_node - spatial grid empty, falling back to full O(N) scan");
                         self.nodes
                             .iter()
@@ -5005,15 +5041,15 @@ mod routing {
                                     .unwrap_or(std::cmp::Ordering::Equal)
                             })
                             .map(|(id, _)| *id)
+                    } else {
+                        candidates.into_iter().min_by(|a, b| {
+                            self.nodes[a]
+                                .coord
+                                .distance_to(coord)
+                                .partial_cmp(&self.nodes[b].coord.distance_to(coord))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
                     }
-                } else {
-                    candidates.into_iter().min_by(|a, b| {
-                        self.nodes[a]
-                            .coord
-                            .distance_to(coord)
-                            .partial_cmp(&self.nodes[b].coord.distance_to(coord))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
                 };
 
                 if let Some(node_id) = result {
@@ -5102,7 +5138,8 @@ mod routing {
                 );
                 Ok(json)
             }
-            #[allow(dead_code)]
+
+            /* unused
             pub(crate) async fn post_form_json(
                 &self,
                 url: &str,
@@ -5138,6 +5175,7 @@ mod routing {
                 ));
                 Ok(json)
             }
+            */
         }
 
         impl Default for NetworkManager {
@@ -5954,7 +5992,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -6075,7 +6113,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -6226,45 +6264,58 @@ out body;"#,
                 // routed, the reduction phase merges thread-local arrays using a loop
                 // that LLVM auto-vectorizes to AVX2/AVX-512 vpaddq instructions.
                 let panic_count = std::sync::atomic::AtomicU64::new(0);
-                let final_edge_loads: Vec<usize> = commutes
-                    .par_iter()
-                    .fold(
-                        // Thread-local accumulator: zero contention, pure L1 cache speed
-                        || vec![0usize; num_edges],
-                        |mut local_loads, &(origin, dest)| {
-                            let result =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    let path = self.astar(origin, dest);
-                                    for window in path.windows(2) {
-                                        let u_coord = &window[0];
-                                        let v_coord = &window[1];
-                                        if let (Some(u), Some(v)) = (
-                                            self.find_nearest_node(u_coord),
-                                            self.find_nearest_node(v_coord),
-                                        ) {
-                                            let key = EdgeKey(u, v);
-                                            if let Some(&idx) = edge_to_index.get(&key) {
-                                                local_loads[idx] += 1;
+
+                let num_threads = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4)
+                    / 2;
+                let num_threads = num_threads.max(1);
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(num_threads)
+                    .build()
+                    .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap());
+
+                let final_edge_loads: Vec<usize> = pool.install(|| {
+                    commutes
+                        .par_iter()
+                        .fold(
+                            // Thread-local accumulator: zero contention, pure L1 cache speed
+                            || vec![0usize; num_edges],
+                            |mut local_loads, &(origin, dest)| {
+                                let result =
+                                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                        let path = self.astar(origin, dest);
+                                        for window in path.windows(2) {
+                                            let u_coord = &window[0];
+                                            let v_coord = &window[1];
+                                            if let (Some(u), Some(v)) = (
+                                                self.find_nearest_node(u_coord),
+                                                self.find_nearest_node(v_coord),
+                                            ) {
+                                                let key = EdgeKey(u, v);
+                                                if let Some(&idx) = edge_to_index.get(&key) {
+                                                    local_loads[idx] += 1;
+                                                }
                                             }
                                         }
-                                    }
-                                }));
-                            if result.is_err() {
-                                panic_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            local_loads
-                        },
-                    )
-                    .reduce(
-                        || vec![0usize; num_edges],
-                        |mut a, b| {
-                            // LLVM auto-vectorizes this to AVX2 vpaddq instructions
-                            for i in 0..a.len() {
-                                a[i] += b[i];
-                            }
-                            a
-                        },
-                    );
+                                    }));
+                                if result.is_err() {
+                                    panic_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                local_loads
+                            },
+                        )
+                        .reduce(
+                            || vec![0usize; num_edges],
+                            |mut a, b| {
+                                // LLVM auto-vectorizes this to AVX2 vpaddq instructions
+                                for i in 0..a.len() {
+                                    a[i] += b[i];
+                                }
+                                a
+                            },
+                        )
+                });
 
                 let total_panics = panic_count.load(std::sync::atomic::Ordering::Relaxed);
                 if total_panics > 0 {
@@ -6291,191 +6342,193 @@ out body;"#,
                 final_loads
             }
 
-            /// Congestion-aware A* pathfinder with dynamic edge weights.
-            ///
-            /// Extends the standard A* algorithm by injecting real-time passenger load
-            /// data into the edge cost function. Edges where the current load exceeds
-            /// `capacity_threshold` receive an **exponential penalty**, forcing the
-            /// pathfinder to discover longer geographic routes that avoid congested
-            /// bottlenecks (e.g., Bank, King's Cross, Oxford Circus during peak hours).
-            ///
-            /// # Penalty Formula
-            ///
-            /// For an edge with `current_load` and `capacity_threshold`:
-            ///
-            /// ```text
-            /// if current_load > capacity_threshold:
-            ///     overload_ratio = current_load / capacity_threshold
-            ///     multiplier     = 1.0 + overload_ratio ^ 2.5
-            /// else:
-            ///     multiplier     = 1.0   (no penalty)
-            ///
-            /// dynamic_weight = base_weight × multiplier
-            /// ```
-            ///
-            /// The `^2.5` exponent creates a *super-linear* cost curve: an edge at
-            /// 2× capacity costs `1 + 2^2.5 ≈ 6.6×` its base weight, organically
-            /// pushing routes onto alternative lines.
-            ///
-            /// # Parameters
-            ///
-            /// - `start`: Origin node ID in the routing graph.
-            /// - `end`: Destination node ID in the routing graph.
-            /// - `edge_loads`: Map of [`EdgeKey`] → passenger count, typically
-            ///   produced by [`simulate_network_load`](Self::simulate_network_load).
-            /// - `capacity_threshold`: Maximum comfortable passenger count per edge.
-            ///   Edges above this threshold receive the exponential penalty. Set to
-            ///   `0` to disable penalties (degenerates to standard A*).
-            ///
-            /// # Returns
-            ///
-            /// A `Vec<Coordinate>` representing the congestion-aware path from start
-            /// to end. Returns an empty `Vec` if no path exists.
-            ///
-            /// # Complexity
-            ///
-            /// Identical to standard A*: `O(E log V)` worst case, where the heuristic
-            /// (Euclidean distance via `distance_to`) is admissible and consistent.
-            /// The congestion multiplier does *not* break admissibility because it
-            /// only increases edge weights (never decreases them below the physical
-            /// distance), so the heuristic remains a valid lower bound.
-            ///
-            /// # Examples
-            ///
-            /// ```rust
-            /// let loads = graph.simulate_network_load(100_000);
-            /// let path = graph.astar_with_congestion(start_id, end_id, &loads, 500);
-            /// // path now avoids edges with > 500 passengers
-            /// ```
-            ///
-            /// # Design Notes
-            ///
-            /// - The `congestion_bypasses` counter tracks how many times the algorithm
-            ///   chose a longer route to avoid a congested edge — useful telemetry for
-            ///   the frontend HUD.
-            /// - This method shares the same `PriorityQueueItem` binary heap and
-            ///   `reconstruct_path` backtracking as all other A* variants in the
-            ///   routing engine, ensuring consistent behaviour across the codebase.
-            #[allow(dead_code)]
-            pub(crate) fn astar_with_congestion(
-                &self,
-                start: usize,
-                end: usize,
-                edge_loads: &HashMap<EdgeKey, usize>,
-                capacity_threshold: usize,
-            ) -> Vec<Coordinate> {
-                log_trace(&format!(
-            "RoutingGraph::astar_with_congestion called - start={}, end={}, threshold={}, {} loaded edges",
-            start, end, capacity_threshold, edge_loads.len()
-        ));
+            // Congestion-aware A* pathfinder with dynamic edge weights.
+            //
+            // Extends the standard A* algorithm by injecting real-time passenger load
+            // data into the edge cost function. Edges where the current load exceeds
+            // `capacity_threshold` receive an **exponential penalty**, forcing the
+            // pathfinder to discover longer geographic routes that avoid congested
+            // bottlenecks (e.g., Bank, King's Cross, Oxford Circus during peak hours).
+            //
+            // # Penalty Formula
+            //
+            // For an edge with `current_load` and `capacity_threshold`:
+            //
+            // ```text
+            // if current_load > capacity_threshold:
+            //     overload_ratio = current_load / capacity_threshold
+            //     multiplier     = 1.0 + overload_ratio ^ 2.5
+            // else:
+            //     multiplier     = 1.0   (no penalty)
+            //
+            // dynamic_weight = base_weight × multiplier
+            // ```
+            //
+            // The `^2.5` exponent creates a *super-linear* cost curve: an edge at
+            // 2× capacity costs `1 + 2^2.5 ≈ 6.6×` its base weight, organically
+            // pushing routes onto alternative lines.
+            //
+            // # Parameters
+            //
+            // - `start`: Origin node ID in the routing graph.
+            // - `end`: Destination node ID in the routing graph.
+            // - `edge_loads`: Map of [`EdgeKey`] → passenger count, typically
+            //   produced by [`simulate_network_load`](Self::simulate_network_load).
+            // - `capacity_threshold`: Maximum comfortable passenger count per edge.
+            //   Edges above this threshold receive the exponential penalty. Set to
+            //   `0` to disable penalties (degenerates to standard A*).
+            //
+            // # Returns
+            //
+            // A `Vec<Coordinate>` representing the congestion-aware path from start
+            // to end. Returns an empty `Vec` if no path exists.
+            //
+            // # Complexity
+            //
+            // Identical to standard A*: `O(E log V)` worst case, where the heuristic
+            // (Euclidean distance via `distance_to`) is admissible and consistent.
+            // The congestion multiplier does *not* break admissibility because it
+            // only increases edge weights (never decreases them below the physical
+            // distance), so the heuristic remains a valid lower bound.
+            //
+            // # Examples
+            //
+            // ```rust
+            // let loads = graph.simulate_network_load(100_000);
+            // let path = graph.astar_with_congestion(start_id, end_id, &loads, 500);
+            // // path now avoids edges with > 500 passengers
+            // ```
+            //
+            // # Design Notes
+            //
+            // - The `congestion_bypasses` counter tracks how many times the algorithm
+            //   chose a longer route to avoid a congested edge — useful telemetry for
+            //   the frontend HUD.
+            // - This method shares the same `PriorityQueueItem` binary heap and
+            //   `reconstruct_path` backtracking as all other A* variants in the
+            //   routing engine, ensuring consistent behaviour across the codebase.
 
-                let mut g_score: HashMap<usize, f64> = HashMap::new();
-                let mut f_score: HashMap<usize, f64> = HashMap::new();
-                let mut came_from: HashMap<usize, usize> = HashMap::new();
-                let mut open_set = BinaryHeap::new();
-                let mut closed_set = HashSet::new();
-                let mut congestion_bypasses = 0usize;
+            /* unused
+                pub(crate) fn astar_with_congestion(
+                    &self,
+                    start: usize,
+                    end: usize,
+                    edge_loads: &HashMap<EdgeKey, usize>,
+                    capacity_threshold: usize,
+                ) -> Vec<Coordinate> {
+                    log_trace(&format!(
+                "RoutingGraph::astar_with_congestion called - start={}, end={}, threshold={}, {} loaded edges",
+                start, end, capacity_threshold, edge_loads.len()
+            ));
 
-                let end_coord = match self.nodes.get(&end) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_with_congestion - end node {} not found",
-                            end
-                        ));
-                        return Vec::new();
-                    }
-                };
+                    let mut g_score: HashMap<usize, f64> = HashMap::new();
+                    let mut f_score: HashMap<usize, f64> = HashMap::new();
+                    let mut came_from: HashMap<usize, usize> = HashMap::new();
+                    let mut open_set = BinaryHeap::new();
+                    let mut closed_set = HashSet::new();
+                    let mut congestion_bypasses = 0usize;
 
-                g_score.insert(start, 0.0);
-                let start_coord = match self.nodes.get(&start) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_with_congestion - start node {} not found",
-                            start
-                        ));
-                        return Vec::new();
-                    }
-                };
-                f_score.insert(start, start_coord.distance_to(&end_coord));
-                open_set.push(PriorityQueueItem {
-                    cost: f_score[&start],
-                    node_id: start,
-                });
+                    let end_coord = match self.nodes.get(&end) {
+                        Some(n) => n.coord,
+                        None => {
+                            log_error(&format!(
+                                "RoutingGraph::astar_with_congestion - end node {} not found",
+                                end
+                            ));
+                            return Vec::new();
+                        }
+                    };
 
-                let mut iterations = 0usize;
-                while let Some(current) = open_set.pop() {
-                    iterations += 1;
-                    if iterations > MAX_ASTAR_ITERATIONS {
-                        log_warn(&format!(
-                    "RoutingGraph::astar_with_congestion aborted after {} iterations (limit: {})",
-                    iterations, MAX_ASTAR_ITERATIONS
-                ));
-                        return Vec::new();
-                    }
-                    let current_id = current.node_id;
+                    g_score.insert(start, 0.0);
+                    let start_coord = match self.nodes.get(&start) {
+                        Some(n) => n.coord,
+                        None => {
+                            log_error(&format!(
+                                "RoutingGraph::astar_with_congestion - start node {} not found",
+                                start
+                            ));
+                            return Vec::new();
+                        }
+                    };
+                    f_score.insert(start, start_coord.distance_to(&end_coord));
+                    open_set.push(PriorityQueueItem {
+                        cost: f_score[&start],
+                        node_id: start,
+                    });
 
-                    if current_id == end {
-                        log_trace(&format!(
-                    "RoutingGraph::astar_with_congestion reached goal after {} iterations ({} congestion bypasses)",
-                    iterations, congestion_bypasses
-                ));
-                        return self.reconstruct_path(&came_from, current_id);
-                    }
+                    let mut iterations = 0usize;
+                    while let Some(current) = open_set.pop() {
+                        iterations += 1;
+                        if iterations > MAX_ASTAR_ITERATIONS {
+                            log_warn(&format!(
+                        "RoutingGraph::astar_with_congestion aborted after {} iterations (limit: {})",
+                        iterations, MAX_ASTAR_ITERATIONS
+                    ));
+                            return Vec::new();
+                        }
+                        let current_id = current.node_id;
 
-                    closed_set.insert(current_id);
+                        if current_id == end {
+                            log_trace(&format!(
+                        "RoutingGraph::astar_with_congestion reached goal after {} iterations ({} congestion bypasses)",
+                        iterations, congestion_bypasses
+                    ));
+                            return self.reconstruct_path(&came_from, current_id);
+                        }
 
-                    if let Some(node) = self.nodes.get(&current_id) {
-                        for &(neighbor, base_weight) in &node.neighbors {
-                            if closed_set.contains(&neighbor) {
-                                continue;
-                            }
+                        closed_set.insert(current_id);
 
-                            // DIABOLICAL PENALTY: Exponential congestion multiplier
-                            let edge = EdgeKey(current_id, neighbor);
-                            let current_load = *edge_loads.get(&edge).unwrap_or(&0);
+                        if let Some(node) = self.nodes.get(&current_id) {
+                            for &(neighbor, base_weight) in &node.neighbors {
+                                if closed_set.contains(&neighbor) {
+                                    continue;
+                                }
 
-                            let congestion_multiplier =
-                                if capacity_threshold > 0 && current_load > capacity_threshold {
-                                    congestion_bypasses += 1;
-                                    let overload_ratio =
-                                        current_load as f64 / capacity_threshold as f64;
-                                    1.0 + overload_ratio.powf(2.5) // Exponential growth
-                                } else {
-                                    1.0
-                                };
+                                // DIABOLICAL PENALTY: Exponential congestion multiplier
+                                let edge = EdgeKey(current_id, neighbor);
+                                let current_load = *edge_loads.get(&edge).unwrap_or(&0);
 
-                            let dynamic_weight = base_weight * congestion_multiplier;
-                            let tentative_g_score =
-                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
+                                let congestion_multiplier =
+                                    if capacity_threshold > 0 && current_load > capacity_threshold {
+                                        congestion_bypasses += 1;
+                                        let overload_ratio =
+                                            current_load as f64 / capacity_threshold as f64;
+                                        1.0 + overload_ratio.powf(2.5) // Exponential growth
+                                    } else {
+                                        1.0
+                                    };
 
-                            if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
-                            {
-                                came_from.insert(neighbor, current_id);
-                                g_score.insert(neighbor, tentative_g_score);
+                                let dynamic_weight = base_weight * congestion_multiplier;
+                                let tentative_g_score =
+                                    g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
 
-                                let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.distance_to(&end_coord),
-                                    None => continue,
-                                };
-                                f_score.insert(neighbor, tentative_g_score + h);
+                                if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
+                                {
+                                    came_from.insert(neighbor, current_id);
+                                    g_score.insert(neighbor, tentative_g_score);
 
-                                open_set.push(PriorityQueueItem {
-                                    cost: tentative_g_score + h,
-                                    node_id: neighbor,
-                                });
+                                    let h = match self.nodes.get(&neighbor) {
+                                        Some(n) => n.coord.distance_to(&end_coord),
+                                        None => continue,
+                                    };
+                                    f_score.insert(neighbor, tentative_g_score + h);
+
+                                    open_set.push(PriorityQueueItem {
+                                        cost: tentative_g_score + h,
+                                        node_id: neighbor,
+                                    });
+                                }
                             }
                         }
                     }
-                }
 
-                log_error(&format!(
-                    "RoutingGraph::astar_with_congestion failed after {} iterations",
-                    iterations
-                ));
-                Vec::new()
-            }
+                    log_error(&format!(
+                        "RoutingGraph::astar_with_congestion failed after {} iterations",
+                        iterations
+                    ));
+                    Vec::new()
+                }
+                */
 
             /// Kinematic vector A* pathfinder with live congestion and interchange detection.
             ///
@@ -6667,7 +6720,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -6810,33 +6863,11 @@ out body;"#,
                     self.nodes.len()
                 ));
             }
-
-            /// Rebuild the Morton Code spatial index after graph mutations.
-            #[allow(dead_code)]
-            pub fn rebuild_morton_index(&mut self) {
-                self.morton_index = Some(MortonSpatialIndex::build(&self.nodes));
-                log_trace(&format!(
-                    "RoutingGraph::rebuild_morton_index - rebuilt for {} nodes",
-                    self.nodes.len()
-                ));
-            }
         }
     }
 }
-mod simulation {
-    /// Monte Carlo congestion simulation.
-    ///
-    /// The core simulation logic (simulate_network_load, astar_with_congestion)
-    /// lives as methods on RoutingGraph in routing::astar. This module provides
-    /// the module boundary specified in the architecture plan.
-    pub(crate) mod monte_carlo {
-        // Re-export simulation types from routing for architectural clarity.
-        #[allow(unused_imports)]
-        pub(crate) use crate::routing::EdgeKey;
-    }
-}
 
-mod domain {
+mod network {
     use crate::config::*;
     use crate::logger::*;
     use crate::primitives::*;
@@ -6894,7 +6925,6 @@ mod domain {
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    #[allow(dead_code)]
     pub(crate) struct TransitDesertsRequest {
         pub bounds: LondonBounds,
     }
@@ -7804,11 +7834,8 @@ mod domain {
     }
 }
 mod server {
-    #[allow(unused_imports)]
     pub(crate) use handlers::*;
-    #[allow(unused_imports)]
     pub(crate) use router::*;
-    #[allow(unused_imports)]
     pub(crate) use state::*;
 
     mod state {
@@ -8369,6 +8396,8 @@ mod server {
             pub(crate) transit_grid: Arc<arc_swap::ArcSwap<TransitNetworkGrid>>,
             /// Live weather data cached.
             pub(crate) weather: Arc<arc_swap::ArcSwap<Option<(f64, String)>>>,
+            /// Cached transit deserts for the last requested viewport
+            pub(crate) transit_desert_cache: Arc<std::sync::Mutex<Option<(LondonBounds, Vec<ResidentialArea>)>>>,
         }
 
         // LOAD-BEARING HACK: AppState must be Send + Sync for Axum's State<AppState>
@@ -8410,19 +8439,20 @@ mod server {
                     edge_loads: Arc::new(arc_swap::ArcSwap::new(Arc::new(HashMap::new()))),
                     config: Arc::new(config),
                     transit_grid: Arc::new(arc_swap::ArcSwap::new(Arc::new(TransitNetworkGrid {
-                        node_count: 0,
+                        // node_count: 0,
                         coords_x: Vec::new(),
                         coords_y: Vec::new(),
-                        node_ids: Vec::new(),
-                        zone_ids: Vec::new(),
+                        // node_ids: Vec::new(),
+                        // zone_ids: Vec::new(),
                         edge_offsets: vec![0],
-                        edge_targets: Vec::new(),
-                        edge_weights: Vec::new(),
-                        edge_line_ids: Vec::new(),
-                        line_names: Vec::new(),
-                        line_colors: Vec::new(),
+                        // edge_targets: Vec::new(),
+                        // edge_weights: Vec::new(),
+                        // edge_line_ids: Vec::new(),
+                        // line_names: Vec::new(),
+                        // line_colors: Vec::new(),
                     }))),
                     weather: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
+                    transit_desert_cache: Arc::new(std::sync::Mutex::new(None)),
                 };
 
                 log_info("AppState::new completed - application state initialized");
@@ -9313,19 +9343,34 @@ mod server {
 
                 let get_res = tokio::task::spawn_blocking(move || {
                     cache_clone.get(&cache_key_clone).map_err(|e| e.to_string())
-                }).await;
+                })
+                .await;
 
                 let overpass_stations = match get_res {
                     Ok(Ok(Some(cached_str))) => {
-                        log_info("AppState::initialize_routing_graph - using CACHED overpass stations");
+                        log_info(
+                            "AppState::initialize_routing_graph - using CACHED overpass stations",
+                        );
                         serde_json::from_str(&cached_str).unwrap_or_else(|_| Vec::new())
-                    },
+                    }
                     _ => {
                         log_info("AppState::initialize_routing_graph - fetching live Overpass stations (not cached)");
-                        let s = match self.overpass_client.fetch_stations(bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon).await {
+                        let s = match self
+                            .overpass_client
+                            .fetch_stations(
+                                bounds.min_lat,
+                                bounds.min_lon,
+                                bounds.max_lat,
+                                bounds.max_lon,
+                            )
+                            .await
+                        {
                             Ok(s) => s,
                             Err(e) => {
-                                log_warn(&format!("AppState::initialize_routing_graph - fetch_stations error: {}", e));
+                                log_warn(&format!(
+                                    "AppState::initialize_routing_graph - fetch_stations error: {}",
+                                    e
+                                ));
                                 Vec::new()
                             }
                         };
@@ -9333,7 +9378,8 @@ mod server {
                         let cache_clone = self.cache.clone();
                         let _ = tokio::task::spawn_blocking(move || {
                             let _ = cache_clone.put(&cache_key, &s_json, 30 * 24 * 3600 * 1000);
-                        }).await;
+                        })
+                        .await;
                         s
                     }
                 };
@@ -9416,8 +9462,9 @@ mod server {
 
     mod handlers {
         use super::state::*;
-        use crate::domain::*;
+        use crate::{AppError, AppResult, LondonBounds};
         use crate::logger::*;
+        use crate::network::*;
         use crate::primitives::*;
         use crate::routing::*;
         use crate::validate_bounds;
@@ -10588,13 +10635,12 @@ mod server {
             );
 
             let cache = state.cache.clone();
-            let cache_clear = tokio::task::spawn_blocking(move || {
-                if let Ok(conn) = cache.pool.get() {
-                    conn.execute(
-                        "DELETE FROM api_cache WHERE key = 'railway_tracks_london'",
-                        [],
-                    )
-                } else {
+            let cache_clear = tokio::task::spawn_blocking(move || match cache.pool.get() {
+                Ok(conn) => conn.execute(
+                    "DELETE FROM api_cache WHERE key = 'railway_tracks_london'",
+                    [],
+                ),
+                _ => {
                     log_error(
                         "POST /api/tracks/refresh - failed to get DB connection for cache clear",
                     );
@@ -10650,12 +10696,9 @@ mod server {
             ));
             let cache = state.cache.clone();
 
-            let db_res = tokio::task::spawn_blocking(move || {
-                if let Ok(conn) = cache.pool.get() {
-                    conn.execute("DELETE FROM custom_lines WHERE id = ?1", params![id])
-                } else {
-                    Err(rusqlite::Error::ExecuteReturnedResults)
-                }
+            let db_res = tokio::task::spawn_blocking(move || match cache.pool.get() {
+                Ok(conn) => conn.execute("DELETE FROM custom_lines WHERE id = ?1", params![id]),
+                _ => Err(rusqlite::Error::ExecuteReturnedResults),
             })
             .await;
             match db_res {
@@ -10784,10 +10827,9 @@ mod server {
             ));
             // Wipe the entire free_stations table ? it only contains user/AI-created stations
             let cache = state.cache.clone();
-            let db_clear = tokio::task::spawn_blocking(move || {
-                if let Ok(conn) = cache.pool.get() {
-                    conn.execute("DELETE FROM free_stations", ())
-                } else {
+            let db_clear = tokio::task::spawn_blocking(move || match cache.pool.get() {
+                Ok(conn) => conn.execute("DELETE FROM free_stations", ()),
+                _ => {
                     log_error("POST /api/stations/clear - failed to get DB connection");
                     Err(rusqlite::Error::ExecuteReturnedResults)
                 }
@@ -10967,9 +11009,42 @@ mod server {
             ) {
                 return Json(ApiResponse::error(e.to_string()));
             }
-            log_info(&format!("POST /api/transit-deserts called - computing transit deserts for bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", req.bounds.min_lat, req.bounds.max_lat, req.bounds.min_lon, req.bounds.max_lon));
 
-            let res_areas = match state.fetch_residential_coordinates(&req.bounds).await {
+            // 1. Try RAM Cache Hit
+            {
+                if let Ok(cache_guard) = state.transit_desert_cache.lock() {
+                    if let Some((cached_bounds, cached_deserts)) = &*cache_guard {
+                        if cached_bounds.contains_bounds(&req.bounds) {
+                            log_info("[DESERT][CACHE] Hit - returning filtered cached transit deserts");
+                            let filtered: Vec<ResidentialArea> = cached_deserts
+                                .iter()
+                                .filter(|r| {
+                                    r.centroid.lat >= req.bounds.min_lat
+                                        && r.centroid.lat <= req.bounds.max_lat
+                                        && r.centroid.lon >= req.bounds.min_lon
+                                        && r.centroid.lon <= req.bounds.max_lon
+                                })
+                                .cloned()
+                                .collect();
+                            return Json(ApiResponse::success(filtered));
+                        }
+                    }
+                }
+            }
+
+            log_info(&format!("POST /api/transit-deserts called - cache miss, computing transit deserts for bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", req.bounds.min_lat, req.bounds.max_lat, req.bounds.min_lon, req.bounds.max_lon));
+
+            // Pad bounds by 15% in each direction
+            let lat_span = req.bounds.max_lat - req.bounds.min_lat;
+            let lon_span = req.bounds.max_lon - req.bounds.min_lon;
+            let padded_bounds = LondonBounds {
+                min_lat: req.bounds.min_lat - lat_span * 0.15,
+                max_lat: req.bounds.max_lat + lat_span * 0.15,
+                min_lon: req.bounds.min_lon - lon_span * 0.15,
+                max_lon: req.bounds.max_lon + lon_span * 0.15,
+            };
+
+            let res_areas = match state.fetch_residential_coordinates(&padded_bounds).await {
                 Ok(c) => c,
                 Err(e) => {
                     log_error(&format!(
@@ -10988,7 +11063,7 @@ mod server {
             }
 
             log_debug(&format!(
-                "POST /api/transit-deserts - fetched {} residential areas",
+                "POST /api/transit-deserts - fetched {} residential areas for padded bounds",
                 res_areas.len()
             ));
             let stations = state.stations.load().clone();
@@ -11022,11 +11097,31 @@ mod server {
                     return Json(ApiResponse::error(e.to_string()));
                 }
             };
+
             log_info(&format!(
-                "POST /api/transit-deserts completed - found {} transit deserts",
+                "POST /api/transit-deserts completed - computed {} transit deserts for padded bounds",
                 deserts.len()
             ));
-            Json(ApiResponse::success(deserts))
+
+            // Save to Cache
+            {
+                if let Ok(mut cache_guard) = state.transit_desert_cache.lock() {
+                    *cache_guard = Some((padded_bounds, deserts.clone()));
+                }
+            }
+
+            // Filter back to requested bounds
+            let filtered: Vec<ResidentialArea> = deserts
+                .into_iter()
+                .filter(|r| {
+                    r.centroid.lat >= req.bounds.min_lat
+                        && r.centroid.lat <= req.bounds.max_lat
+                        && r.centroid.lon >= req.bounds.min_lon
+                        && r.centroid.lon <= req.bounds.max_lon
+                })
+                .collect();
+
+            Json(ApiResponse::success(filtered))
         }
 
         /// Network coverage summary for the current viewport: how much residential land
@@ -11110,36 +11205,15 @@ mod server {
         /// eliminates them. The proposed stations are persisted as free stations so the
         /// catchment engine immediately accounts for them.
         #[tracing::instrument(name = "ai_add_station", skip_all)]
-        pub(crate) async fn ai_add_station(
-            State(state): State<AppState>,
-            Json(req): Json<AiAddStationRequest>,
-        ) -> Json<ApiResponse<AiAddStationResponse>> {
-            if let Err(e) = validate_bounds(
-                req.bounds.min_lat,
-                req.bounds.min_lon,
-                req.bounds.max_lat,
-                req.bounds.max_lon,
-            ) {
-                return Json(ApiResponse::error(e.to_string()));
-            }
-            log_info(&format!(
-                "POST /api/ai/add-station called - max_stations={}",
-                req.max_stations
-            ));
-            // Cap max_stations to prevent abusive requests from overwhelming the engine
-            if req.max_stations == 0 || req.max_stations > 50 {
-                log_error(&format!(
-                    "POST /api/ai/add-station - invalid max_stations={}",
-                    req.max_stations
-                ));
-                return Json(ApiResponse::error(
-                    "max_stations must be between 1 and 50".into(),
-                ));
-            }
-            let res_areas = match state.fetch_residential_coordinates(&req.bounds).await {
-                Ok(c) => c,
-                Err(e) => return Json(ApiResponse::error(e.to_string())),
-            };
+        async fn plan_stations(
+            state: &AppState,
+            bounds: &LondonBounds,
+            max_stations: usize,
+        ) -> AppResult<(Vec<Coordinate>, usize, Vec<Coordinate>)> {
+            let res_areas = state
+                .fetch_residential_coordinates(bounds)
+                .await
+                .map_err(|e| AppError::ExternalApi(e.to_string()))?;
             let centroids: Vec<Coordinate> = res_areas.iter().map(|r| r.centroid).collect();
 
             let existing = state.stations.load();
@@ -11147,7 +11221,7 @@ mod server {
             let geom = state.geometry_engine.load().clone();
             let geom_clone1 = geom.clone();
             let centroids_clone = centroids.clone();
-            let deserts = match tokio::task::spawn_blocking(move || {
+            let deserts = tokio::task::spawn_blocking(move || {
                 geom_clone1.compute_transit_deserts(
                     &centroids_clone,
                     &existing_clone,
@@ -11155,38 +11229,19 @@ mod server {
                 )
             })
             .await
-            {
-                Ok(d) => d,
-                Err(e) => {
-                    log_error(&format!(
-                        "POST /api/ai/add-station failed to spawn blocking task for initial deserts: {}",
-                        e
-                    ));
-                    return Json(ApiResponse::<AiAddStationResponse>::error(e.to_string()));
-                }
-            };
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
             let deserts_before = deserts.len();
             if deserts_before == 0 {
-                log_warn("POST /api/ai/add-station - no transit deserts found. Nothing to plan.");
-                return Json(ApiResponse::success(AiAddStationResponse {
-                    stations: vec![],
-                    deserts_before: 0,
-                    deserts_after: 0,
-                    coverage_gain: 0.0,
-                }));
+                return Ok((vec![], 0, centroids));
             }
 
-            // Plan the new stations on a blocking thread (CPU-bound, Rayon-parallel).
             let deserts_for_plan = deserts.clone();
-            let max_stations = req.max_stations;
             let planned = tokio::task::spawn_blocking(move || {
                 plan_infill_stations(&deserts_for_plan, CATCHMENT_RADIUS, max_stations)
             })
             .await
             .unwrap_or_default();
-            if planned.is_empty() {
-                log_warn("POST /api/ai/add-station - plan_infill_stations returned EMPTY! No stations to place.");
-            }
 
             let tracks_for_snap = (**state.tracks.load()).clone();
             let planned = tokio::task::spawn_blocking(move || {
@@ -11198,7 +11253,13 @@ mod server {
             .await
             .unwrap_or_default();
 
-            // Materialise Station records and persist them.
+            Ok((planned, deserts_before, centroids))
+        }
+
+        async fn persist_stations(
+            state: &AppState,
+            planned: &[Coordinate],
+        ) -> AppResult<Vec<Station>> {
             let ts = Utc::now().timestamp_millis();
             let mut new_stations: Vec<Station> = Vec::new();
             let mut name_counts = std::collections::HashMap::new();
@@ -11260,42 +11321,95 @@ mod server {
                 new_stations.push(st);
             }
 
-            // Update live state + persist.
-            {
-                let mut all = (**existing).clone();
-                all.extend(new_stations.iter().cloned());
-                state.stations.store(Arc::new(all));
-                let cache = state.cache.clone();
-                let to_save = new_stations.clone();
-                let _ = tokio::task::spawn_blocking(move || {
-                    for s in &to_save {
-                        let _ = cache.save_free_station(s);
-                    }
-                })
-                .await;
-            }
+            let existing = state.stations.load();
+            let mut all = (**existing).clone();
+            all.extend(new_stations.iter().cloned());
+            state.stations.store(Arc::new(all));
+            let cache = state.cache.clone();
+            let to_save = new_stations.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                for s in &to_save {
+                    let _ = cache.save_free_station(s);
+                }
+            })
+            .await;
 
-            // Re-evaluate deserts with the new stations included.
+            Ok(new_stations)
+        }
+
+        async fn update_coverage(
+            state: &AppState,
+            centroids: &[Coordinate],
+            deserts_before: usize,
+        ) -> AppResult<(usize, f64)> {
             let updated = state.stations.load().clone();
-            let geom_clone = geom.clone();
-            let deserts_after = match tokio::task::spawn_blocking(move || {
-                geom_clone.compute_transit_deserts(&centroids, &updated, CATCHMENT_RADIUS)
+            let geom = state.geometry_engine.load().clone();
+            let centroids_clone = centroids.to_vec();
+            let deserts_after = tokio::task::spawn_blocking(move || {
+                geom.compute_transit_deserts(&centroids_clone, &updated, CATCHMENT_RADIUS)
             })
             .await
-            {
-                Ok(d) => d.len(),
-                Err(e) => {
-                    log_error(&format!(
-                        "POST /api/ai/add-station failed to spawn blocking task for final deserts: {}",
-                        e
-                    ));
-                    return Json(ApiResponse::<AiAddStationResponse>::error(e.to_string()));
-                }
-            };
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+            let deserts_after_len = deserts_after.len();
             let coverage_gain = if deserts_before > 0 {
-                ((deserts_before - deserts_after) as f64 / deserts_before as f64) * 100.0
+                ((deserts_before - deserts_after_len) as f64 / deserts_before as f64) * 100.0
             } else {
                 0.0
+            };
+
+            Ok((deserts_after_len, coverage_gain))
+        }
+
+        pub(crate) async fn ai_add_station(
+            State(state): State<AppState>,
+            Json(req): Json<AiAddStationRequest>,
+        ) -> Json<ApiResponse<AiAddStationResponse>> {
+            if let Err(e) = validate_bounds(
+                req.bounds.min_lat,
+                req.bounds.min_lon,
+                req.bounds.max_lat,
+                req.bounds.max_lon,
+            ) {
+                return Json(ApiResponse::error(e.to_string()));
+            }
+            log_info(&format!(
+                "POST /api/ai/add-station called - max_stations={}",
+                req.max_stations
+            ));
+            if req.max_stations == 0 || req.max_stations > 50 {
+                log_error(&format!(
+                    "POST /api/ai/add-station - invalid max_stations={}",
+                    req.max_stations
+                ));
+                return Json(ApiResponse::error(
+                    "max_stations must be between 1 and 50".into(),
+                ));
+            }
+
+            let (planned, deserts_before, centroids) = match plan_stations(&state, &req.bounds, req.max_stations).await {
+                Ok(res) => res,
+                Err(e) => return Json(ApiResponse::error(e.to_string())),
+            };
+
+            if deserts_before == 0 {
+                log_warn("POST /api/ai/add-station - no transit deserts found. Nothing to plan.");
+                return Json(ApiResponse::success(AiAddStationResponse {
+                    stations: vec![],
+                    deserts_before: 0,
+                    deserts_after: 0,
+                    coverage_gain: 0.0,
+                }));
+            }
+
+            let new_stations = match persist_stations(&state, &planned).await {
+                Ok(s) => s,
+                Err(e) => return Json(ApiResponse::error(e.to_string())),
+            };
+
+            let (deserts_after, coverage_gain) = match update_coverage(&state, &centroids, deserts_before).await {
+                Ok(res) => res,
+                Err(e) => return Json(ApiResponse::error(e.to_string())),
             };
 
             log_info(&format!(
@@ -11498,7 +11612,10 @@ mod server {
             match (temp1, temp2) {
                 (Some(t1), Some(t2)) => {
                     let avg = (t1 + t2) / 2.0;
-                    Some((avg, format!("Avg of Open-Meteo ({:.1}°C) & Yr.no ({:.1}°C)", t1, t2)))
+                    Some((
+                        avg,
+                        format!("Avg of Open-Meteo ({:.1}°C) & Yr.no ({:.1}°C)", t1, t2),
+                    ))
                 }
                 (Some(t), None) => Some((t, "Open-Meteo".to_string())),
                 (None, Some(t)) => Some((t, "Yr.no".to_string())),
@@ -12084,9 +12201,10 @@ mod server {
             Ok(())
         }
 
-        /// Load pre-computed network state from bincode cache.
-        /// Falls back to embedded data if cache doesn't exist.
-        #[allow(dead_code)]
+        // Load pre-computed network state from bincode cache.
+        // Falls back to embedded data if cache doesn't exist.
+
+        /* unused
         pub(crate) fn load_or_hydrate_network() -> AppResult<(Vec<Station>, Vec<RailSegment>)> {
             let cache_path = dirs::cache_dir()
                 .ok_or_else(|| AppError::Config("Cannot find cache directory".to_string()))?
@@ -12141,6 +12259,7 @@ mod server {
                 embedded_rail_segments().clone(),
             ))
         }
+        */
 
         // ============================================================================
         // MEMORY-MAPPED COLD STORAGE — instant R*-Tree loading via mmap
@@ -12251,13 +12370,12 @@ mod server {
         /// ```
         pub struct MmapCacheStore {
             /// The raw memory-mapped file. Safe to read lock-free across all Rayon threads.
-            #[allow(dead_code)]
-            pub(crate) mmap: memmap2::Mmap,
+
+            /* unused */ // pub(crate) mmap: memmap2::Mmap,
             /// Total bytes mapped.
             pub(crate) len: usize,
         }
 
-        #[allow(dead_code)]
         impl MmapCacheStore {
             /// Open or create a memory-mapped cache file at the given path.
             /// Pre-allocates a sparse file if empty.
@@ -12278,18 +12396,21 @@ mod server {
                 // SAFETY: memmap2::MmapOptions::map creates a read-write memory mapping.
                 // The file was opened with read+write+create, so the mapping is valid.
                 // The returned Mmap is Sync+Send — safe for cross-thread lock-free reads.
-                let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+                let _mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
                 log_info(&format!(
                     "MmapCacheStore initialized - {} bytes virtual memory mapped at {}",
                     len, path
                 ));
-                Ok(Self { mmap, len })
+                Ok(Self {
+                    /* mmap: _mmap, */ len,
+                })
             }
 
-            /// Retrieves spatial pods with literal zero CPU allocation/parsing.
-            /// The raw disk bytes ARE the Rust struct — bytemuck cast is free.
-            /// Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
+            // Retrieves spatial pods with literal zero CPU allocation/parsing.
+            // The raw disk bytes ARE the Rust struct — bytemuck cast is free.
+            // Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
+            /* unused
             pub fn read_stations_zero_copy(
                 &self,
                 byte_offset: usize,
@@ -12348,6 +12469,7 @@ mod server {
                 let slice = &self.mmap[byte_offset..end];
                 Some(bytemuck::cast_slice(slice))
             }
+            */
         }
 
         // ============================================================================
@@ -12390,7 +12512,7 @@ mod server {
         /// ```
         #[cfg(windows)]
         pub fn pin_memory_to_ram(ptr: *const u8, len: usize) {
-            extern "system" {
+            unsafe extern "system" {
                 fn VirtualLock(lpAddress: *const std::ffi::c_void, dwSize: usize) -> i32;
             }
             // SAFETY: VirtualLock is a Windows kernel API that locks physical pages in RAM.
@@ -12747,7 +12869,7 @@ fn main() {
                 let cache_path = cache_dir.join("alex-tube-v").join("spatial_cache.bin");
                 match MmapCacheStore::new(cache_path.to_str().unwrap_or(""), 1 << 20) {
                     Ok(store) => {
-                        log_info(&format!("main - MmapCacheStore VFS initialized: {} bytes mapped", store.len()));
+                        log_info(&format!("main - MmapCacheStore VFS initialized: {} bytes mapped", store.len));
                         Some(store)
                     }
                     Err(e) => {
@@ -12777,11 +12899,9 @@ fn main() {
 
         let bg_state = state.clone();
         let bg_bounds = config.london_bounds.clone();
-        let bg_boot_start = boot_start.clone();
-        
+        let bg_boot_start = boot_start;
         tokio::spawn(async move {
             log_info("main - compiling spatial routing graph before loading lines (BACKGROUND)");
-            
             let init_success = match bg_state.initialize_routing_graph(&bg_bounds).await {
                 Ok(_) => true,
                 Err(e) => {
@@ -12905,10 +13025,9 @@ fn main() {
         log_info("main - spawning analytics console window with actual ephemeral port");
         let initial_logs: Vec<String> = {
             let storage = get_log_storage();
-            if let Ok(logs) = storage.read() {
-                logs.iter().take(5).cloned().collect()
-            } else {
-                Vec::new()
+            match storage.read() {
+                Ok(logs) => logs.iter().take(5).cloned().collect(),
+                _ => Vec::new(),
             }
         };
         let exe =
@@ -12955,31 +13074,23 @@ fn main() {
 
     let living_engine_state = state.clone();
     rt.spawn(async move {
-        log_info("LIVING ENGINE: Background Monte Carlo flow loop started.");
-        // Initial delay to let the routing graph populate from track data
+        log_info("LIVING ENGINE: Background Monte Carlo flow loop started (one-shot).");
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-        loop {
-            let graph = living_engine_state.routing_graph.load();
-            if !graph.nodes.is_empty() {
-                let graph_for_sim = (*graph).clone();
-                drop(graph); // Release ArcSwap read guard before blocking
-                let current_loads = tokio::task::spawn_blocking(move || {
-                    // Route 35,000 synthetic agents continuously
-                    graph_for_sim.simulate_network_load(35_000)
-                })
-                .await
-                .unwrap_or_default();
-
-                // Lock-free atomic swap of the global network load state
-                living_engine_state
-                    .edge_loads
-                    .store(Arc::new(current_loads));
-                log_debug("LIVING ENGINE: Edge loads recalculated and atomically swapped.");
-            } else {
-                log_trace("LIVING ENGINE: Routing graph empty, skipping tick.");
-            }
-            // Physics tick every 15 seconds
-            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+        let graph = living_engine_state.routing_graph.load();
+        if !graph.nodes.is_empty() {
+            let graph_for_sim = (*graph).clone();
+            drop(graph);
+            let current_loads = tokio::task::spawn_blocking(move || {
+                graph_for_sim.simulate_network_load(10_000)
+            })
+            .await
+            .unwrap_or_default();
+            living_engine_state
+                .edge_loads
+                .store(Arc::new(current_loads));
+            log_info("LIVING ENGINE: One-shot edge loads calculated and set. No repeat to avoid UI freeze.");
+        } else {
+            log_trace("LIVING ENGINE: Routing graph empty, skipping tick.");
         }
     });
     log_info("main - living network engine spawned on shared runtime (15s tick)");
@@ -12997,7 +13108,7 @@ fn main() {
     let result = std::panic::catch_unwind(|| {
         LaunchBuilder::desktop()
             .with_cfg(build_desktop_window_configuration(&api_base))
-            .launch(App);
+            .launch(app);
     });
     // Drop _stderr_capture here restores the original stderr handle.
     drop(_stderr_capture);
@@ -13080,16 +13191,16 @@ fn main() {
 }
 
 mod ui {
-    #[allow(unused_imports)]
+
     pub(crate) use api_client::*;
-    #[allow(unused_imports)]
+
     pub(crate) use components::*;
-    #[allow(unused_imports)]
-    pub(crate) use js::*;
-    #[allow(unused_imports)]
+
+    // unused pub(crate) use js::*;
+
     pub(crate) use leaflet::*;
-    #[allow(unused_imports)]
-    pub(crate) use styles::*;
+
+    // pub(crate) use styles::*; unused
 
     mod styles {
         // #[rustfmt::skip] — prevent formatter from parsing the massive CSS string
@@ -13598,7 +13709,6 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[allow(dead_code)]
         pub(crate) fn set_sat_provider_js(idx: i32) -> String {
             format!(
                 "window.satProviderIdx = {}; window.setBaseMode('satellite');",
@@ -14267,7 +14377,7 @@ window.initMap = async function() {
 
         window._isInteracting = false;
         window._renderDebounceTimer = null;
-        window._RENDER_DEBOUNCE_MS = 150;
+        window._RENDER_DEBOUNCE_MS = 300;
 
         // ============================================================
         // VIEWPORT TRANSLATION SYNC FOR CANVAS DURING PANNING
@@ -14384,26 +14494,26 @@ window.initMap = async function() {
                 
                 return 'underground';
             }
+            var catPriority = ['national-rail','elizabeth','dlr','overground','tramlink','emirates-airline','bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','proposed','underground'];
             var groups = {};
             stations.forEach(function(st) {
                 var normName = normalizeName(st.name);
                 var cat = getRoundelCategory(st);
-                var key = normName + '||' + cat;
-                if (!groups[key]) groups[key] = { stations: [], category: cat, normName: normName };
-                groups[key].stations.push(st);
+                if (!groups[normName]) groups[normName] = { stations: [], category: null, normName: normName };
+                groups[normName].stations.push(st);
+                var cur = groups[normName].category;
+                if (cur === null || catPriority.indexOf(cat) < catPriority.indexOf(cur)) {
+                    groups[normName].category = cat;
+                }
             });
             var merged = [];
-            for (var key in groups) {
-                var group = groups[key];
+            for (var normName in groups) {
+                var group = groups[normName];
                 var stArr = group.stations;
                 var anyHistorical = stArr.some(function(s) { return s.isHistorical || s.category === 'historic'; });
-                if (stArr.length === 1) {
-                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: stArr[0].coord.lat, lon: stArr[0].coord.lon, category: group.category, isProposed: stArr[0].zone === 0, isHistorical: anyHistorical });
-                } else {
-                    var latSum = 0, lonSum = 0;
-                    stArr.forEach(function(s) { latSum += s.coord.lat; lonSum += s.coord.lon; });
-                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: latSum / stArr.length, lon: lonSum / stArr.length, category: group.category, isProposed: stArr[0].zone === 0, isHistorical: anyHistorical });
-                }
+                var latSum = 0, lonSum = 0;
+                stArr.forEach(function(s) { latSum += s.coord.lat; lonSum += s.coord.lon; });
+                merged.push({ id: stArr[0].id, name: stArr[0].name, lat: latSum / stArr.length, lon: lonSum / stArr.length, category: group.category, isProposed: stArr[0].zone === 0, isHistorical: anyHistorical });
             }
             console.log('[RENDER] Station merge: ' + stations.length + ' raw -> ' + merged.length + ' merged markers');
             return merged;
@@ -14516,7 +14626,7 @@ window.initMap = async function() {
                 }
 
                 var zoom = this._map.getZoom();
-                var stSize = zoom >= 17 ? 36 : zoom >= 15 ? 30 : zoom >= 13 ? 24 : zoom >= 11 ? 18 : 12;
+                var stSize = zoom >= 17 ? 52 : zoom >= 15 ? 42 : zoom >= 13 ? 34 : zoom >= 11 ? 26 : 18;
                 var half = stSize / 2;
                 var colors = { 
                     underground: '#E32017', 
@@ -14560,7 +14670,7 @@ window.initMap = async function() {
                 for (var nn in nameToIndices) {
                     var arr = nameToIndices[nn];
                     if (arr.length <= 1) { offsetX[arr[0]] = 0; continue; }
-                    var gap = 4;
+                    var gap = 2;
                     var totalWidth = arr.length * stSize + (arr.length - 1) * gap;
                     var startX = -totalWidth / 2 + stSize / 2;
                     for (var j = 0; j < arr.length; j++) {
@@ -14656,18 +14766,25 @@ window.initMap = async function() {
         window._stationTooltip.style.cssText = 'position:absolute;pointer-events:none;background:rgba(15,15,20,0.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:500;font-family:"Inter","Roboto",sans-serif;white-space:nowrap;z-index:9999;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:opacity 0.2s ease, transform 0.1s ease;';
         document.getElementById('map-viewport').appendChild(window._stationTooltip);
 
+        let hitTestPending = false;
         window.map.getContainer().addEventListener('mousemove', function(e) {
-            var rect = e.currentTarget.getBoundingClientRect();
-            var x = e.clientX - rect.left, y = e.clientY - rect.top;
-            var hit = window._stationCanvas.hitTest(L.point(x, y));
-            if (hit) {
-                window._stationTooltip.textContent = hit.name;
-                window._stationTooltip.style.display = 'block';
-                window._stationTooltip.style.left = (x + 14) + 'px';
-                window._stationTooltip.style.top = (y - 32) + 'px';
-            } else {
-                window._stationTooltip.style.display = 'none';
-            }
+            if (hitTestPending) return;
+            hitTestPending = true;
+            var clientX = e.clientX, clientY = e.clientY, currentTarget = e.currentTarget;
+            requestAnimationFrame(function() {
+                hitTestPending = false;
+                var rect = currentTarget.getBoundingClientRect();
+                var x = clientX - rect.left, y = clientY - rect.top;
+                var hit = window._stationCanvas.hitTest(L.point(x, y));
+                if (hit) {
+                    window._stationTooltip.textContent = hit.name;
+                    window._stationTooltip.style.display = 'block';
+                    window._stationTooltip.style.left = (x + 14) + 'px';
+                    window._stationTooltip.style.top = (y - 32) + 'px';
+                } else {
+                    window._stationTooltip.style.display = 'none';
+                }
+            });
         });
 
         // Compatibility wrapper so IPC updateStations still works
@@ -14719,7 +14836,6 @@ window.initMap = async function() {
         window.desertFetchAbortController = null;
         window.desertMoveDebounceTimer = null;
 
-        // ------ Core rendering function ------
         window.drawDesertsForCurrentViewport = function() {
             var t0 = performance.now();
             if (!window.coverageLayerGroup) {
@@ -14766,14 +14882,13 @@ window.initMap = async function() {
                 }
             }
 
-            // Red polygons for each transit desert
+            // Red polygons combined into one GeoJSON FeatureCollection
+            var geojsonFeatures = [];
             for (var i = 0; i < window.activeDeserts.length; i++) {
-                if (visibleCount > 3000) break;
                 var area = window.activeDeserts[i];
                 if (!area) { desertErrors++; continue; }
                 var centroid = area.centroid;
                 if (!centroid || typeof centroid.lat !== 'number' || typeof centroid.lon !== 'number') {
-                    if (desertErrors < 3) console.warn('[DESERT][RENDER] bad centroid at i=' + i, area);
                     desertErrors++;
                     continue;
                 }
@@ -14783,7 +14898,6 @@ window.initMap = async function() {
                 }
                 var poly = area.polygon;
                 if (!poly || !Array.isArray(poly) || poly.length < 3) {
-                    if (desertErrors < 3) console.warn('[DESERT][RENDER] bad polygon at i=' + i, 'len=' + (poly ? poly.length : 'null'));
                     desertErrors++;
                     continue;
                 }
@@ -14791,30 +14905,50 @@ window.initMap = async function() {
                 for (var j = 0; j < poly.length; j++) {
                     var pt = poly[j];
                     if (pt && typeof pt.lat === 'number' && typeof pt.lon === 'number') {
-                        polyCoords.push([pt.lat, pt.lon]);
+                        polyCoords.push([pt.lon, pt.lat]); // GeoJSON is [lng, lat]
                     }
                 }
                 if (polyCoords.length < 3) { desertErrors++; continue; }
+                // Close the polygon ring if it's not closed
+                if (polyCoords[0][0] !== polyCoords[polyCoords.length-1][0] || polyCoords[0][1] !== polyCoords[polyCoords.length-1][1]) {
+                    polyCoords.push(polyCoords[0]);
+                }
+                geojsonFeatures.push({
+                    type: "Feature",
+                    geometry: {
+                        type: "Polygon",
+                        coordinates: [polyCoords]
+                    }
+                });
+                visibleCount++;
+            }
+
+            if (geojsonFeatures.length > 0) {
+                var collection = {
+                    type: "FeatureCollection",
+                    features: geojsonFeatures
+                };
                 try {
-                    L.polygon(polyCoords, {
+                    L.geoJSON(collection, {
                         pane: 'deserts',
-                        fillColor: '#ff1744',
-                        fillOpacity: 0.65,
-                        color: '#cc0022',
-                        weight: 1.5,
-                        stroke: true,
-                        interactive: false
+                        style: {
+                            fillColor: '#ff1744',
+                            fillOpacity: 0.65,
+                            color: '#cc0022',
+                            weight: 1.5,
+                            stroke: true,
+                            interactive: false
+                        }
                     }).addTo(window.coverageLayerGroup);
-                    visibleCount++;
                 } catch(ex) {
-                    if (desertErrors < 3) console.error('[DESERT][RENDER] L.polygon failed at i=' + i, ex);
-                    desertErrors++;
+                    console.error('[DESERT][RENDER] L.geoJSON failed:', ex);
                 }
             }
+
             var elapsed = (performance.now() - t0).toFixed(1);
-            console.log('[DESERT][RENDER] Complete: ' + visibleCount + ' red polygons, ' +
+            console.log('[DESERT][RENDER] GeoJSON Complete: ' + visibleCount + ' red polygons, ' +
                 stationCircleCount + ' green circles, ' + skippedOutOfBounds + ' out-of-bounds, ' +
-                desertErrors + ' errors, total_loaded=' + window.activeDeserts.length + ', time=' + elapsed + 'ms');
+                desertErrors + ' errors, time=' + elapsed + 'ms');
         };
 
         // ------ Direct HTTP fetch (bypasses IPC entirely) ------
@@ -14896,15 +15030,29 @@ window.initMap = async function() {
         };
 
         // ------ Debounced re-fetch on map move ------
+        window.lastFetchedBounds = null;
         window.scheduleDesertRefetch = function(reason) {
             if (!window.catchmentEnabled) return;
             clearTimeout(window.desertMoveDebounceTimer);
             window.desertMoveDebounceTimer = setTimeout(function() {
+                let bounds = window.map.getBounds();
+                if (window.lastFetchedBounds) {
+                    let latDiff = Math.abs(bounds.getSouth() - window.lastFetchedBounds.getSouth());
+                    let lonDiff = Math.abs(bounds.getWest() - window.lastFetchedBounds.getWest());
+                    let latHeight = bounds.getNorth() - bounds.getSouth();
+                    let lonWidth = bounds.getEast() - bounds.getWest();
+                    // Skip if shift is less than 10% of viewport dimensions
+                    if (latDiff < latHeight * 0.1 && lonDiff < lonWidth * 0.1) {
+                        console.log('[DESERT][MOVE] skipped - viewport shift is too small');
+                        return;
+                    }
+                }
+                window.lastFetchedBounds = bounds;
                 console.log('[DESERT][MOVE] Debounce fired, re-fetching (reason=' + reason + ')');
                 window.activeDeserts = [];  // Clear stale data
                 if (window.coverageLayerGroup) window.coverageLayerGroup.clearLayers();
                 window.fetchAndRenderDeserts(reason);
-            }, 800); // 800ms debounce — avoids spamming on fast scroll
+            }, 1500); // 1500ms debounce
         };
 
         // Track culling optimization (uses requestIdleCallback for non-critical renders)
@@ -14924,26 +15072,50 @@ window.initMap = async function() {
                 if (z < 11) return;
                 let bounds = window.map.getBounds().pad(0.1);
                 let visibleCount = 0;
+                let features = [];
+
                 window.allTracks.forEach(track => {
                     if (visibleCount > 2500) return;
                     if (!track.geometry || track.geometry.length < 2) return;
                     let first = track.geometry[0];
                     if (bounds.contains([first.lat, first.lon])) {
-                        let coords = track.geometry.map(pt => [pt.lat, pt.lon]);
-                        try {
-                            let op = (track.operator_name || '').toLowerCase();
-                            let isTfl = op.includes('underground') || op.includes('tfl') || op.includes('elizabeth') || op.includes('overground') || op.includes('dlr');
-                            let isNR = op.includes('national rail') || op.includes('southeastern') || op.includes('thameslink') || op.includes('great western') || op.includes('southern');
-                            let color = isTfl ? '#4a6fa5' : isNR ? '#c96a1e' : '#667';
-                            let poly = L.polyline(coords, {
-                                color: color, weight: 1.5, opacity: 0.5,
-                                renderer: window.railRenderer, interactive: false
-                            }).addTo(window.map);
-                            window.trackLayers.push(poly);
-                            visibleCount++;
-                        } catch(ex){}
+                        let coords = track.geometry.map(pt => [pt.lon, pt.lat]); // Lng, Lat
+                        let op = (track.operator_name || '').toLowerCase();
+                        let isTfl = op.includes('underground') || op.includes('tfl') || op.includes('elizabeth') || op.includes('overground') || op.includes('dlr');
+                        let isNR = op.includes('national rail') || op.includes('southeastern') || op.includes('thameslink') || op.includes('great western') || op.includes('southern');
+                        let color = isTfl ? '#4a6fa5' : isNR ? '#c96a1e' : '#667';
+                        
+                        features.push({
+                            type: "Feature",
+                            properties: { color: color },
+                            geometry: {
+                                type: "LineString",
+                                coordinates: coords
+                            }
+                        });
+                        visibleCount++;
                     }
                 });
+
+                if (features.length > 0) {
+                    let collection = { type: "FeatureCollection", features: features };
+                    try {
+                        let layer = L.geoJSON(collection, {
+                            style: function(feature) {
+                                return {
+                                    color: feature.properties.color,
+                                    weight: 1.5,
+                                    opacity: 0.5,
+                                    renderer: window.railRenderer,
+                                    interactive: false
+                                };
+                            }
+                        }).addTo(window.map);
+                        window.trackLayers.push(layer);
+                    } catch(ex) {
+                        console.error('[PERF][TRACKS] L.geoJSON failed:', ex);
+                    }
+                }
                 console.log('[PERF][TRACKS] Rendered ' + visibleCount + ' tracks in ' + (performance.now() - t0).toFixed(1) + 'ms');
             };
             if (window.requestIdleCallback) {
@@ -15436,18 +15608,32 @@ while (true) {
             
             let serialized = JSON.stringify({ color: line.color, geom: line.geometry, sub: line.sub_geometries, name: line.name });
             let existing = window.lineLayers[line.id];
-            
+            let offsetIdx = parallelOffsets.get(line.id) || 0;
+            let offsetMeters = offsetIdx * PARALLEL_OFFSET_M;
+
             if (existing) {
                 if (existing.serialized === serialized) {
                     return;
                 } else {
-                    existing.polys.forEach(p => { try { p.off(); window.map.removeLayer(p); } catch(ex){} });
+                    let geoSets = (line.sub_geometries && line.sub_geometries.length > 0)
+                        ? line.sub_geometries : [line.geometry];
+                    if (existing.polys.length === geoSets.length) {
+                        for (let g = 0; g < geoSets.length; g++) {
+                            let coords = geoSets[g].map(pt => [pt.lat, pt.lon]);
+                            if (offsetMeters !== 0) {
+                                coords = offsetCoords(coords, offsetMeters);
+                            }
+                            existing.polys[g].setLatLngs(coords);
+                            existing.polys[g].setStyle({ color: line.color || '#00bcd4' });
+                        }
+                        existing.serialized = serialized;
+                        existing.lineRef = line;
+                        return;
+                    } else {
+                        existing.polys.forEach(p => { try { p.off(); window.map.removeLayer(p); } catch(ex){} });
+                    }
                 }
             }
-            
-            // Get the offset index for this line (0 if no parallel lines)
-            let offsetIdx = parallelOffsets.get(line.id) || 0;
-            let offsetMeters = offsetIdx * PARALLEL_OFFSET_M;
             
             let geoSets = (line.sub_geometries && line.sub_geometries.length > 0)
                 ? line.sub_geometries : [line.geometry];
@@ -15541,8 +15727,8 @@ while (true) {
     }
 
     mod api_client {
-        use crate::domain::ApiResponse;
         use crate::logger::*;
+        use crate::network::ApiResponse;
         use std::sync::OnceLock;
         use std::time::Duration;
 
@@ -15672,9 +15858,7 @@ while (true) {
             }
         }
 
-        pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(
-            url: &str,
-        ) -> Option<T> {
+        pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = API_BASE_URL
                 .get()
@@ -15919,10 +16103,13 @@ window.__consoleDupCount = 0;
             log_info("build_desktop_window_configuration - configuring desktop WebView");
             // Security: only disable GPU sandbox (safe) — never disable web security.
             // CSP header in build_webview_head() handles XSS prevention.
-            std::env::set_var(
-                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                "--disable-gpu-sandbox --disable-features=TrackingPrevention",
-            );
+            // FIXME: Audit that the environment access only happens in single-threaded code.
+            unsafe {
+                std::env::set_var(
+                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                    "--disable-gpu-sandbox --disable-features=TrackingPrevention",
+                )
+            };
 
             let local_profile_dir = std::env::current_dir()
                 .unwrap_or_default()
@@ -15957,8 +16144,8 @@ window.__consoleDupCount = 0;
         use super::js::*;
         use super::styles::*;
         use crate::config::*;
-        use crate::domain::*;
         use crate::logger::*;
+        use crate::network::*;
         use crate::primitives::*;
         use crate::routing::{Line, RailwayTrack};
         use chrono::Utc;
@@ -16281,8 +16468,8 @@ window.__consoleDupCount = 0;
         /// components that own independent state ? this keeps the reactive graph flat
         /// and avoids the "prop drilling" / context-override pitfalls common in deeply
         /// nested Dioxus trees.
-        #[allow(non_snake_case, dependency_on_unit_never_type_fallback)]
-        pub fn App() -> Element {
+        #[allow(dependency_on_unit_never_type_fallback)]
+        pub fn app() -> Element {
             let mut toasts = use_signal::<Vec<Toast>>(Vec::new);
             let mut toast_id_counter = use_signal::<usize>(|| 0);
 
@@ -16298,8 +16485,8 @@ window.__consoleDupCount = 0;
             let mut selected_station = use_signal::<Option<Station>>(|| None);
 
             let mut catchment_enabled = use_signal::<bool>(|| false);
-            let mut show_historical_stations = use_signal::<bool>(|| false);
-            let mut station_arrivals = use_signal::<Vec<StationArrival>>(|| Vec::new());
+            // let show_historical_stations = use_signal::<bool>(|| false);
+            let mut station_arrivals = use_signal::<Vec<StationArrival>>(Vec::new);
             let mut station_arrivals_loading = use_signal::<bool>(|| false);
             let mut map_bounds = use_signal::<Option<LondonBounds>>(|| None);
 
@@ -16320,11 +16507,11 @@ window.__consoleDupCount = 0;
             let mut permanent_deletions = use_signal::<HashSet<String>>(HashSet::new);
 
             // Menu state signals for persistent click-based menus
-            let mut file_menu_open = use_signal::<bool>(|| false);
-            let mut edit_menu_open = use_signal::<bool>(|| false);
-            let mut view_menu_open = use_signal::<bool>(|| false);
-            let mut tools_menu_open = use_signal::<bool>(|| false);
-            let mut help_menu_open = use_signal::<bool>(|| false);
+            // let mut file_menu_open = use_signal::<bool>(|| false);
+            // let mut edit_menu_open = use_signal::<bool>(|| false);
+            // let mut view_menu_open = use_signal::<bool>(|| false);
+            // let mut tools_menu_open = use_signal::<bool>(|| false);
+            // let mut help_menu_open = use_signal::<bool>(|| false);
 
             let mut logger_open = use_signal::<bool>(|| true);
             let mut logs = use_signal::<String>(String::new);
@@ -16359,7 +16546,7 @@ window.__consoleDupCount = 0;
             let mut active_base_mode = use_signal::<String>(|| "satellite".to_string());
             let mut sat_provider_idx = use_signal::<usize>(|| 0);
             let mut tile_provider_idx = use_signal::<usize>(|| 0);
-            let mut google_labels = use_signal::<bool>(|| true);
+            let google_labels = use_signal::<bool>(|| true);
             let mut is_journey_planner_open = use_signal::<bool>(|| false);
             let mut journey_from = use_signal::<String>(String::new);
             let mut journey_to = use_signal::<String>(String::new);
@@ -16632,7 +16819,9 @@ window.__consoleDupCount = 0;
             let mut weather_info = use_signal::<Option<crate::server::WeatherResponse>>(|| None);
             use_future(move || async move {
                 loop {
-                    if let Some(res) = get_api::<Option<crate::server::WeatherResponse>>("/api/weather").await {
+                    if let Some(res) =
+                        get_api::<Option<crate::server::WeatherResponse>>("/api/weather").await
+                    {
                         weather_info.set(res);
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
@@ -16641,7 +16830,10 @@ window.__consoleDupCount = 0;
 
             use_effect(move || {
                 let enabled = *google_labels.read();
-                eval(&format!("if (window.toggleGoogleLabels) window.toggleGoogleLabels({});", enabled));
+                eval(&format!(
+                    "if (window.toggleGoogleLabels) window.toggleGoogleLabels({});",
+                    enabled
+                ));
             });
 
             // Smart auto-scroll for logger panel: follows bottom; stops if user scrolls up; resumes at bottom
@@ -17359,8 +17551,8 @@ window.__consoleDupCount = 0;
                 "flex"
             };
 
-            let splash_opacity = if srv_status == "connected" { "0" } else { "1" };
-            let splash_pointer_events = if srv_status == "connected" { "none" } else { "auto" };
+            // let splash_opacity = if srv_status == "connected" { "0" } else { "1" };
+            // let splash_pointer_events = if srv_status == "connected" { "none" } else { "auto" };
 
             // Pre-compute crash text for the crash recovery overlay (must be outside rsx!)
             let crash_text_val = CRASH_LOG_ACCUMULATOR
@@ -17368,11 +17560,11 @@ window.__consoleDupCount = 0;
                 .and_then(|m| m.lock().ok().map(|g| g.clone()))
                 .unwrap_or_else(|| "No crash details available.".to_string());
 
-            let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
-            let edit_menu_display = if *edit_menu_open.read() { "block" } else { "none" };
-            let view_menu_display = if *view_menu_open.read() { "block" } else { "none" };
-            let tools_menu_display = if *tools_menu_open.read() { "block" } else { "none" };
-            let help_menu_display = if *help_menu_open.read() { "block" } else { "none" };
+            // let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
+            // let edit_menu_display = if *edit_menu_open.read() { "block" } else { "none" };
+            // let view_menu_display = if *view_menu_open.read() { "block" } else { "none" };
+            // let tools_menu_display = if *tools_menu_open.read() { "block" } else { "none" };
+            // let help_menu_display = if *help_menu_open.read() { "block" } else { "none" };
 
             rsx! {
                     style { "{*CONSOLIDATED_UI_STYLES}" }
@@ -18080,7 +18272,7 @@ window.__consoleDupCount = 0;
                                 let is_custom = line.is_custom;
                                 let data_type = if is_custom { "custom" } else if line.group == "nationalrail" { "rail" } else { "tube" };
                                 let is_hidden = hidden_lines.read().contains(&element_id);
-                                let visibility_glyph = if is_hidden { "­ƒÖê" } else { "­ƒæü´©Å" };
+                                let visibility_glyph = if is_hidden { "🚫" } else { "👁️" };
 
                                 if !is_custom {
                                     rsx! {
@@ -19560,7 +19752,6 @@ window.__consoleDupCount = 0;
         }
 
         #[component]
-        #[allow(non_snake_case)]
         pub fn LogConsoleCompanionApp() -> Element {
             log_info("LogConsoleCompanionApp - initialising companion diagnostics");
             let streaming_logs = use_signal(get_all_logs);
@@ -19660,7 +19851,6 @@ window.__consoleDupCount = 0;
 
         // Fix 3: Crash Recovery Component Tree UI Implementation
         #[component]
-        #[allow(non_snake_case)]
         pub fn CrashRecoveryPanel() -> Element {
             log_info("CrashRecoveryPanel - initialising panic dispatch interface");
             let crash_text = use_signal(|| {
@@ -19671,7 +19861,7 @@ window.__consoleDupCount = 0;
                 }
                 "No explicit trace logs collected.".to_string()
             });
-            let telemetry_frame = read_crash_telemetry();
+            let telemetry_frame = String::new(); // read_crash_telemetry();
 
             rsx! {
                 style {
@@ -19725,6 +19915,16 @@ window.__consoleDupCount = 0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fast_distance_to() {
+        let coord1 = Coordinate::new(51.5308, -0.1238);
+        let coord2 = Coordinate::new(51.5134, -0.0886);
+        let true_dist = coord1.distance_to(&coord2);
+        let fast_dist = coord1.fast_distance_to(&coord2);
+        let pct_err = (true_dist - fast_dist).abs() / true_dist;
+        assert!(pct_err < 0.01);
+    }
 
     #[test]
     fn registers_new_line_stations_into_global_state() {

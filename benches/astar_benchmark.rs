@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 
 // We need to import from the main crate binary. Since this is a bench for a
 // binary (not a library), we replicate the core data structures inline for
@@ -61,36 +61,52 @@ fn build_synthetic_grid(n: usize) -> BenchGrid {
 }
 
 fn batch_distance_squared(qx: f32, qy: f32, xs: &[f32], ys: &[f32]) -> Vec<f32> {
-    xs.iter().zip(ys.iter())
-        .map(|(&x, &y)| { let dx = x - qx; let dy = y - qy; dx * dx + dy * dy })
+    xs.iter()
+        .zip(ys.iter())
+        .map(|(&x, &y)| {
+            let dx = x - qx;
+            let dy = y - qy;
+            dx * dx + dy * dy
+        })
         .collect()
 }
 
-fn find_stations_within_radius(
-    grid: &BenchGrid, qx: f32, qy: f32, radius: f32,
-) -> Vec<u32> {
+fn find_stations_within_radius(grid: &BenchGrid, qx: f32, qy: f32, radius: f32) -> Vec<u32> {
     const MERCATOR_STRETCH: f32 = 1.6094;
     let r2 = (radius * MERCATOR_STRETCH) * (radius * MERCATOR_STRETCH);
     let dists = batch_distance_squared(qx, qy, &grid.coords_x, &grid.coords_y);
-    dists.iter().enumerate()
+    dists
+        .iter()
+        .enumerate()
         .filter_map(|(i, &d)| if d <= r2 { Some(i as u32) } else { None })
         .collect()
 }
 
+use std::cmp::Ordering;
 /// Minimal A* scratchpad for benchmarking.
 use std::collections::BinaryHeap;
-use std::cmp::Ordering;
 
 #[derive(Clone, Copy)]
-struct AStarNode { idx: usize, f_cost: f32 }
-impl PartialEq for AStarNode { fn eq(&self, o: &Self) -> bool { self.f_cost == o.f_cost } }
+struct AStarNode {
+    idx: usize,
+    f_cost: f32,
+}
+impl PartialEq for AStarNode {
+    fn eq(&self, o: &Self) -> bool {
+        self.f_cost == o.f_cost
+    }
+}
 impl Eq for AStarNode {}
 impl PartialOrd for AStarNode {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> { Some(self.cmp(o)) }
+    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+        Some(self.cmp(o))
+    }
 }
 impl Ord for AStarNode {
     fn cmp(&self, o: &Self) -> Ordering {
-        o.f_cost.partial_cmp(&self.f_cost).unwrap_or(Ordering::Equal)
+        o.f_cost
+            .partial_cmp(&self.f_cost)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -122,7 +138,9 @@ impl Scratchpad {
 
     fn astar(&mut self, grid: &BenchGrid, start: usize, goal: usize) -> Vec<usize> {
         let n = grid.node_count;
-        if start >= n || goal >= n { return Vec::new(); }
+        if start >= n || goal >= n {
+            return Vec::new();
+        }
         self.reset(n);
         let h = |i: usize| -> f32 {
             let dx = grid.coords_x[i] - grid.coords_x[goal];
@@ -130,27 +148,40 @@ impl Scratchpad {
             (dx * dx + dy * dy).sqrt()
         };
         self.g_cost[start] = 0.0;
-        self.heap.push(AStarNode { idx: start, f_cost: h(start) });
+        self.heap.push(AStarNode {
+            idx: start,
+            f_cost: h(start),
+        });
         while let Some(AStarNode { idx, .. }) = self.heap.pop() {
             if idx == goal {
                 let mut path = Vec::new();
                 let mut cur = goal;
-                while cur != usize::MAX { path.push(cur); cur = self.came_from[cur]; }
+                while cur != usize::MAX {
+                    path.push(cur);
+                    cur = self.came_from[cur];
+                }
                 path.reverse();
                 return path;
             }
-            if self.closed[idx] { continue; }
+            if self.closed[idx] {
+                continue;
+            }
             self.closed[idx] = true;
             let edges = grid.get_edges(idx as u32);
             let weights = grid.get_edge_weights(idx as u32);
             for (&next, &w) in edges.iter().zip(weights.iter()) {
                 let next = next as usize;
-                if self.closed[next] { continue; }
+                if self.closed[next] {
+                    continue;
+                }
                 let tg = self.g_cost[idx] + w;
                 if tg < self.g_cost[next] {
                     self.came_from[next] = idx;
                     self.g_cost[next] = tg;
-                    self.heap.push(AStarNode { idx: next, f_cost: tg + h(next) });
+                    self.heap.push(AStarNode {
+                        idx: next,
+                        f_cost: tg + h(next),
+                    });
                 }
             }
         }
@@ -163,7 +194,8 @@ fn bench_batch_distance(c: &mut Criterion) {
     c.bench_function("batch_distance_squared_10k", |b| {
         b.iter(|| {
             black_box(batch_distance_squared(
-                0.0, 51.5,
+                0.0,
+                51.5,
                 &grid.coords_x,
                 &grid.coords_y,
             ))
@@ -174,11 +206,7 @@ fn bench_batch_distance(c: &mut Criterion) {
 fn bench_find_within_radius(c: &mut Criterion) {
     let grid = build_synthetic_grid(10_000);
     c.bench_function("find_stations_within_radius_10k", |b| {
-        b.iter(|| {
-            black_box(find_stations_within_radius(
-                &grid, 0.0, 51.5, 500.0,
-            ))
-        })
+        b.iter(|| black_box(find_stations_within_radius(&grid, 0.0, 51.5, 500.0)))
     });
 }
 
@@ -188,9 +216,7 @@ fn bench_astar(c: &mut Criterion) {
         let grid = build_synthetic_grid(size);
         let mut scratch = Scratchpad::new(size);
         group.bench_with_input(BenchmarkId::new("pathfinding", size), &size, |b, _| {
-            b.iter(|| {
-                black_box(scratch.astar(&grid, 0, size - 1))
-            })
+            b.iter(|| black_box(scratch.astar(&grid, 0, size - 1)))
         });
     }
     group.finish();
