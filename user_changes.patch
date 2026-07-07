@@ -1,0 +1,2176 @@
+diff --git a/src/main.rs b/src/main.rs
+index f72dd3f..0f6150c 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,4 +1,4 @@
+-´╗┐#![allow(dependency_on_unit_never_type_fallback)]
++#![allow(dependency_on_unit_never_type_fallback)]
+ // ^ REQUIRED: Suppresses compiler warnings triggered by type inference
+ //   regressions in deeply nested macro expansions within Dioxus rsx!
+ //   components. The never-type fallback change in Rust 2024 causes
+@@ -390,7 +390,7 @@ const MAX_MERCATOR_LAT: f64 = 85.0511;
+ /// Maximum iterations for any A* pathfinding traversal.
+ /// Prevents algorithmic DoS ÔÇö a malicious or degenerate request cannot
+ /// block the Tokio runtime thread indefinitely.
+-const MAX_ASTAR_ITERATIONS: usize = 50_000;
++const MAX_ASTAR_ITERATIONS: usize = 15_000;
+ 
+ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> AppResult<()> {
+     // NaN guard: NaN fails ALL comparisons, so it silently passes range checks
+@@ -1100,7 +1100,16 @@ mod logger {
+                                         // Route EVERY stderr line to our ring buffer.
+                                         // Chromium-formatted lines get proper severity;
+                                         // everything else goes as INFO.
+-                                        if let Some(severity) = parse_chromium_log_line(trimmed) {
++                                        // Suppress benign WebView2 shutdown errors (Alt+F4 cleanup)
++                                        if trimmed.contains("Chrome_WidgetWin_0")
++                                            || trimmed.contains("Failed to unregister class")
++                                            || trimmed.contains("Error = 1412")
++                                        {
++                                            super::log_debug(&format!(
++                                                "[WebView2 Shutdown] {}",
++                                                trimmed
++                                            ));
++                                        } else if let Some(severity) = parse_chromium_log_line(trimmed) {
+                                             match severity {
+                                                 ChromiumSeverity::Error
+                                                 | ChromiumSeverity::Fatal => {
+@@ -1345,10 +1354,10 @@ mod config {
+                 cache_expiry_hours: 24,
+                 log_max_entries: 10000,
+                 london_bounds: LondonBounds {
+-                    min_lat: 51.40,
+-                    min_lon: -0.75,
+-                    max_lat: 51.85,
+-                    max_lon: 0.6,
++                    min_lat: 50.800000,
++                    min_lon: -1.300000,
++                    max_lat: 52.300000,
++                    max_lon: 0.900000,
+                 },
+                 // Fix #7: Configurable sample lines list
+                 sample_lines: vec![
+@@ -1966,6 +1975,9 @@ mod primitives {
+         pub is_open: bool,
+         /// London fare zone (1-9). 0 for out-of-system or National Rail only.
+         pub zone: i32,
++        /// True if this is a historical or ceremonial station.
++        #[serde(default, rename = "isHistorical")]
++        pub is_historical: bool,
+     }
+ 
+     impl Station {
+@@ -1979,9 +1991,22 @@ mod primitives {
+                 is_interchange: false,
+                 is_open: true,
+                 zone: 1,
++                is_historical: false,
+             }
+         }
+     }
++
++    #[derive(Debug, Clone, Serialize, Deserialize)]
++    pub struct StationArrival {
++        #[serde(rename = "lineName")]
++        pub line_name: String,
++        #[serde(rename = "destinationName")]
++        pub destination_name: String,
++        #[serde(rename = "timeToStationMin")]
++        pub time_to_station_min: f64,
++        #[serde(rename = "platformName")]
++        pub platform_name: String,
++    }
+ }
+ 
+ mod spatial {
+@@ -5252,6 +5277,35 @@ mod routing {
+                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+             }
+ 
++            pub(crate) async fn fetch_stop_point_arrivals(
++                &self,
++                stop_point_id: &str,
++            ) -> Result<Value, Box<dyn std::error::Error>> {
++                let url = format!("{}/StopPoint/{}/Arrivals", self.base_url, stop_point_id);
++                log_info(&format!(
++                    "TflApiClient::fetch_stop_point_arrivals called - stop_point_id: {}",
++                    stop_point_id
++                ));
++                let result = retry_with_backoff(2, || async {
++                    self.network
++                        .get_json(&url)
++                        .await
++                        .map_err(|e| AppError::ExternalApi(e.to_string()))
++                })
++                .await;
++                match &result {
++                    Ok(_) => log_debug(&format!(
++                        "TflApiClient::fetch_stop_point_arrivals success - stop_point_id: {}",
++                        stop_point_id
++                    )),
++                    Err(e) => log_error(&format!(
++                        "TflApiClient::fetch_stop_point_arrivals failed - stop_point_id: {}, error: {}",
++                        stop_point_id, e
++                    )),
++                }
++                result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
++            }
++
+             pub(crate) async fn fetch_disruptions(
+                 &self,
+             ) -> Result<Value, Box<dyn std::error::Error>> {
+@@ -5313,10 +5367,10 @@ mod routing {
+                 max_lon: f64,
+             ) -> Result<Vec<RailwayTrack>, Box<dyn std::error::Error>> {
+                 log_info(&format!("OverpassApiClient::fetch_railway_tracks called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", min_lat, max_lat, min_lon, max_lon));
+-                let clamped_min_lat = min_lat.clamp(51.0, 52.0);
+-                let clamped_min_lon = min_lon.clamp(-0.6, 0.4);
+-                let clamped_max_lat = max_lat.clamp(51.0, 52.0);
+-                let clamped_max_lon = max_lon.clamp(-0.6, 0.4);
++                let clamped_min_lat = min_lat.clamp(50.5, 52.5);
++                let clamped_min_lon = min_lon.clamp(-1.5, 1.0);
++                let clamped_max_lat = max_lat.clamp(50.5, 52.5);
++                let clamped_max_lon = max_lon.clamp(-1.5, 1.0);
+                 log_debug(&format!("OverpassApiClient::fetch_railway_tracks - clamped bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", clamped_min_lat, clamped_max_lat, clamped_min_lon, clamped_max_lon));
+ 
+                 let query = format!(
+@@ -5498,6 +5552,167 @@ out body; >; out skel qt;"#,
+                 )))
+             }
+ 
++            pub(crate) async fn fetch_stations(
++                &self,
++                min_lat: f64,
++                min_lon: f64,
++                max_lat: f64,
++                max_lon: f64,
++            ) -> Result<Vec<Station>, Box<dyn std::error::Error>> {
++                log_info(&format!("OverpassApiClient::fetch_stations called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", min_lat, max_lat, min_lon, max_lon));
++                let clamped_min_lat = min_lat.clamp(50.5, 52.5);
++                let clamped_min_lon = min_lon.clamp(-1.5, 1.0);
++                let clamped_max_lat = max_lat.clamp(50.5, 52.5);
++                let clamped_max_lon = max_lon.clamp(-1.5, 1.0);
++
++                let query = format!(
++                    r#"[out:json][timeout:90];
++(
++  node["railway"="station"]({},{},{},{});
++  node["historic"="station"]({},{},{},{});
++  node["disused"="yes"]({},{},{},{});
++  node["ceremonial"="yes"]({},{},{},{});
++  node["railway"="disused"]({},{},{},{});
++);
++out body;"#,
++                    clamped_min_lat,
++                    clamped_min_lon,
++                    clamped_max_lat,
++                    clamped_max_lon,
++                    clamped_min_lat,
++                    clamped_min_lon,
++                    clamped_max_lat,
++                    clamped_max_lon,
++                    clamped_min_lat,
++                    clamped_min_lon,
++                    clamped_max_lat,
++                    clamped_max_lon,
++                    clamped_min_lat,
++                    clamped_min_lon,
++                    clamped_max_lat,
++                    clamped_max_lon,
++                    clamped_min_lat,
++                    clamped_min_lon,
++                    clamped_max_lat,
++                    clamped_max_lon
++                );
++
++                let all_urls = std::iter::once(&self.base_url).chain(self.fallback_urls.iter());
++                let mut last_error: Option<String> = None;
++
++                for (attempt, url) in all_urls.enumerate() {
++                    for retry in 0..3 {
++                        log_debug(&format!("OverpassApiClient::fetch_stations - attempt {}/url {}, retry {}/{} using {}", attempt + 1, attempt, retry + 1, 3, url));
++
++                        let response = match self
++                            .network
++                            .client
++                            .post(url)
++                            .form(&[("data", &query)])
++                            .send()
++                            .await
++                        {
++                            Ok(r) => r,
++                            Err(e) => {
++                                last_error = Some(e.to_string());
++                                continue;
++                            }
++                        };
++
++                        let status = response.status();
++                        if status == 429 || status == 503 {
++                            tokio::time::sleep(Duration::from_secs(2)).await;
++                            continue;
++                        }
++                        if !status.is_success() {
++                            last_error = Some(format!("HTTP status {}", status));
++                            break;
++                        }
++
++                        let val = match response.json::<Value>().await {
++                            Ok(j) => j,
++                            Err(e) => {
++                                last_error = Some(e.to_string());
++                                break;
++                            }
++                        };
++
++                        let stations = Self::parse_stations_from_json(&val)?;
++                        log_info(&format!(
++                            "OverpassApiClient::fetch_stations success - parsed {} stations",
++                            stations.len()
++                        ));
++                        return Ok(stations);
++                    }
++                }
++
++                if let Some(err) = last_error {
++                    log_warn(&format!(
++                        "OverpassApiClient::fetch_stations failed: {}",
++                        err
++                    ));
++                }
++                Ok(Vec::new())
++            }
++
++            pub(crate) fn parse_stations_from_json(
++                data: &Value,
++            ) -> Result<Vec<Station>, Box<dyn std::error::Error>> {
++                let mut stations = Vec::new();
++                if let Some(elements) = data.get("elements").and_then(|v| v.as_array()) {
++                    for el in elements {
++                        if el.get("type").and_then(|v| v.as_str()) == Some("node") {
++                            let id_num = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
++                            let lat = el.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
++                            let lon = el.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
++                            let tags = el.get("tags");
++
++                            let name = tags
++                                .and_then(|t| t.get("name"))
++                                .and_then(|v| v.as_str())
++                                .map(|s| s.to_string())
++                                .unwrap_or_else(|| format!("Unnamed Station {}", id_num));
++
++                            let is_historic = tags
++                                .map(|t| {
++                                    t.get("historic").is_some()
++                                        || t.get("disused").is_some()
++                                        || t.get("ceremonial").is_some()
++                                        || t.get("railway")
++                                            .and_then(|v| v.as_str())
++                                            .map(|s| s == "disused" || s == "abandoned")
++                                            .unwrap_or(false)
++                                })
++                                .unwrap_or(false);
++
++                            let mut station_lines = Vec::new();
++                            if is_historic {
++                                station_lines.push("historic".to_string());
++                            } else {
++                                let operator = tags
++                                    .and_then(|t| t.get("operator"))
++                                    .and_then(|v| v.as_str())
++                                    .unwrap_or("National Rail");
++                                station_lines.push(operator.to_string());
++                            }
++
++                            let st = Station {
++                                id: format!("overpass_{}", id_num),
++                                name,
++                                coord: Coordinate::new(lat, lon),
++                                lines: station_lines,
++                                is_interchange: false,
++                                is_open: !is_historic,
++                                zone: 0,
++                                is_historical: is_historic,
++                            };
++                            stations.push(st);
++                        }
++                    }
++                }
++                Ok(stations)
++            }
++
+             pub(crate) fn parse_tracks_from_json(
+                 data: &Value,
+             ) -> Result<Vec<RailwayTrack>, Box<dyn std::error::Error>> {
+@@ -5674,7 +5889,13 @@ out body; >; out skel qt;"#,
+                         return Vec::new();
+                     }
+                 };
+-                f_score.insert(start, start_coord.distance_to(&end_coord));
++
++                let crow_flies = start_coord.distance_to(&end_coord);
++                if crow_flies > 150_000.0 {
++                    return Vec::new();
++                }
++
++                f_score.insert(start, crow_flies);
+                 open_set.push(PriorityQueueItem {
+                     cost: f_score[&start],
+                     node_id: start,
+@@ -5796,7 +6017,13 @@ out body; >; out skel qt;"#,
+                         return Vec::new();
+                     }
+                 };
+-                f_score.insert(start, start_coord.distance_to(&end_coord));
++
++                let crow_flies = start_coord.distance_to(&end_coord);
++                if crow_flies > 150_000.0 {
++                    return Vec::new();
++                }
++
++                f_score.insert(start, crow_flies);
+                 open_set.push(PriorityQueueItem {
+                     cost: f_score[&start],
+                     node_id: start,
+@@ -8140,6 +8367,8 @@ mod server {
+             pub(crate) config: Arc<Config>,
+             /// Data-oriented transit grid for SIMD-accelerated spatial queries.
+             pub(crate) transit_grid: Arc<arc_swap::ArcSwap<TransitNetworkGrid>>,
++            /// Live weather data cached.
++            pub(crate) weather: Arc<arc_swap::ArcSwap<Option<(f64, String)>>>,
+         }
+ 
+         // LOAD-BEARING HACK: AppState must be Send + Sync for Axum's State<AppState>
+@@ -8193,6 +8422,7 @@ mod server {
+                         line_names: Vec::new(),
+                         line_colors: Vec::new(),
+                     }))),
++                    weather: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
+                 };
+ 
+                 log_info("AppState::new completed - application state initialized");
+@@ -9074,7 +9304,47 @@ mod server {
+                 new_engine.clear();
+                 new_engine.build_track_index(&tracks);
+ 
+-                let stations_clone = (**self.stations.load()).clone();
++                let mut stations_clone = (**self.stations.load()).clone();
++
++                log_debug("AppState::initialize_routing_graph - fetching Overpass stations (active + historical)");
++                let cache_key = "overpass_stations_london".to_string();
++                let cache_clone = self.cache.clone();
++                let cache_key_clone = cache_key.clone();
++
++                let get_res = tokio::task::spawn_blocking(move || {
++                    cache_clone.get(&cache_key_clone).map_err(|e| e.to_string())
++                }).await;
++
++                let overpass_stations = match get_res {
++                    Ok(Ok(Some(cached_str))) => {
++                        log_info("AppState::initialize_routing_graph - using CACHED overpass stations");
++                        serde_json::from_str(&cached_str).unwrap_or_else(|_| Vec::new())
++                    },
++                    _ => {
++                        log_info("AppState::initialize_routing_graph - fetching live Overpass stations (not cached)");
++                        let s = match self.overpass_client.fetch_stations(bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon).await {
++                            Ok(s) => s,
++                            Err(e) => {
++                                log_warn(&format!("AppState::initialize_routing_graph - fetch_stations error: {}", e));
++                                Vec::new()
++                            }
++                        };
++                        let s_json = serde_json::to_string(&s).unwrap_or_default();
++                        let cache_clone = self.cache.clone();
++                        let _ = tokio::task::spawn_blocking(move || {
++                            let _ = cache_clone.put(&cache_key, &s_json, 30 * 24 * 3600 * 1000);
++                        }).await;
++                        s
++                    }
++                };
++
++                log_info(&format!("AppState::initialize_routing_graph - merging {} Overpass stations with existing stations list", overpass_stations.len()));
++                for os in overpass_stations {
++                    if !stations_clone.iter().any(|s| s.id == os.id) {
++                        stations_clone.push(os);
++                    }
++                }
++
+                 let total_stations = stations_clone.len();
+                 let mut station_index_engine = GeometryEngine::new();
+                 station_index_engine.clear();
+@@ -10247,13 +10517,65 @@ mod server {
+         /// colour + National Rail coloured by operator). This is the offline-first
+         /// basemap that guarantees the lines always render.
+         #[tracing::instrument(name = "get_basemap_lines", skip_all)]
+-        pub(crate) async fn get_basemap_lines() -> Json<ApiResponse<Vec<RailSegment>>> {
+-            let segs = embedded_rail_segments();
++        pub(crate) async fn get_basemap_lines(
++            State(state): State<AppState>,
++        ) -> Json<ApiResponse<Vec<RailSegment>>> {
++            let mut segs = embedded_rail_segments().clone();
++
++            // Add live tracks from Overpass
++            let live_tracks = state.tracks.load();
++            for track in live_tracks.iter() {
++                let is_nr = !track.operator_name.to_lowercase().contains("underground")
++                    && !track.operator_name.to_lowercase().contains("tfl")
++                    && !track.operator_name.to_lowercase().contains("elizabeth")
++                    && !track.operator_name.to_lowercase().contains("overground")
++                    && !track.operator_name.to_lowercase().contains("dlr");
++
++                let points: Vec<[f64; 2]> = track.geometry.iter().map(|c| [c.lat, c.lon]).collect();
++                if points.len() < 2 {
++                    continue;
++                }
++
++                let group = if is_nr {
++                    "nationalrail".to_string()
++                } else {
++                    "tfl".to_string()
++                };
++                let color = match track.operator_name.to_lowercase().as_str() {
++                    "southeastern" | "south eastern" => "#E20000".to_string(),
++                    "southern" => "#004328".to_string(),
++                    "thameslink" => "#0081C6".to_string(),
++                    "great western railway" | "great western" | "gwr" => "#0A493B".to_string(),
++                    "greater anglia" => "#D90A07".to_string(),
++                    "c2c" => "#E20000".to_string(),
++                    "chiltern railways" | "chiltern" => "#00205B".to_string(),
++                    "south western railway" | "swr" => "#003A70".to_string(),
++                    "london underground" | "underground" => "#003688".to_string(),
++                    "elizabeth line" | "elizabeth" => "#7373D8".to_string(),
++                    "london overground" | "overground" => "#EF7C00".to_string(),
++                    "dlr" => "#00AFAD".to_string(),
++                    _ => {
++                        if is_nr {
++                            "#c96a1e".to_string()
++                        } else {
++                            "#4a6fa5".to_string()
++                        }
++                    }
++                };
++
++                segs.push(RailSegment {
++                    c: color,
++                    g: group,
++                    n: track.operator_name.clone(),
++                    p: points,
++                });
++            }
++
+             log_info(&format!(
+-                "GET /api/basemap called - returning {} embedded coloured rail segments",
++                "GET /api/basemap called - returning {} rail segments (embedded + live)",
+                 segs.len()
+             ));
+-            Json(ApiResponse::success(segs.clone()))
++            Json(ApiResponse::success(segs))
+         }
+ 
+         /// Fix #2: Manual "Refresh Tracks" endpoint to force a fresh Overpass query
+@@ -11135,6 +11457,66 @@ mod server {
+             }
+         }
+ 
++        #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
++        pub struct WeatherResponse {
++            pub temp: f64,
++            pub source: String,
++        }
++
++        pub(crate) async fn fetch_london_weather() -> Option<(f64, String)> {
++            let client = reqwest::Client::builder()
++                .user_agent("AlexsTube/1.0.0 (contact: point@gemini.com)")
++                .build()
++                .ok()?;
++
++            let mut temp1 = None;
++            if let Ok(resp) = client.get("https://api.open-meteo.com/v1/forecast?latitude=51.5074&longitude=-0.1278&current_weather=true").send().await {
++                if let Ok(json) = resp.json::<serde_json::Value>().await {
++                    if let Some(t) = json.get("current_weather").and_then(|cw| cw.get("temperature")).and_then(|v| v.as_f64()) {
++                        temp1 = Some(t);
++                    }
++                }
++            }
++
++            let mut temp2 = None;
++            if let Ok(resp) = client.get("https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=51.5074&lon=-0.1278").send().await {
++                if let Ok(json) = resp.json::<serde_json::Value>().await {
++                    if let Some(t) = json.get("properties")
++                        .and_then(|p| p.get("timeseries"))
++                        .and_then(|ts| ts.as_array())
++                        .and_then(|arr| arr.first())
++                        .and_then(|f| f.get("data"))
++                        .and_then(|d| d.get("instant"))
++                        .and_then(|i| i.get("details"))
++                        .and_then(|det| det.get("air_temperature"))
++                        .and_then(|v| v.as_f64()) {
++                        temp2 = Some(t);
++                    }
++                }
++            }
++
++            match (temp1, temp2) {
++                (Some(t1), Some(t2)) => {
++                    let avg = (t1 + t2) / 2.0;
++                    Some((avg, format!("Avg of Open-Meteo ({:.1}┬░C) & Yr.no ({:.1}┬░C)", t1, t2)))
++                }
++                (Some(t), None) => Some((t, "Open-Meteo".to_string())),
++                (None, Some(t)) => Some((t, "Yr.no".to_string())),
++                _ => None,
++            }
++        }
++
++        pub(crate) async fn get_weather(
++            State(state): State<AppState>,
++        ) -> Json<ApiResponse<Option<WeatherResponse>>> {
++            let w = state.weather.load();
++            let res = w.as_ref().as_ref().map(|t| WeatherResponse {
++                temp: t.0,
++                source: t.1.clone(),
++            });
++            Json(ApiResponse::success(res))
++        }
++
+         /// POST /api/disruptions/apply ÔÇö apply a disruption by removing a line's nodes from the routing graph.
+         #[tracing::instrument(name = "apply_disruption", skip_all)]
+         pub(crate) async fn apply_disruption(
+@@ -11294,6 +11676,110 @@ mod server {
+         /// mapping `timeToStation` onto the line's geometry polyline. Each arrival
+         /// gets a `live_lat`/`live_lon` pair injected into its JSON properties.
+ 
++        #[tracing::instrument(name = "get_station_arrivals", skip_all)]
++        pub(crate) async fn get_station_arrivals(
++            State(state): State<AppState>,
++            axum::extract::Path(station_id): axum::extract::Path<String>,
++        ) -> Json<ApiResponse<Vec<StationArrival>>> {
++            log_info(&format!("GET /api/stations/{}/arrivals called", station_id));
++
++            // Check if this is a known station to see if it is historical
++            let is_historical = {
++                let stations = state.stations.load();
++                stations
++                    .iter()
++                    .find(|s| s.id == station_id)
++                    .map(|s| s.is_historical)
++                    .unwrap_or(false)
++            };
++
++            if is_historical {
++                return Json(ApiResponse::success(vec![StationArrival {
++                    line_name: "Historical Heritage".to_string(),
++                    destination_name: "Museum / Ceremonial Display".to_string(),
++                    time_to_station_min: 999.0,
++                    platform_name: "Platform 1 (Disused)".to_string(),
++                }]));
++            }
++
++            if station_id.starts_with("940GZZ") {
++                match state
++                    .tfl_client
++                    .fetch_stop_point_arrivals(&station_id)
++                    .await
++                {
++                    Ok(val) => {
++                        let mut arrivals = Vec::new();
++                        if let Some(arr_list) = val.as_array() {
++                            for item in arr_list {
++                                let line_name = item
++                                    .get("lineName")
++                                    .and_then(|v| v.as_str())
++                                    .unwrap_or("Unknown")
++                                    .to_string();
++                                let destination_name = item
++                                    .get("destinationName")
++                                    .and_then(|v| v.as_str())
++                                    .unwrap_or("Unknown")
++                                    .to_string();
++                                let time_to_station = item
++                                    .get("timeToStation")
++                                    .and_then(|v| v.as_f64())
++                                    .unwrap_or(0.0);
++                                let platform_name = item
++                                    .get("platformName")
++                                    .and_then(|v| v.as_str())
++                                    .unwrap_or("Unknown")
++                                    .to_string();
++
++                                arrivals.push(StationArrival {
++                                    line_name,
++                                    destination_name,
++                                    time_to_station_min: (time_to_station / 60.0).round(),
++                                    platform_name,
++                                });
++                            }
++                        }
++                        // Sort by time to station ascending
++                        arrivals.sort_by(|a, b| {
++                            a.time_to_station_min
++                                .partial_cmp(&b.time_to_station_min)
++                                .unwrap()
++                        });
++                        Json(ApiResponse::success(arrivals))
++                    }
++                    Err(e) => {
++                        log_error(&format!(
++                            "GET /api/stations/{}/arrivals failed: {}",
++                            station_id, e
++                        ));
++                        Json(ApiResponse::error(e.to_string()))
++                    }
++                }
++            } else {
++                // Return mock arrivals based on the lines serviced by this station
++                let station_lines = {
++                    let stations = state.stations.load();
++                    stations
++                        .iter()
++                        .find(|s| s.id == station_id)
++                        .map(|s| s.lines.clone())
++                        .unwrap_or_default()
++                };
++
++                let mut arrivals = Vec::new();
++                for (idx, line) in station_lines.iter().enumerate() {
++                    arrivals.push(StationArrival {
++                        line_name: line.clone(),
++                        destination_name: format!("{} Terminus", line),
++                        time_to_station_min: (3.0 + idx as f64 * 5.0),
++                        platform_name: format!("Platform {}", idx + 1),
++                    });
++                }
++                Json(ApiResponse::success(arrivals))
++            }
++        }
++
+         #[tracing::instrument(name = "get_logs", skip_all)]
+         pub(crate) async fn get_logs() -> Json<ApiResponse<String>> {
+             // Intentionally silent ? no log_info/log_debug here to avoid endless echo loop
+@@ -11339,6 +11825,7 @@ mod server {
+                     .route("/api/lines/load", post(load_line))
+                     .route("/api/lines/save", post(save_line))
+                     .route("/api/stations", get(get_stations))
++                    .route("/api/stations/{id}/arrivals", get(get_station_arrivals))
+                     .route("/api/stations/save", post(save_station))
+                     .route("/api/construction", get(get_construction_state))
+                     .route("/api/construction/update", post(update_construction_state))
+@@ -11349,6 +11836,7 @@ mod server {
+                     .route("/api/ai/add-station", post(ai_add_station))
+                     .route("/api/ai/link-stations", post(ai_link_stations))
+                     .route("/api/disruptions", get(get_disruptions))
++                    .route("/api/weather", get(get_weather))
+                     .route("/api/disruptions/apply", post(apply_disruption))
+                     .route("/live-congestion", get(get_live_congestion_bincode))
+                     .route("/network-state", get(get_network_state_bincode))
+@@ -12239,6 +12727,7 @@ fn main() {
+                     is_interchange: pod.is_interchange != 0,
+                     is_open: true,
+                     zone: pod.zone as i32,
++                    is_historical: false,
+                 }).collect()
+             }
+             Err(_) => {
+@@ -12286,64 +12775,77 @@ fn main() {
+         state.stations.store(Arc::new(seed_stations));
+         log_info(&format!("[TIMING] Seeded stations: {:.3}s", boot_start.elapsed().as_secs_f64()));
+ 
+-        log_info("main - compiling spatial routing graph before loading lines");
+-        if let Err(e) = state.initialize_routing_graph(&config.london_bounds).await {
+-            log_error(&format!(
+-                "main - CRITICAL FAILURE compiling spatial routing graph: {}. Journey planning and line curvature will be BROKEN.",
+-                e
+-            ));
+-        } else {
+-            log_info("main - routing graph compiled successfully");
+-            // Verify routing graph is populated
+-            let rg = state.routing_graph.load();
+-            if rg.nodes.is_empty() {
+-                log_error("main - routing graph compiled but has ZERO nodes! Track data may be missing.");
+-            } else {
+-                log_debug(&format!("main - routing graph has {} nodes", rg.nodes.len()));
+-            }
++        let bg_state = state.clone();
++        let bg_bounds = config.london_bounds.clone();
++        let bg_boot_start = boot_start.clone();
++        
++        tokio::spawn(async move {
++            log_info("main - compiling spatial routing graph before loading lines (BACKGROUND)");
++            
++            let init_success = match bg_state.initialize_routing_graph(&bg_bounds).await {
++                Ok(_) => true,
++                Err(e) => {
++                    log_error(&format!(
++                        "main - CRITICAL FAILURE compiling spatial routing graph: {}. Journey planning and line curvature will be BROKEN.",
++                        e
++                    ));
++                    false
++                }
++            };
+ 
+-            log_debug("main - seeding sample lines from config using ensure_sample_network_state");
+-            let (mut lines_loaded, _) = state.ensure_sample_network_state().await;
+-            match state.cache.load_custom_lines() {
+-                Ok(custom_lines) => {
+-                    if !custom_lines.is_empty() {
+-                        log_info(&format!(
+-                            "main - loading {} custom lines from cache into live state",
+-                            custom_lines.len()
+-                        ));
+-                        lines_loaded.extend(custom_lines);
++            if init_success {
++                log_info("main - routing graph compiled successfully");
++                // Verify routing graph is populated
++                let rg = bg_state.routing_graph.load();
++                if rg.nodes.is_empty() {
++                    log_error("main - routing graph compiled but has ZERO nodes! Track data may be missing.");
++                } else {
++                    log_debug(&format!("main - routing graph has {} nodes", rg.nodes.len()));
++                }
++
++                log_debug("main - seeding sample lines from config using ensure_sample_network_state");
++                let (mut lines_loaded, _) = bg_state.ensure_sample_network_state().await;
++                match bg_state.cache.load_custom_lines() {
++                    Ok(custom_lines) => {
++                        if !custom_lines.is_empty() {
++                            log_info(&format!(
++                                "main - loading {} custom lines from cache into live state",
++                                custom_lines.len()
++                            ));
++                            lines_loaded.extend(custom_lines);
++                        }
++                    }
++                    Err(e) => {
++                        log_error(&format!("main - failed to load custom lines on startup: {}", e));
+                     }
+                 }
+-                Err(e) => {
+-                    log_error(&format!("main - failed to load custom lines on startup: {}", e));
++                bg_state.lines.store(Arc::new(lines_loaded.clone()));
++                if lines_loaded.is_empty() {
++                    log_warn("main - NO lines loaded after sample + custom! Network will be empty.");
++                } else {
++                    log_debug(&format!("main - {} lines now in state", lines_loaded.len()));
+                 }
++                log_info(&format!("[TIMING] Sample + custom lines loaded: {:.3}s", bg_boot_start.elapsed().as_secs_f64()));
++                log_info("main - sample and custom line loading completed");
+             }
+-            state.lines.store(Arc::new(lines_loaded.clone()));
+-            if lines_loaded.is_empty() {
+-                log_warn("main - NO lines loaded after sample + custom! Network will be empty.");
+-            } else {
+-                log_debug(&format!("main - {} lines now in state", lines_loaded.len()));
+-            }
+-            log_info(&format!("[TIMING] Sample + custom lines loaded: {:.3}s", boot_start.elapsed().as_secs_f64()));
+-            log_info("main - sample and custom line loading completed");
+-        }
+-    log_info(&format!("[TIMING] Routing graph initialized: {:.3}s", boot_start.elapsed().as_secs_f64()));
++            log_info(&format!("[TIMING] Routing graph initialized: {:.3}s", bg_boot_start.elapsed().as_secs_f64()));
+ 
+-    // Build TransitNetworkGrid from seeded stations + lines (Task 28)
+-    {
+-        let stations_snap = state.stations.load();
+-        let lines_snap = state.lines.load();
+-        let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
+-
+-        // Pin grid SoA arrays to physical RAM ÔÇö defeat OS page-fault latency
+-        pin_memory_to_ram(grid.coords_x.as_ptr() as *const u8, grid.coords_x.len() * std::mem::size_of::<f32>());
+-        pin_memory_to_ram(grid.coords_y.as_ptr() as *const u8, grid.coords_y.len() * std::mem::size_of::<f32>());
+-        pin_memory_to_ram(grid.edge_offsets.as_ptr() as *const u8, grid.edge_offsets.len() * std::mem::size_of::<usize>());
+-        log_info("TransitNetworkGrid SoA arrays pinned to physical RAM");
+-
+-        state.transit_grid.store(Arc::new(grid));
+-        log_info(&format!("[TIMING] TransitNetworkGrid built: {:.3}s", boot_start.elapsed().as_secs_f64()));
+-    }
++            // Build TransitNetworkGrid from seeded stations + lines (Task 28)
++            {
++                let stations_snap = bg_state.stations.load();
++                let lines_snap = bg_state.lines.load();
++                let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
++
++                // Pin grid SoA arrays to physical RAM ÔÇö defeat OS page-fault latency
++                pin_memory_to_ram(grid.coords_x.as_ptr() as *const u8, grid.coords_x.len() * std::mem::size_of::<f32>());
++                pin_memory_to_ram(grid.coords_y.as_ptr() as *const u8, grid.coords_y.len() * std::mem::size_of::<f32>());
++                pin_memory_to_ram(grid.edge_offsets.as_ptr() as *const u8, grid.edge_offsets.len() * std::mem::size_of::<usize>());
++                log_info("TransitNetworkGrid SoA arrays pinned to physical RAM");
++
++                bg_state.transit_grid.store(Arc::new(grid));
++                log_info(&format!("[TIMING] TransitNetworkGrid built: {:.3}s", bg_boot_start.elapsed().as_secs_f64()));
++            }
++        });
+     });
+     log_info("main - background services boot completed");
+     log_info(&format!(
+@@ -12438,6 +12940,19 @@ fn main() {
+     // The kinematic A* pathfinder reads these live loads to organically
+     // route around congested bottlenecks in real time.
+     // =====================================================================
++    let weather_state = state.clone();
++    rt.spawn(async move {
++        loop {
++            if let Some((temp, source)) = crate::server::fetch_london_weather().await {
++                log_info(&format!("Weather updated: {:.1}┬░C ({})", temp, source));
++                weather_state.weather.store(Arc::new(Some((temp, source))));
++            } else {
++                log_warn("Failed to fetch weather data from APIs");
++            }
++            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
++        }
++    });
++
+     let living_engine_state = state.clone();
+     rt.spawn(async move {
+         log_info("LIVING ENGINE: Background Monte Carlo flow loop started.");
+@@ -12953,6 +13468,17 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
+   #map-viewport{position:static !important;width:100% !important;height:100vh !important;}
+   body{background:#fff !important;}
+ }
++
++@keyframes pulse {
++  0% { transform: scale(0.95); opacity: 0.8; }
++  50% { transform: scale(1.05); opacity: 1; filter: drop-shadow(0 0 15px rgba(0,188,212,0.4)); }
++  100% { transform: scale(0.95); opacity: 0.8; }
++}
++@keyframes progress {
++  0% { left: -40%; width: 40%; }
++  50% { left: 20%; width: 60%; }
++  100% { left: 100%; width: 40%; }
++}
+ "#.to_string()
+ });
+ 
+@@ -13072,6 +13598,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
+             )
+         }
+ 
++        #[allow(dead_code)]
+         pub(crate) fn set_sat_provider_js(idx: i32) -> String {
+             format!(
+                 "window.satProviderIdx = {}; window.setBaseMode('satellite');",
+@@ -13420,12 +13947,7 @@ window.initMap = async function() {
+         }
+ 
+         window.map = L.map('map-viewport', {
+-            preferCanvas: true,
+-            markerZoomAnimation: false,
+-            updateWhenIdle: true,
+-            updateWhenZooming: false,
+             zoomControl: false,
+-            renderer: L.canvas({ padding: 0.5, tolerance: 3 }),
+             bounceAtZoomLimits: false,
+             wheelDebounceTime: 40
+         }).setView([51.5074, -0.1278], 12);
+@@ -13466,6 +13988,11 @@ window.initMap = async function() {
+                 name: 'OpenTopoMap',
+                 url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+                 options: { maxZoom: 17, attribution: '&copy; OpenTopoMap contributors', crossOrigin: true }
++            },
++            {
++                name: 'NLS 1940s Historical',
++                url: 'https://nls-3.tileserver.com/nls/{z}/{x}/{y}.png',
++                options: { maxZoom: 18, attribution: 'Historical Maps &copy; National Library of Scotland', crossOrigin: true }
+             }
+         ];
+         window.tileProviderIndex = 0;
+@@ -13528,18 +14055,27 @@ window.initMap = async function() {
+ 
+             console.log('Basemap provider active: ' + provider.name);
+         };
++        window.googleLabelsOn = true;
++        window.toggleGoogleLabels = function(enabled) {
++            window.googleLabelsOn = enabled;
++            window.satProviders[0].url = enabled ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}' : 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
++            if (window.activeBaseKind === 'satellite' && window.satProviderIdx === 0) {
++                window.setBaseMode('satellite');
++            }
++        };
++
+         window.installBaseTileLayer(0);
+ 
+-        window.activeBaseKind = 'street';
++        window.activeBaseKind = 'satellite';
+         window.satProviderIdx = 0;
+         window.satProviderCycles = 0;
+         window.satProviders = [
++            { name: 'Google Satellite',
++              url: 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}',
++              opts: { maxZoom: 20, attribution: '&copy; Google', crossOrigin: true } },
+             { name: 'ESRI World Imagery',
+               url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+-              opts: { maxZoom: 19, attribution: '&copy; Esri' } },
+-            { name: 'Google Satellite',
+-              url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',
+-              opts: { maxZoom: 20, attribution: '&copy; Google' } }
++              opts: { maxZoom: 19, attribution: '&copy; Esri', crossOrigin: true } }
+         ];
+ 
+         window.setBaseMode = function(mode) {
+@@ -13575,7 +14111,7 @@ window.initMap = async function() {
+                 window.midLog('117','INFO','Street map on');
+             }
+         };
+-        window.currentBaseLayer = window.tileLayer;
++        window.setBaseMode('satellite');
+ 
+         window.cycleSatProvider = function() {
+             window.satProviderIdx = (window.satProviderIdx + 1) % window.satProviders.length;
+@@ -13587,7 +14123,7 @@ window.initMap = async function() {
+         window.trackLayers = [];
+         window.railLineLayers = [];
+         window.coverageLayerGroup = L.layerGroup().addTo(window.map);
+-        window.drawingLayer = L.polyline([], { color: '#ff00ff', dashArray: '5, 5', weight: 4 }).addTo(window.map);
++        window.drawingLayer = L.polyline([], { color: '#ff00ff', dashArray: '5, 5', weight: 4, interactive: false }).addTo(window.map);
+ 
+         if (!window.map.getPane('stations')) {
+             let pane = window.map.createPane('stations');
+@@ -13606,7 +14142,7 @@ window.initMap = async function() {
+             window.railPane = window.map.createPane('railPane');
+             window.railPane.style.zIndex = 350;
+         }
+-        window.railRenderer = L.canvas({ padding: 0.5, pane: 'railPane' });
++        window.railRenderer = L.svg({ padding: 1.5, pane: 'railPane' });
+         
+         // Tiled Basemap segments optimization
+         window.basemapGrid = {};
+@@ -13629,7 +14165,7 @@ window.initMap = async function() {
+                 let isVisible = padded.intersects(cellBounds);
+                 
+                 if (isVisible) {
+-                    if (z >= 9) {
++                    if (z >= 8) {
+                         if (!window.map.hasLayer(cell.tflGroup)) {
+                             cell.tflGroup.addTo(window.map);
+                         }
+@@ -13638,7 +14174,7 @@ window.initMap = async function() {
+                             window.map.removeLayer(cell.tflGroup);
+                         }
+                     }
+-                    if (z >= 11) {
++                    if (z >= 8) {
+                         if (!window.map.hasLayer(cell.nrGroup)) {
+                             cell.nrGroup.addTo(window.map);
+                         }
+@@ -13687,7 +14223,8 @@ window.initMap = async function() {
+                         color: seg.c,
+                         weight: isNR ? 1.8 : 2.5,
+                         opacity: isNR ? 0.8 : 0.95,
+-                        lineJoin: 'round', lineCap: 'round'
++                        lineJoin: 'round', lineCap: 'round',
++                        interactive: false
+                     });
+                     if (isNR) {
+                         poly.addTo(grid[cellKey].nrGroup);
+@@ -13742,13 +14279,26 @@ window.initMap = async function() {
+ 
+         window._preRenderRoundels = function() {
+             var svgs = window.ROUNDEL_SVGS || {};
++            // Each underground line gets its own roundel rendered from its SVG
+             var categories = {
+-                'underground': ['underground','bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city'],
++                'bakerloo': ['bakerloo'],
++                'central': ['central'],
++                'circle': ['circle'],
++                'district': ['district'],
++                'hammersmith-city': ['hammersmith-city'],
++                'jubilee': ['jubilee'],
++                'metropolitan': ['metropolitan'],
++                'northern': ['northern'],
++                'piccadilly': ['piccadilly'],
++                'victoria': ['victoria'],
++                'waterloo-city': ['waterloo-city','waterloo-and-city'],
+                 'overground': ['overground','liberty','lioness','mildmay','suffragette','weaver','windrush','london overground'],
+                 'elizabeth': ['elizabeth'],
+                 'dlr': ['dlr'],
+-                'tram': ['tramlink'],
+-                'national-rail': ['national-rail','national rail']
++                'tramlink': ['tramlink','tram'],
++                'national-rail': ['national-rail','national rail','nationalrail'],
++                'emirates-airline': ['emirates-airline','emirates','airline'],
++                'underground': ['underground']
+             };
+             var renderSize = 48;
+             var promises = [];
+@@ -13812,24 +14362,26 @@ window.initMap = async function() {
+             }
+             function getRoundelCategory(st) {
+                 var linesLower = st.lines ? st.lines.map(function(l) { return l.toLowerCase(); }) : [];
+-                var nrKeywords = ['national rail','lumo','southern','southeastern','greater anglia','thameslink','great western','c2c','chiltern','crosscountry','east midlands','great northern','south western'];
+-                var isNR = linesLower.some(function(l) { return nrKeywords.some(function(k) { return l.includes(k); }); });
+-                var tflLine = linesLower.find(function(l) {
+-                    if (nrKeywords.some(function(k) { return l.includes(k); })) return false;
+-                    if (l.includes('ai plan') || l.includes('sandbox')) return false;
+-                    return true;
+-                });
+-                if (st.zone === 0) return 'proposed';
+-                if (isNR && !tflLine) return 'national-rail';
+-                if (!tflLine) return 'underground';
+-                var elizLines = ['elizabeth'];
+-                var dlrLines = ['dlr'];
+-                var tramLines = ['tramlink'];
+-                var ogLines = ['liberty','lioness','mildmay','suffragette','weaver','windrush','overground','london overground'];
+-                if (elizLines.indexOf(tflLine) >= 0) return 'elizabeth';
+-                if (dlrLines.indexOf(tflLine) >= 0) return 'dlr';
+-                if (tramLines.indexOf(tflLine) >= 0) return 'tram';
+-                if (ogLines.indexOf(tflLine) >= 0) return 'overground';
++                var nrKeywords = ['national rail','nationalrail','lumo','southern','southeastern','greater anglia','thameslink','great western','c2c','chiltern','crosscountry','east midlands','great northern','south western','avanti','lner','london northwestern','chiltern railways','gatwick express'];
++                
++                var nameLower = st.name.toLowerCase();
++                var isOutsideLondonNR = nameLower.includes('cambridge') || nameLower.includes('oxford') || nameLower.includes('brighton');
++                
++                var isNR = isOutsideLondonNR || linesLower.some(function(l) { return nrKeywords.some(function(k) { return l.includes(k); }); });
++                if (isNR) return 'national-rail';
++                
++                if (st.isProposed) return 'proposed';
++                
++                var specificLines = ['bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','elizabeth','dlr','tramlink','liberty','lioness','mildmay','suffragette','weaver','windrush','emirates-airline'];
++                for (var i = 0; i < linesLower.length; i++) {
++                    var l = linesLower[i].replace('&', 'and').replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').trim();
++                    if (l === 'waterloo-and-city') l = 'waterloo-city';
++                    if (l === 'emirates-air-line') l = 'emirates-airline';
++                    if (specificLines.indexOf(l) >= 0) return l;
++                    if (l === 'tram') return 'tramlink';
++                    if (l.includes('emirates')) return 'emirates-airline';
++                }
++                
+                 return 'underground';
+             }
+             var groups = {};
+@@ -13844,12 +14396,13 @@ window.initMap = async function() {
+             for (var key in groups) {
+                 var group = groups[key];
+                 var stArr = group.stations;
++                var anyHistorical = stArr.some(function(s) { return s.isHistorical || s.category === 'historic'; });
+                 if (stArr.length === 1) {
+-                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: stArr[0].coord.lat, lon: stArr[0].coord.lon, category: group.category, isProposed: stArr[0].zone === 0 });
++                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: stArr[0].coord.lat, lon: stArr[0].coord.lon, category: group.category, isProposed: stArr[0].zone === 0, isHistorical: anyHistorical });
+                 } else {
+                     var latSum = 0, lonSum = 0;
+                     stArr.forEach(function(s) { latSum += s.coord.lat; lonSum += s.coord.lon; });
+-                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: latSum / stArr.length, lon: lonSum / stArr.length, category: group.category, isProposed: stArr[0].zone === 0 });
++                    merged.push({ id: stArr[0].id, name: stArr[0].name, lat: latSum / stArr.length, lon: lonSum / stArr.length, category: group.category, isProposed: stArr[0].zone === 0, isHistorical: anyHistorical });
+                 }
+             }
+             console.log('[RENDER] Station merge: ' + stations.length + ' raw -> ' + merged.length + ' merged markers');
+@@ -13863,7 +14416,7 @@ window.initMap = async function() {
+         // layer integration instead of fighting the GPU with manual transforms.
+         window.allStations = [];
+         
+-        var StationCanvasLayer = L.Layer.extend({
++        var DiabolicalStationLayer = L.Layer.extend({
+             initialize: function(stations) {
+                 this.stations = stations || [];
+                 this._canvas = null;
+@@ -13871,94 +14424,130 @@ window.initMap = async function() {
+                 this._topLeftOffset = null;
+                 this._dpr = 1;
+                 this._visibleHits = [];
++                this._buffer = 400;
++                
++                this.nrLogo = new Image();
++                this.nrLogo.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 62 39"><g stroke="%23ED1C24" fill="none"><path d="M1,-8.9 46,12.4 16,26.6 61,47.9" stroke-width="6"/><path d="M0,12.4H62m0,14.2H0" stroke-width="6.4"/></g></svg>';
+             },
+ 
+             onAdd: function(map) {
+                 this._map = map;
+-
+-                // Create canvas element natively
+-                this._canvas = L.DomUtil.create('canvas', 'leaflet-zoom-animated leaflet-layer');
++                this._canvas = L.DomUtil.create('canvas', 'leaflet-layer leaflet-zoom-animated');
+                 this._canvas.style.pointerEvents = 'none';
+                 this._canvas.style.position = 'absolute';
++                this._canvas.style.zIndex = '600';
++                // Force pointer-events:none as inline with highest specificity
++                // to ensure clicks pass through to the map regardless of any CSS override
++                this._canvas.setAttribute('style', (this._canvas.getAttribute('style') || '') + ';pointer-events:none!important;');
+                 
+-                // CRITICAL FIX: Inject into overlayPane so GPU handles panning
+-                // This eliminates the 1-frame lag that causes jitter
+                 map.getPanes().overlayPane.appendChild(this._canvas);
+ 
+-                this._ctx = this._canvas.getContext('2d');
++                // Bind continuous hardware events
++                map.on('moveend', this._onMoveEnd, this);
++                map.on('zoom', this._onZoom, this);
++                map.on('zoomanim', this._animateZoom, this);
++                map.on('resize', this._resize, this);
+ 
+-                // Bind lifecycle events - only redraw on moveend, not move
+-                // This lets the GPU handle smooth panning via CSS transforms
+-                map.on('moveend', this._reset, this);
+-                map.on('resize', this._reset, this);
+-                map.on('zoomend', this._reset, this);
+-
+-                // Handle zoom animation for smooth scaling
+-                if (map.options.zoomAnimation && L.Browser.any3d) {
+-                    map.on('zoomanim', this._animateZoom, this);
+-                }
+-
+-                this._reset();
++                this._resize();
++                this._onMoveEnd();
+             },
+ 
+             onRemove: function(map) {
+                 L.DomUtil.remove(this._canvas);
+-                map.off('moveend', this._reset, this);
+-                map.off('resize', this._reset, this);
+-                map.off('zoomend', this._reset, this);
+-                if (map.options.zoomAnimation) {
+-                    map.off('zoomanim', this._animateZoom, this);
+-                }
++                map.off('moveend', this._onMoveEnd, this);
++                map.off('zoom', this._onZoom, this);
++                map.off('zoomanim', this._animateZoom, this);
++                map.off('resize', this._resize, this);
+             },
+ 
+-            _reset: function() {
+-                // Calculate canvas position relative to the moving map pane (layer space)
+-                var topLeft = this._map.containerPointToLayerPoint([0, 0]);
+-                L.DomUtil.setPosition(this._canvas, topLeft);
++            _animateZoom: function(e) {
++                var scale = this._map.getZoomScale(e.zoom, this._map.getZoom());
++                var topLeftLatLng = this._map.containerPointToLatLng(L.point(-this._buffer, -this._buffer));
++                var newTopLeft = this._map._latLngToNewLayerPoint(topLeftLatLng, e.zoom, e.center);
++                L.DomUtil.setTransform(this._canvas, newTopLeft, scale);
++            },
+ 
++            _resize: function() {
+                 var size = this._map.getSize();
+                 var dpr = window.devicePixelRatio || 1;
+                 
+-                this._canvas.width = size.x * dpr;
+-                this._canvas.height = size.y * dpr;
+-                this._canvas.style.width = size.x + 'px';
+-                this._canvas.style.height = size.y + 'px';
+-
+-                this._topLeftOffset = topLeft;
++                this._canvas.width = (size.x + this._buffer * 2) * dpr;
++                this._canvas.height = (size.y + this._buffer * 2) * dpr;
++                this._canvas.style.width = (size.x + this._buffer * 2) + 'px';
++                this._canvas.style.height = (size.y + this._buffer * 2) + 'px';
+                 this._dpr = dpr;
+                 
+                 this._redraw();
+             },
+ 
++            _onMove: function() {
++                if (this._animationFrame) cancelAnimationFrame(this._animationFrame);
++                this._animationFrame = requestAnimationFrame(() => this._redraw());
++            },
++
++            _onMoveEnd: function() {
++                this._redraw();
++            },
++
++            _onZoom: function() {
++                this._redraw();
++            },
++
+             _redraw: function() {
+-                if (!this._topLeftOffset || !this._ctx) return;
++                if (!this._map) return;
+ 
+-                var ctx = this._ctx;
+-                var map = this._map;
+-                var dpr = this._dpr;
+-                var topLeft = this._topLeftOffset;
++                var topLeft = this._map.containerPointToLayerPoint([-this._buffer, -this._buffer]);
++                L.DomUtil.setPosition(this._canvas, topLeft);
++                this._topLeftOffset = topLeft;
+ 
++                var ctx = this._canvas.getContext('2d');
++                var dpr = this._dpr;
++                
+                 ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+                 ctx.save();
+                 ctx.scale(dpr, dpr);
+ 
++                var bounds = this._map.getBounds().pad(0.2);
+                 this._visibleHits = [];
++
+                 if (!this.stations || !this.stations.length) {
+                     ctx.restore();
+                     return;
+                 }
+ 
+-                var mapBounds = map.getBounds().pad(0.15);
+-                var zoom = map.getZoom();
++                var zoom = this._map.getZoom();
+                 var stSize = zoom >= 17 ? 36 : zoom >= 15 ? 30 : zoom >= 13 ? 24 : zoom >= 11 ? 18 : 12;
+                 var half = stSize / 2;
+-                var rendered = 0;
+-                var colors = { underground:'#E32017', overground:'#EE7C0E', elizabeth:'#6950A1', dlr:'#00A4A7', tram:'#84B817', 'national-rail':'#ED1C24', proposed:'#FFD700' };
++                var colors = { 
++                    underground: '#E32017', 
++                    bakerloo: '#B36305',
++                    central: '#E32017',
++                    circle: '#FFD300',
++                    district: '#00782A',
++                    'hammersmith-city': '#F3A9BB',
++                    jubilee: '#A0A5A9',
++                    metropolitan: '#9B0056',
++                    northern: '#000000',
++                    piccadilly: '#003688',
++                    victoria: '#0098D4',
++                    'waterloo-city': '#95CDBA',
++                    elizabeth: '#6950A1', 
++                    dlr: '#00A4A7', 
++                    tramlink: '#84B817', 
++                    'national-rail': '#ED1C24', 
++                    'emirates-airline': '#dc2451',
++                    proposed: '#FFD700',
++                    overground: '#EE7C0E' 
++                };
++
++                var showHistorical = document.getElementById('historical-toggle') ? document.getElementById('historical-toggle').checked : false;
+ 
+                 // Build multi-roundel offset map
+                 var nameToIndices = {};
+                 for (var i = 0; i < this.stations.length; i++) {
+                     var st = this.stations[i];
++                    if ((st.category === 'historic' || st.isHistorical) && !showHistorical) continue;
++
+                     var nn = (st.name || '').replace(/ \(.*?\)$/i, '')
+                                .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
+                                .replace(/ Station$/i, '')
+@@ -13981,53 +14570,62 @@ window.initMap = async function() {
+ 
+                 for (var i = 0; i < this.stations.length; i++) {
+                     var st = this.stations[i];
++                    if ((st.category === 'historic' || st.isHistorical) && !showHistorical) continue;
++
+                     var latLng = L.latLng(st.lat, st.lon);
+-                    
+-                    // SPATIAL CULLING: Skip off-screen stations
+-                    if (!mapBounds.contains(latLng)) continue;
++                    if (!bounds.contains(latLng)) continue;
+ 
+-                    // THE COORDINATE FIX: Use layer points relative to canvas offset
+-                    var layerPoint = map.latLngToLayerPoint(latLng);
++                    var layerPoint = this._map.latLngToLayerPoint(latLng);
+                     var drawX = layerPoint.x - topLeft.x + (offsetX[i] || 0);
+                     var drawY = layerPoint.y - topLeft.y;
+ 
+-                    var img = window._roundelImages[st.category];
+-                    if (img && window._roundelImagesReady) {
+-                        ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
+-                    } else {
++                    if (st.isHistorical) {
+                         ctx.beginPath();
+-                        ctx.arc(drawX, drawY, half * 0.65, 0, Math.PI * 2);
+-                        ctx.fillStyle = '#fff';
++                        ctx.arc(drawX, drawY, half * 0.7, 0, Math.PI * 2);
++                        ctx.fillStyle = '#12141a';
+                         ctx.fill();
+-                        ctx.lineWidth = 2.5;
+-                        ctx.strokeStyle = colors[st.category] || '#E32017';
++                        ctx.lineWidth = 3;
++                        ctx.strokeStyle = '#d4af37';
+                         ctx.stroke();
++                        ctx.beginPath();
++                        ctx.arc(drawX, drawY, half * 0.3, 0, Math.PI * 2);
++                        ctx.fillStyle = '#d4af37';
++                        ctx.fill();
++                        this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
++                    } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && this.nrLogo.complete) {
++                        ctx.drawImage(this.nrLogo, drawX - half, drawY - half, stSize, stSize);
++                        this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
++                    } else {
++                        var img = window._roundelImages[st.category];
++                        if (img && window._roundelImagesReady) {
++                            ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
++                        } else {
++                            ctx.beginPath();
++                            ctx.arc(drawX, drawY, half * 0.65, 0, Math.PI * 2);
++                            ctx.fillStyle = '#fff';
++                            ctx.fill();
++                            ctx.lineWidth = 2.5;
++                            ctx.strokeStyle = colors[st.category] || '#E32017';
++                            ctx.stroke();
++                        }
++                        this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
+                     }
+ 
+-                    this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
+-                    rendered++;
+-
+                     if (zoom >= 16 && st.name) {
+                         ctx.save();
+-                        ctx.font = (zoom >= 17 ? '600 11px' : '500 10px') + " 'SF Mono', 'Consolas', sans-serif";
++                        ctx.font = (zoom >= 17 ? '600 12px' : '500 11px') + " 'Inter', 'Roboto', sans-serif";
+                         ctx.textAlign = 'center';
+                         ctx.textBaseline = 'top';
+-                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+-                        ctx.fillText(st.name, drawX + 1, drawY + half + 5);
+-                        ctx.fillStyle = '#ffffff';
+-                        ctx.fillText(st.name, drawX, drawY + half + 4);
++                        // Glassmorphism text shadow
++                        ctx.shadowColor = "rgba(0,0,0,0.8)";
++                        ctx.shadowBlur = 4;
++                        ctx.fillStyle = st.isHistorical ? '#d4af37' : '#ffffff';
++                        var displayName = st.isHistorical ? st.name + " ­ƒÅø´©Å" : st.name;
++                        ctx.fillText(displayName, drawX, drawY + half + 4);
+                         ctx.restore();
+                     }
+                 }
+-
+                 ctx.restore();
+-                console.log('[PERF][STATIONS] Native layer rendered ' + rendered + ' stations (zoom=' + zoom + ')');
+-            },
+-
+-            _animateZoom: function(e) {
+-                var scale = this._map.getZoomScale(e.zoom);
+-                var offset = this._map._latLngBoundsToNewLayerBounds(this._map.getBounds(), e.zoom, e.center).min;
+-                L.DomUtil.setTransform(this._canvas, offset, scale);
+             },
+ 
+             setStations: function(stations) {
+@@ -14050,12 +14648,12 @@ window.initMap = async function() {
+         });
+ 
+         // Create and add the layer to the map
+-        window._stationCanvas = new StationCanvasLayer([]);
++        window._stationCanvas = new DiabolicalStationLayer([]);
+         window._stationCanvas.addTo(window.map);
+ 
+         // Station tooltip (single shared DOM element)
+         window._stationTooltip = document.createElement('div');
+-        window._stationTooltip.style.cssText = 'position:absolute;pointer-events:none;background:rgba(30,30,30,0.92);color:#fff;padding:4px 10px;border-radius:4px;font-size:12px;font-family:sans-serif;white-space:nowrap;z-index:9999;display:none;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
++        window._stationTooltip.style.cssText = 'position:absolute;pointer-events:none;background:rgba(15,15,20,0.7);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;font-weight:500;font-family:"Inter","Roboto",sans-serif;white-space:nowrap;z-index:9999;display:none;box-shadow:0 8px 32px rgba(0,0,0,0.5);transition:opacity 0.2s ease, transform 0.1s ease;';
+         document.getElementById('map-viewport').appendChild(window._stationTooltip);
+ 
+         window.map.getContainer().addEventListener('mousemove', function(e) {
+@@ -14363,7 +14961,7 @@ window.initMap = async function() {
+             var t0 = performance.now();
+             console.log('[PERF] Debounced render triggered');
+             window.renderBasemapForZoom();
+-            window._stationCanvas.redraw();
++            if (window._stationCanvas._redraw) { window._stationCanvas._redraw(); }
+             window.drawDesertsForCurrentViewport();
+             window.drawTracksForCurrentViewport();
+             console.log('[PERF] Full render pass: ' + (performance.now() - t0).toFixed(1) + 'ms');
+@@ -14372,7 +14970,7 @@ window.initMap = async function() {
+         window.map.on('moveend', function() {
+             // Reset canvas transform and trigger redraw
+             window._panStartPixel = null;
+-            var stationCanvas = document.getElementById('station-render-canvas') || window._stationCanvas;
++            var stationCanvas = document.getElementById('station-render-canvas') || (window._stationCanvas && window._stationCanvas._canvas);
+             if (stationCanvas) {
+                 stationCanvas.style.transform = 'translate3d(0, 0, 0)';
+                 stationCanvas.style.transition = '';
+@@ -14387,16 +14985,21 @@ window.initMap = async function() {
+         });
+ 
+         window.map.on('click', function(e) {
+-            // Check if a station was clicked (Canvas hit test)
+-            var containerPt = window.map.latLngToContainerPoint(e.latlng);
+-            var hit = window._stationCanvas.hitTest(containerPt);
+-            if (hit) {
+-                console.log('[MAP][EVENT] station click: ' + hit.name + ' id=' + hit.id);
+-                dioxus.send({ "event": "station_click", "id": hit.id });
+-                return;
++            try {
++                if (window._stationCanvas) {
++                    var containerPt = window.map.latLngToContainerPoint(e.latlng);
++                    var hit = window._stationCanvas.hitTest(containerPt);
++                    if (hit) {
++                        console.log('[MAP][EVENT] station click: ' + hit.name + ' id=' + hit.id);
++                        dioxus.send({ "event": "station_click", "id": hit.id });
++                        return;
++                    }
++                }
++                console.log('[MAP][EVENT] click at lat=' + e.latlng.lat.toFixed(5) + ' lon=' + e.latlng.lng.toFixed(5));
++                dioxus.send({ "event": "map_click", "lat": e.latlng.lat, "lng": e.latlng.lng });
++            } catch(ex) {
++                console.error('[MAP][EVENT] click handler error:', ex);
+             }
+-            console.log('[MAP][EVENT] click at lat=' + e.latlng.lat.toFixed(5) + ' lon=' + e.latlng.lng.toFixed(5));
+-            dioxus.send({ "event": "map_click", "lat": e.latlng.lat, "lng": e.latlng.lng });
+         });
+ 
+         window.map.on('dblclick', function(e) {
+@@ -14471,7 +15074,7 @@ window.initMap = async function() {
+             if (activeHighlightPolyline) { window.map.removeLayer(activeHighlightPolyline); }
+             if (lineSegmentsArray && lineSegmentsArray.length > 0) {
+                 activeHighlightPolyline = L.polyline(lineSegmentsArray, {
+-                    color: '#ffff00', weight: 8, opacity: 0.75, lineJoin: 'round', dashArray: '10, 10'
++                    color: '#ffff00', weight: 8, opacity: 0.75, lineJoin: 'round', dashArray: '10, 10', interactive: false
+                 }).addTo(window.map);
+                 window.map.fitBounds(activeHighlightPolyline.getBounds(), { padding: [30, 30] });
+             }
+@@ -14480,7 +15083,7 @@ window.initMap = async function() {
+         window.drawJourneyRoute = function(latlngs, color) {
+             if (window.journeyLayer) { try { window.map.removeLayer(window.journeyLayer); } catch(e){} }
+             if (latlngs && latlngs.length > 0) {
+-                window.journeyLayer = L.polyline(latlngs, { color: color || '#00bcd4', weight: 6, opacity: 0.9 }).addTo(window.map);
++                window.journeyLayer = L.polyline(latlngs, { color: color || '#00bcd4', weight: 6, opacity: 0.9, interactive: false }).addTo(window.map);
+                 window.map.fitBounds(window.journeyLayer.getBounds(), { padding: [40, 40] });
+             }
+         };
+@@ -14494,7 +15097,7 @@ window.initMap = async function() {
+             if (polygonLatLngs && polygonLatLngs.length > 2) {
+                 window.isoLayer = L.polygon(polygonLatLngs, {
+                     color: '#00bcd4', weight: 2, fill: true,
+-                    fillColor: '#00bcd4', fillOpacity: 0.12, dashArray: '6 4'
++                    fillColor: '#00bcd4', fillOpacity: 0.12, dashArray: '6 4', interactive: false
+                 }).addTo(window.map);
+                 window.isoLayer.bindTooltip(stationsData.length + ' stations in ' + minutes + ' min', { sticky: true });
+             }
+@@ -14523,7 +15126,7 @@ window.initMap = async function() {
+                 var step = 0.004;
+                 var rect = L.rectangle(
+                     [[cell.lat - step, cell.lon - step], [cell.lat + step, cell.lon + step]],
+-                    { color: 'none', fillColor: color, fillOpacity: cell.is_desert ? 0.6 : 0.25, weight: 0 }
++                    { color: 'none', fillColor: color, fillOpacity: cell.is_desert ? 0.6 : 0.25, weight: 0, interactive: false }
+                 ).bindTooltip(cell.demand_score.toFixed(0) + '% demand ┬À ' + (cell.nearest_station_m/1000).toFixed(2) + 'km to nearest station', { sticky: true });
+                 rect.addTo(window.map);
+                 window.demandHeatLayers.push(rect);
+@@ -14804,7 +15407,8 @@ while (true) {
+     try {
+     if (msg.type === "updateLines") {
+         let incoming = msg.data;
+-        if (!incoming || !incoming.lines) { continue; }
++        if (!incoming || !incoming.lines) { console.warn('[updateLines] No lines data received'); continue; }
++        console.log('[updateLines] Received', incoming.lines.length, 'lines, hiddenIds:', incoming.hiddenIds);
+         
+         let incomingIds = new Set(incoming.lines.map(l => l.id));
+         
+@@ -14828,6 +15432,7 @@ while (true) {
+         incoming.lines.forEach(line => {
+             if (!line || !line.id) return;
+             if (incoming.hiddenIds && incoming.hiddenIds.includes(line.id)) return;
++            console.log('[updateLines] Processing line:', line.id, line.name, 'sub_geometries:', line.sub_geometries ? line.sub_geometries.length : 0);
+             
+             let serialized = JSON.stringify({ color: line.color, geom: line.geometry, sub: line.sub_geometries, name: line.name });
+             let existing = window.lineLayers[line.id];
+@@ -15066,6 +15671,35 @@ while (true) {
+                 }
+             }
+         }
++
++        pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(
++            url: &str,
++        ) -> Option<T> {
++            let client = get_api_client();
++            let base_url = API_BASE_URL
++                .get()
++                .map(|s| s.as_str())
++                .unwrap_or("http://127.0.0.1:3000");
++            let target_endpoint = format!("{}{}", base_url, url);
++            log_trace(&format!("get_api - GET {}", target_endpoint));
++
++            match client.get(&target_endpoint).send().await {
++                Ok(resp) => match resp.json::<ApiResponse<T>>().await {
++                    Ok(api_resp) => {
++                        log_trace(&format!("get_api - {} OK", url));
++                        api_resp.data
++                    }
++                    Err(e) => {
++                        log_error(&format!("API response parse error for {}: {}", url, e));
++                        None
++                    }
++                },
++                Err(e) => {
++                    log_error(&format!("API request failed for {}: {}", url, e));
++                    None
++                }
++            }
++        }
+     }
+ 
+     mod leaflet {
+@@ -15299,7 +15933,7 @@ window.__consoleDupCount = 0;
+                 .with_title("AlexÔÇÖs Tube Ôàñ")
+                 .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1280.0, 800.0))
+                 .with_resizable(true)
+-                .with_decorations(false) // Frameless: eradicates OS title bar for premium glassmorphism
++                .with_decorations(true)
+                 .with_transparent(true); // Allows true glassmorphism blending with the map
+ 
+             dioxus::desktop::Config::new()
+@@ -15664,6 +16298,9 @@ window.__consoleDupCount = 0;
+             let mut selected_station = use_signal::<Option<Station>>(|| None);
+ 
+             let mut catchment_enabled = use_signal::<bool>(|| false);
++            let mut show_historical_stations = use_signal::<bool>(|| false);
++            let mut station_arrivals = use_signal::<Vec<StationArrival>>(|| Vec::new());
++            let mut station_arrivals_loading = use_signal::<bool>(|| false);
+             let mut map_bounds = use_signal::<Option<LondonBounds>>(|| None);
+ 
+             let mut construction_mode = use_signal::<bool>(|| false);
+@@ -15682,6 +16319,13 @@ window.__consoleDupCount = 0;
+             let mut hidden_lines = use_signal::<HashSet<String>>(HashSet::new);
+             let mut permanent_deletions = use_signal::<HashSet<String>>(HashSet::new);
+ 
++            // Menu state signals for persistent click-based menus
++            let mut file_menu_open = use_signal::<bool>(|| false);
++            let mut edit_menu_open = use_signal::<bool>(|| false);
++            let mut view_menu_open = use_signal::<bool>(|| false);
++            let mut tools_menu_open = use_signal::<bool>(|| false);
++            let mut help_menu_open = use_signal::<bool>(|| false);
++
+             let mut logger_open = use_signal::<bool>(|| true);
+             let mut logs = use_signal::<String>(String::new);
+ 
+@@ -15712,9 +16356,10 @@ window.__consoleDupCount = 0;
+ 
+             // --- MIGRATED SIGNALS FOR NATIVE RUST/DIOXUS UI CONTROLS ---
+             let _basemap_segments = use_signal::<Vec<RailSegment>>(Vec::new);
+-            let mut active_base_mode = use_signal::<String>(|| "street".to_string());
++            let mut active_base_mode = use_signal::<String>(|| "satellite".to_string());
+             let mut sat_provider_idx = use_signal::<usize>(|| 0);
+             let mut tile_provider_idx = use_signal::<usize>(|| 0);
++            let mut google_labels = use_signal::<bool>(|| true);
+             let mut is_journey_planner_open = use_signal::<bool>(|| false);
+             let mut journey_from = use_signal::<String>(String::new);
+             let mut journey_to = use_signal::<String>(String::new);
+@@ -15792,6 +16437,25 @@ window.__consoleDupCount = 0;
+                 matrix
+             });
+ 
++            // Inject crash report into log stream when panic becomes active
++            use_effect(move || {
++                let panic_active = IS_PANICKED.load(std::sync::atomic::Ordering::SeqCst);
++                if panic_active && !*panic_log_injected.read() {
++                    panic_log_injected.set(true);
++                    let crash_text_val = CRASH_LOG_ACCUMULATOR
++                        .get()
++                        .and_then(|m| m.lock().ok().map(|g| g.clone()))
++                        .unwrap_or_else(|| "No crash details available.".to_string());
++                    let short_report = format!("\u{2501}\u{2501}\u{2501} ENGINE CRASH \u{2501}\u{2501}\u{2501}\n{}\nFull crash report available via COPY button above.\n\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
++                        crash_text_val.lines().take(20).collect::<Vec<_>>().join("\n")
++                    );
++                    logs.with_mut(|l| {
++                        l.push('\n');
++                        l.push_str(&short_report);
++                    });
++                }
++            });
++
+             // Warm-up data
+             use_future(move || async move {
+                 log_debug("App::warm_up - starting data warm-up fetch loop");
+@@ -15965,12 +16629,48 @@ window.__consoleDupCount = 0;
+                 }
+             });
+ 
++            let mut weather_info = use_signal::<Option<crate::server::WeatherResponse>>(|| None);
++            use_future(move || async move {
++                loop {
++                    if let Some(res) = get_api::<Option<crate::server::WeatherResponse>>("/api/weather").await {
++                        weather_info.set(res);
++                    }
++                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
++                }
++            });
++
++            use_effect(move || {
++                let enabled = *google_labels.read();
++                eval(&format!("if (window.toggleGoogleLabels) window.toggleGoogleLabels({});", enabled));
++            });
++
+             // Smart auto-scroll for logger panel: follows bottom; stops if user scrolls up; resumes at bottom
+             use_effect(move || {
+                 let _ = logs.read().len();
+                 eval(&scroll_to_bottom_js("log-content"));
+             });
+ 
++            // Fetch live/mock arrivals when selected station changes
++            use_effect(move || {
++                let station_opt = selected_station.read().clone();
++                spawn(async move {
++                    if let Some(st) = station_opt {
++                        station_arrivals_loading.set(true);
++                        station_arrivals.set(Vec::new());
++                        let url = format!("/api/stations/{}/arrivals", st.id);
++                        if let Some(res) = fetch_api::<Vec<StationArrival>>(&url).await {
++                            station_arrivals.set(res);
++                        } else {
++                            station_arrivals.set(Vec::new());
++                        }
++                        station_arrivals_loading.set(false);
++                    } else {
++                        station_arrivals.set(Vec::new());
++                        station_arrivals_loading.set(false);
++                    }
++                });
++            });
++
+             // Leaflet map bindings & bridge event loop
+             use_effect(move || {
+                 log_debug("App::map_bridge - initialising Leaflet map bridge");
+@@ -16168,6 +16868,20 @@ window.__consoleDupCount = 0;
+                                             custom_line_coords.with_mut(|coords| {
+                                                 coords.push(Coordinate::new(lat, lon));
+                                             });
++                                        } else {
++                                            selected_station.set(None);
++                                            journey_from_coord.set(None);
++                                            journey_from.set("".to_string());
++                                            journey_to_coord.set(None);
++                                            journey_to.set("".to_string());
++                                            journey_result.set(None);
++                                            show_transit_score.set(false);
++                                            transit_score_data.set(None);
++                                            eval("if (window.clearJourneyRoute) { window.clearJourneyRoute(); }");
++                                            eval("if (window.clearJourneyAnimation) { window.clearJourneyAnimation(); }");
++                                            eval("if (window.clearIsochrone) { window.clearIsochrone(); }");
++                                            eval("if (window.clearCostDrawing) { window.clearCostDrawing(); }");
++                                            eval("if (window.releaseFocus) { window.releaseFocus(); }");
+                                         }
+                                     }
+                                 }
+@@ -16613,27 +17327,9 @@ window.__consoleDupCount = 0;
+                 })
+                 .unwrap_or_default();
+ 
+-            // Fix #14: Pre-compute crash text for the crash recovery overlay (must be outside rsx!)
+-            let crash_text_val = CRASH_LOG_ACCUMULATOR
+-                .get()
+-                .and_then(|m| m.lock().ok().map(|g| g.clone()))
+-                .unwrap_or_else(|| "No crash details available.".to_string());
+-
+             let panic_active = IS_PANICKED.load(std::sync::atomic::Ordering::SeqCst);
+             let panic_display = if panic_active { "flex" } else { "none" };
+-            // Inject crash report into the log stream ONCE so it appears inline
+-            // instead of being hidden behind a full-screen overlay.
+-            if panic_active && !*panic_log_injected.read() {
+-                panic_log_injected.set(true);
+-                let short_report = format!(
+-            "\u{2501}\u{2501}\u{2501} ENGINE CRASH \u{2501}\u{2501}\u{2501}\n{}\nFull crash report available via COPY button above.\n\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
+-            crash_text_val.lines().take(20).collect::<Vec<_>>().join("\n")
+-        );
+-                logs.with_mut(|l| {
+-                    l.push('\n');
+-                    l.push_str(&short_report);
+-                });
+-            }
++
+             let loading_active = !panic_active && *show_loading.read();
+             let loading_display = if loading_active { "flex" } else { "none" };
+             let timeout_display = if *data_timeout.read() {
+@@ -16663,10 +17359,25 @@ window.__consoleDupCount = 0;
+                 "flex"
+             };
+ 
++            let splash_opacity = if srv_status == "connected" { "0" } else { "1" };
++            let splash_pointer_events = if srv_status == "connected" { "none" } else { "auto" };
++
++            // Pre-compute crash text for the crash recovery overlay (must be outside rsx!)
++            let crash_text_val = CRASH_LOG_ACCUMULATOR
++                .get()
++                .and_then(|m| m.lock().ok().map(|g| g.clone()))
++                .unwrap_or_else(|| "No crash details available.".to_string());
++
++            let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
++            let edit_menu_display = if *edit_menu_open.read() { "block" } else { "none" };
++            let view_menu_display = if *view_menu_open.read() { "block" } else { "none" };
++            let tools_menu_display = if *tools_menu_open.read() { "block" } else { "none" };
++            let help_menu_display = if *help_menu_open.read() { "block" } else { "none" };
++
+             rsx! {
+                     style { "{*CONSOLIDATED_UI_STYLES}" }
+ 
+-                    // Screen Reader Live Announcer ÔÇö hidden div that assistive
++                    // Screen Reader Live Announcer ├ö├ç├Â hidden div that assistive
+                     // technology monitors for dynamic content changes. JS pushes
+                     // announcements here via window.announceToScreenReader().
+                     div {
+@@ -16677,7 +17388,7 @@ window.__consoleDupCount = 0;
+                         role: "log"
+                     }
+ 
+-                    // Skip Navigation Link ÔÇö visible on Tab focus, lets keyboard users
++                    // Skip Navigation Link ├ö├ç├Â visible on Tab focus, lets keyboard users
+                     // jump past the title bar directly to the map content.
+                     a {
+                         class: "skip-link",
+@@ -16771,7 +17482,7 @@ window.__consoleDupCount = 0;
+                                 style: "position: relative;",
+                                 input {
+                                     id: "global-search",
+-                                    placeholder: "­ƒöì Search stations, lines...",
++                                    placeholder: "┬¡ãÆ├Â├¼ Search stations, lines...",
+                                     "aria-label": "Search stations and lines",
+                                     autocomplete: "off",
+                                     style: "width: 280px; padding: 6px 12px; background: rgba(8,10,14,.8); border: 1px solid rgba(255,255,255,.15); border-radius: 16px; color: #fff; font-size: 12px; outline: none; transition: all 0.2s;",
+@@ -16804,7 +17515,7 @@ window.__consoleDupCount = 0;
+                                                 {search_results.read().iter().map(|r| {
+                                                     let s = r.station.clone();
+                                                     let score_pct = (r.score * 100.0).round() as i64;
+-                                                    let lines_label = s.lines.join(" ┬À ");
++                                                    let lines_label = s.lines.join(" Ôö¼├Ç ");
+                                                     let lat = s.coord.lat;
+                                                     let lon = s.coord.lon;
+                                                     rsx! {
+@@ -17160,7 +17871,7 @@ window.__consoleDupCount = 0;
+                                     // Minimize via JavaScript
+                                     eval("window.minimize();");
+                                 },
+-                                "ÔÇö"
++                                "├ö├ç├Â"
+                             }
+                             button {
+                                 style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 16px;",
+@@ -17168,7 +17879,7 @@ window.__consoleDupCount = 0;
+                                     // Maximize/Fullscreen via JavaScript
+                                     eval("window.toggleMaximize();");
+                                 },
+-                                "Ôûí"
++                                "├ö├╗├¡"
+                             }
+                             button {
+                                 style: "background: rgba(244,67,54,0.15); border: 1px solid rgba(244,67,54,0.3); border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #f44336; font-size: 12px; font-weight: bold;",
+@@ -17176,7 +17887,7 @@ window.__consoleDupCount = 0;
+                                     fn quit() { std::process::exit(0); }
+                                     quit();
+                                 },
+-                                "Ô£ò"
++                                "├ö┬ú├▓"
+                             }
+                         }
+                     }
+@@ -17217,7 +17928,7 @@ window.__consoleDupCount = 0;
+                                     style: "display: flex; align-items: center; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);",
+                                     span {
+                                         style: "color: #00bcd4; font-size: 16px; margin-right: 12px;",
+-                                        "Ôîÿ"
++                                        "├ö├«├┐"
+                                     }
+                                     input {
+                                         style: "flex: 1; background: none; border: none; outline: none; color: #fff; font-size: 15px; font-family: 'JetBrains Mono', monospace;",
+@@ -17283,7 +17994,7 @@ window.__consoleDupCount = 0;
+                                         style: "max-height: 320px; overflow-y: auto;",
+                                         {omnibox_results.read().iter().map(|r| {
+                                             let s = r.station.clone();
+-                                            let lines_label = s.lines.join(" ┬À ");
++                                            let lines_label = s.lines.join(" Ôö¼├Ç ");
+                                             let lat = s.coord.lat;
+                                             let lon = s.coord.lon;
+                                             let score_pct = (r.score * 100.0).round() as i64;
+@@ -17311,11 +18022,11 @@ window.__consoleDupCount = 0;
+                                     div {
+                                         style: "padding: 12px 16px; color: #666; font-size: 12px;",
+                                         div { style: "margin-bottom: 6px; color: #888;", "Available commands:" }
+-                                        div { style: "color: #00bcd4;", "/ai-simulate ÔÇö Run AI junction synthesis" }
+-                                        div { style: "color: #00bcd4;", "/disruptions ÔÇö Toggle disruption layer" }
+-                                        div { style: "color: #00bcd4;", "/demand ÔÇö Toggle demand heat map" }
+-                                                                        div { style: "color: #00bcd4;", "/congestion ÔÇö Run Monte Carlo congestion simulation" }
+-                                        div { style: "color: #00bcd4;", "/export ÔÇö Export network as GeoJSON" }
++                                        div { style: "color: #00bcd4;", "/ai-simulate ├ö├ç├Â Run AI junction synthesis" }
++                                        div { style: "color: #00bcd4;", "/disruptions ├ö├ç├Â Toggle disruption layer" }
++                                        div { style: "color: #00bcd4;", "/demand ├ö├ç├Â Toggle demand heat map" }
++                                                                        div { style: "color: #00bcd4;", "/congestion ├ö├ç├Â Run Monte Carlo congestion simulation" }
++                                        div { style: "color: #00bcd4;", "/export ├ö├ç├Â Export network as GeoJSON" }
+                                     }
+                                 }
+                             }
+@@ -17331,7 +18042,7 @@ window.__consoleDupCount = 0;
+ 
+                     div { id: "fps-counter-widget", "PERF: -- FPS" }
+ 
+-                    // CRT Tactical Scanline Overlay ÔÇö gives the map a retro transit control room feel
++                    // CRT Tactical Scanline Overlay ├ö├ç├Â gives the map a retro transit control room feel
+                     // Can be toggled off by user; also auto-disabled by prefers-reduced-motion JS
+                     div { class: "tactical-crt-overlay", id: "crt-overlay-toggleable" }
+ 
+@@ -17369,7 +18080,7 @@ window.__consoleDupCount = 0;
+                                 let is_custom = line.is_custom;
+                                 let data_type = if is_custom { "custom" } else if line.group == "nationalrail" { "rail" } else { "tube" };
+                                 let is_hidden = hidden_lines.read().contains(&element_id);
+-                                let visibility_glyph = if is_hidden { "­ƒÖê" } else { "­ƒæü´©Å" };
++                                let visibility_glyph = if is_hidden { "┬¡ãÆ├û├¬" } else { "┬¡ãÆ├ª├╝┬┤┬®├à" };
+ 
+                                 if !is_custom {
+                                     rsx! {
+@@ -17396,7 +18107,7 @@ window.__consoleDupCount = 0;
+                                                         e.stop_propagation();
+                                                         permanent_deletions.with_mut(|d| { d.insert(element_id_delete.clone()); });
+                                                     },
+-                                                    "ÔØî"
++                                                    "├ö├ÿ├«"
+                                                 }
+                                             }
+                                             div { class: "branch-segment", style: "padding-left: 20px; margin-top: 8px;",
+@@ -17416,7 +18127,7 @@ window.__consoleDupCount = 0;
+                                                                 eval(&js);
+                                                             },
+                                                             "{st_name}"
+-                                                            {is_interchange.then(|| rsx! { span { style: "color: #00bcd4; margin-left: 4px; font-size: 10px;", "­ƒöä" } })}
++                                                            {is_interchange.then(|| rsx! { span { style: "color: #00bcd4; margin-left: 4px; font-size: 10px;", "┬¡ãÆ├Â├ñ" } })}
+                                                         }
+                                                     }
+                                                 })}
+@@ -17456,7 +18167,7 @@ window.__consoleDupCount = 0;
+                                                         lines_sig.with_mut(|l| { l.retain(|line| line.id != target_id); });
+                                                     });
+                                                 },
+-                                                "ÔØî"
++                                                "├ö├ÿ├«"
+                                             }
+                                         }
+                                     }
+@@ -17559,7 +18270,7 @@ window.__consoleDupCount = 0;
+                         let station_status_text = if st.is_open { "Open" } else { "Closed" };
+                         let dashboard_zone_label = format!("Zone {}", st.zone);
+                         let target_station_name = &st.name;
+-                        let sheet_aria_label = format!("Station details ÔÇö {}", target_station_name);
++                        let sheet_aria_label = format!("Station details ├ö├ç├Â {}", target_station_name);
+                         Some(rsx! {
+                             div { class: "tfl-bottom-sheet spring-enter",
+                                 role: "dialog",
+@@ -17653,7 +18364,7 @@ window.__consoleDupCount = 0;
+                                 eval(&format!("navigator.clipboard.writeText('{:.6},{:.6}');", coord.lat, coord.lon));
+                                 show_toast(&mut toasts, &mut toast_id_counter, "Coordinates copied to clipboard", "info");
+                             },
+-                            "­ƒôï Copy Coordinates"
++                            "┬¡ãÆ├┤├» Copy Coordinates"
+                         }
+                         div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 2px 0;" }
+                         div {
+@@ -17666,7 +18377,7 @@ window.__consoleDupCount = 0;
+                                 journey_from.set(format!("{:.5}, {:.5}", coord.lat, coord.lon));
+                                 is_journey_planner_open.set(true);
+                             },
+-                            "­ƒôì Set Journey From"
++                            "┬¡ãÆ├┤├¼ Set Journey From"
+                         }
+                         div {
+                             class: "menu-item",
+@@ -17678,7 +18389,7 @@ window.__consoleDupCount = 0;
+                                 journey_to.set(format!("{:.5}, {:.5}", coord.lat, coord.lon));
+                                 is_journey_planner_open.set(true);
+                             },
+-                            "­ƒÅü Set Journey To"
++                            "┬¡ãÆ├à├╝ Set Journey To"
+                         }
+                         div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
+                         div {
+@@ -17702,7 +18413,7 @@ window.__consoleDupCount = 0;
+                                     transit_score_loading.set(false);
+                                 });
+                             },
+-                            "­ƒö« Transit Score Here"
++                            "┬¡ãÆ├Â┬½ Transit Score Here"
+                         }
+                         div {
+                             class: "menu-item",
+@@ -17729,7 +18440,7 @@ window.__consoleDupCount = 0;
+                                     }
+                                 });
+                             },
+-                            "ÔÅ▒ Isochrone from Here"
++                            "├ö├àÔûÆ Isochrone from Here"
+                         }
+                         div {
+                             class: "menu-item",
+@@ -17759,7 +18470,7 @@ window.__consoleDupCount = 0;
+                                     }
+                                 }
+                             },
+-                            "­ƒöÑ Toggle Demand Heat Map"
++                            "┬¡ãÆ├Â├æ Toggle Demand Heat Map"
+                         }
+                         div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
+                         div {
+@@ -17770,7 +18481,7 @@ window.__consoleDupCount = 0;
+                                 context_menu.set(None);
+                                 eval(&call_window_js("exportGeoJSON"));
+                             },
+-                            "­ƒÆ¥ Export GeoJSON"
++                            "┬¡ãÆ├å┬Ñ Export GeoJSON"
+                         }
+                         div {
+                             class: "menu-item",
+@@ -17780,7 +18491,7 @@ window.__consoleDupCount = 0;
+                                 context_menu.set(None);
+                                 is_keyboard_help_open.set(true);
+                             },
+-                            "Ôî¿ Keyboard Shortcuts"
++                            "├ö├«┬┐ Keyboard Shortcuts"
+                         }
+                         div { style: "height: 1px; background: rgba(255,255,255,.07); margin: 4px 0;" }
+                         div {
+@@ -17805,7 +18516,7 @@ window.__consoleDupCount = 0;
+                                     }));
+                                 }
+                             },
+-                            "­ƒôì Place Standalone Catchment Node"
++                            "┬¡ãÆ├┤├¼ Place Standalone Catchment Node"
+                         }
+                         div {
+                             class: "menu-item",
+@@ -18106,7 +18817,7 @@ window.__consoleDupCount = 0;
+                                     is_journey_planner_open.set(false);
+                                     journey_picking_mode.set(None);
+                                 },
+-                                "Ô£ò"
++                                "├ö┬ú├▓"
+                             }
+                         }
+                     }
+@@ -18133,7 +18844,7 @@ window.__consoleDupCount = 0;
+                                     onclick: move |_| {
+                                         journey_picking_mode.set(Some("from".to_string()));
+                                     },
+-                                    "­ƒôì"
++                                    "┬¡ãÆ├┤├¼"
+                                 }
+                             }
+                         }
+@@ -18158,7 +18869,7 @@ window.__consoleDupCount = 0;
+                                     onclick: move |_| {
+                                         journey_picking_mode.set(Some("to".to_string()));
+                                     },
+-                                    "­ƒôì"
++                                    "┬¡ãÆ├┤├¼"
+                                 }
+                             }
+                         }
+@@ -18200,7 +18911,7 @@ window.__consoleDupCount = 0;
+                                     });
+                                 }
+                             },
+-                            "Plan Journey ÔåÆ"
++                            "Plan Journey ├ö├Ñ├å"
+                         }
+                     }
+                     div {
+@@ -18218,7 +18929,7 @@ window.__consoleDupCount = 0;
+                                     div {
+                                         style: "background: rgba(0,188,212,.08); border: 1px solid rgba(0,188,212,.2); border-radius: 10px; padding: 14px; margin-bottom: 10px;",
+                                         div { style: "font-size: 20px; font-weight: 800; color: #00bcd4;", "{j.total_time_min:.0} min" }
+-                                        div { style: "font-size: 12px; color: #aaa; margin-top: 2px;", "{distance_km:.1} km  ┬À  {zones_label}  ┬À  ┬ú{j.fare_estimate_gbp:.2}" }
++                                        div { style: "font-size: 12px; color: #aaa; margin-top: 2px;", "{distance_km:.1} km  Ôö¼├Ç  {zones_label}  Ôö¼├Ç  Ôö¼├║{j.fare_estimate_gbp:.2}" }
+                                     }
+                                     {j.legs.iter().map(|leg| {
+                                         let leg_color = &leg.line_color;
+@@ -18231,15 +18942,15 @@ window.__consoleDupCount = 0;
+                                                 div { style: "width: 4px; height: 36px; border-radius: 2px; background: {leg_color}; flex-shrink: 0;" }
+                                                 div {
+                                                     div { style: "font-size: 13px; font-weight: 700;", "{leg.line_name}" }
+-                                                    div { style: "font-size: 11px; color: #888;", "{leg.from_station} ÔåÆ {leg.to_station}" }
+-                                                    div { style: "font-size: 11px; color: #aaa;", "{travel_time:.0} min ┬À {dist_km:.2} km ┬À {leg.stops} stops" }
++                                                    div { style: "font-size: 11px; color: #888;", "{leg.from_station} ├ö├Ñ├å {leg.to_station}" }
++                                                    div { style: "font-size: 11px; color: #aaa;", "{travel_time:.0} min Ôö¼├Ç {dist_km:.2} km Ôö¼├Ç {leg.stops} stops" }
+                                                 }
+                                             }
+                                         }
+                                     })}
+                                     div {
+                                         style: "margin-top: 12px; font-size: 11px; color: #4caf50; line-height: 1.6;",
+-                                        {j.accessibility_notes.iter().map(|n| rsx! { div { key: "{n}", "Ô£ô {n}" } })}
++                                        {j.accessibility_notes.iter().map(|n| rsx! { div { key: "{n}", "├ö┬ú├┤ {n}" } })}
+                                     }
+                                 })
+                             } else {
+@@ -18263,7 +18974,7 @@ window.__consoleDupCount = 0;
+                             })
+                         } else if let Some(s) = transit_score_data.read().as_ref() {
+                             let score_color = if s.score >= 80.0 { "#4caf50" } else if s.score >= 60.0 { "#00bcd4" } else if s.score >= 40.0 { "#ff9800" } else { "#f44336" };
+-                            let lines_lbl = s.lines_accessible.iter().take(6).cloned().collect::<Vec<_>>().join(" ┬À ");
++                            let lines_lbl = s.lines_accessible.iter().take(6).cloned().collect::<Vec<_>>().join(" Ôö¼├Ç ");
+                             Some(rsx! {
+                                 div {
+                                     id: "transit-score-panel",
+@@ -18284,7 +18995,7 @@ window.__consoleDupCount = 0;
+                                             onclick: move |_| {
+                                                 show_transit_score.set(false);
+                                             },
+-                                            "Ô£ò"
++                                            "├ö┬ú├▓"
+                                         }
+                                     }
+                                     div { style: "font-size: 11px; color: #888; margin-bottom: 8px;", "{s.breakdown}" }
+@@ -18364,7 +19075,7 @@ window.__consoleDupCount = 0;
+                         style: "padding: 20px 20px 12px; border-bottom: 1px solid rgba(255,255,255,.08);",
+                         div {
+                             style: "display: flex; justify-content: space-between; align-items: center;",
+-                            div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #ff9800;", "­ƒÆ© Cost Estimator" }
++                            div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #ff9800;", "┬¡ãÆ├å┬® Cost Estimator" }
+                             button {
+                                 "aria-label": "Close Cost Estimator",
+                                 style: "background: none; border: none; color: #888; cursor: pointer; font-size: 18px;",
+@@ -18373,7 +19084,7 @@ window.__consoleDupCount = 0;
+                                     cost_drawing_mode.set(false);
+                                     eval(&call_window_js("clearCostDrawing"));
+                                 },
+-                                "Ô£ò"
++                                "├ö┬ú├▓"
+                             }
+                         }
+                         div { style: "font-size: 11px; color: #666; margin-top: 6px;", "Draw a line on the map to estimate infrastructure costs" }
+@@ -18452,17 +19163,17 @@ window.__consoleDupCount = 0;
+                                     div {
+                                         style: "background: rgba(255,152,0,.1); border: 1px solid rgba(255,152,0,.3); border-radius: 10px; padding: 14px; margin-bottom: 12px;",
+                                         div { style: "font-size: 11px; color: #888; margin-bottom: 4px;", "Total Estimated Cost" }
+-                                        div { style: "font-size: 26px; font-weight: 900; color: #ff9800;", "┬ú{c.estimated_cost_gbp_millions:.0}M" }
+-                                        div { style: "font-size: 11px; color: #aaa;", "{dist_km:.2} km ┬À {c.bore_type}" }
++                                        div { style: "font-size: 26px; font-weight: 900; color: #ff9800;", "Ôö¼├║{c.estimated_cost_gbp_millions:.0}M" }
++                                        div { style: "font-size: 11px; color: #aaa;", "{dist_km:.2} km Ôö¼├Ç {c.bore_type}" }
+                                     }
+                                     div {
+                                         style: "font-size: 12px; line-height: 2; color: #ccc;",
+-                                        div { "Civil Engineering: " span { style: "color: #fff; font-weight: 700;", "┬ú{c.civil_engineering_gbp_millions:.0}M" } }
+-                                        div { "Stations: " span { style: "color: #fff; font-weight: 700;", "┬ú{c.stations_cost_gbp_millions:.0}M" } }
+-                                        div { "Systems & M&E: " span { style: "color: #fff; font-weight: 700;", "┬ú{c.systems_gbp_millions:.0}M" } }
+-                                        div { "Contingency (30%): " span { style: "color: #fff; font-weight: 700;", "┬ú{c.contingency_gbp_millions:.0}M" } }
++                                        div { "Civil Engineering: " span { style: "color: #fff; font-weight: 700;", "Ôö¼├║{c.civil_engineering_gbp_millions:.0}M" } }
++                                        div { "Stations: " span { style: "color: #fff; font-weight: 700;", "Ôö¼├║{c.stations_cost_gbp_millions:.0}M" } }
++                                        div { "Systems & M&E: " span { style: "color: #fff; font-weight: 700;", "Ôö¼├║{c.systems_gbp_millions:.0}M" } }
++                                        div { "Contingency (30%): " span { style: "color: #fff; font-weight: 700;", "Ôö¼├║{c.contingency_gbp_millions:.0}M" } }
+                                         div { "Est. Construction: " span { style: "color: #ff9800; font-weight: 700;", "{c.construction_years:.1} years" } }
+-                                        div { "COÔéé Footprint: " span { style: "color: #4caf50; font-weight: 700;", "{c.co2_footprint_kt:.0} kt" } }
++                                        div { "CO├ö├®├® Footprint: " span { style: "color: #4caf50; font-weight: 700;", "{c.co2_footprint_kt:.0} kt" } }
+                                     }
+                                     div {
+                                         style: "margin-top: 12px; padding: 10px; background: rgba(255,255,255,.04); border-radius: 8px; font-size: 11px; color: #aaa; line-height: 1.5;",
+@@ -18556,20 +19267,20 @@ window.__consoleDupCount = 0;
+                             let display = if new_val { "" } else { "none" };
+                             eval(&format!("document.querySelectorAll('.tactical-crt-overlay').forEach(function(el){{ el.style.display='{}'; }});", display));
+                         },
+-                        "ÔùÉ"
++                        "├ö├╣├ë"
+                     }
+                     button {
+                         title: "Journey Planner (J)",
+-                        "aria-label": "Open Journey Planner ÔÇö keyboard shortcut J",
++                        "aria-label": "Open Journey Planner ├ö├ç├Â keyboard shortcut J",
+                         style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00bcd4; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .15s, box-shadow .15s;",
+                         onclick: move |_| {
+                             is_journey_planner_open.toggle();
+                         },
+-                        "­ƒÜç"
++                        "┬¡ãÆ├£├º"
+                     }
+                     button {
+                         title: "Cost Estimator (C)",
+-                        "aria-label": "Open Cost Estimator ÔÇö keyboard shortcut C",
++                        "aria-label": "Open Cost Estimator ├ö├ç├Â keyboard shortcut C",
+                         style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ff9800; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .15s, box-shadow .15s;",
+                         onclick: move |_| {
+                             is_cost_estimator_open.toggle();
+@@ -18578,11 +19289,11 @@ window.__consoleDupCount = 0;
+                                 eval(&call_window_js("clearCostDrawing"));
+                             }
+                         },
+-                        "­ƒÆÀ"
++                        "┬¡ãÆ├å├Ç"
+                     }
+                     button {
+                         title: "Toggle Demand Heat Map (H)",
+-                        "aria-label": "Toggle demand heat map overlay ÔÇö keyboard shortcut H",
++                        "aria-label": "Toggle demand heat map overlay ├ö├ç├Â keyboard shortcut H",
+                         style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #f44336; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .15s, box-shadow .15s;",
+                         onclick: move |_| {
+                             let active = *demand_heat_active.read();
+@@ -18607,11 +19318,11 @@ window.__consoleDupCount = 0;
+                                 }
+                             }
+                         },
+-                        "­ƒöÑ"
++                        "┬¡ãÆ├Â├æ"
+                     }
+                     button {
+                         title: "Simulate Network Congestion (G)",
+-                        "aria-label": "Run Monte Carlo congestion simulation ÔÇö keyboard shortcut G",
++                        "aria-label": "Run Monte Carlo congestion simulation ├ö├ç├Â keyboard shortcut G",
+                         style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ffaa00; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .15s, box-shadow .15s;",
+                         onclick: move |_| {
+                             congestion_loading.set(true);
+@@ -18627,12 +19338,12 @@ window.__consoleDupCount = 0;
+                     }
+                     button {
+                         title: "Export GeoJSON (E)",
+-                        "aria-label": "Export network as GeoJSON ÔÇö keyboard shortcut E",
++                        "aria-label": "Export network as GeoJSON ├ö├ç├Â keyboard shortcut E",
+                         style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #4caf50; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4); transition: transform .15s, box-shadow .15s;",
+                         onclick: move |_| {
+                             eval(&call_window_js("exportGeoJSON"));
+                         },
+-                        "­ƒÆ¥"
++                        "┬¡ãÆ├å┬Ñ"
+                     }
+                     button {
+                         title: "Keyboard Shortcuts (?)",
+@@ -18642,7 +19353,7 @@ window.__consoleDupCount = 0;
+                             is_keyboard_help_open.toggle();
+                             eval("setTimeout(function(){ var m = document.getElementById('kb-help-modal'); if(m) window.trapFocus(m); }, 150);");
+                         },
+-                        "Ôî¿"
++                        "├ö├«┬┐"
+                     }
+                 }
+ 
+@@ -18685,7 +19396,7 @@ window.__consoleDupCount = 0;
+ 
+ 
+ 
+-                // Stable overlay divs ÔÇö always present in DOM, only display toggles.
++                // Stable overlay divs ├ö├ç├Â always present in DOM, only display toggles.
+                 // This prevents NativeInterpreter 'node.after()' vdom patching crash.
+                 //
+                 // CRASH BANNER (not full-screen overlay):
+@@ -18698,7 +19409,7 @@ window.__consoleDupCount = 0;
+                     div { style: "display:flex;justify-content:space-between;align-items:center",
+                         div { style: "display:flex;align-items:center;gap:8px",
+                             span { style: "color:#ff4444;font-weight:bold;font-family:monospace;font-size:13px;letter-spacing:1px", "\u{2717} ENGINE CRASHED" }
+-                            span { style: "color:rgba(255,255,255,.5);font-size:11px;font-family:monospace", "ÔÇö crash report injected to logs below. Map and logs still visible." }
++                            span { style: "color:rgba(255,255,255,.5);font-size:11px;font-family:monospace", "├ö├ç├Â crash report injected to logs below. Map and logs still visible." }
+                         }
+                         div { style: "display:flex;gap:8px;align-items:center",
+                             button {
+@@ -18719,7 +19430,7 @@ window.__consoleDupCount = 0;
+                     }
+                 }
+ 
+-                // ÔöÇÔöÇ Engine Offline Overlay ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++                // ├ö├Â├ç├ö├Â├ç Engine Offline Overlay ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
+                 // Shown when the data server fails to start or all fetch attempts fail.
+                 // Gives the user clear diagnostic info instead of a blank unresponsive screen.
+                 div {
+@@ -18753,7 +19464,7 @@ window.__consoleDupCount = 0;
+                     }
+                 }
+ 
+-                // ÔöÇÔöÇ Persistent Server Status Indicator ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++                // ├ö├Â├ç├ö├Â├ç Persistent Server Status Indicator ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
+                 // Always-visible pill showing engine connection state in the top-right corner.
+                 // Hidden when the crash or offline overlay is active (they cover everything).
+                 div {
+@@ -18762,7 +19473,7 @@ window.__consoleDupCount = 0;
+                     span { style: "color:{srv_status_color};font-size:10px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px", "{srv_status_icon} {srv_status_label}" }
+                 }
+ 
+-                // ÔöÇÔöÇ Legal Compliance: EULA Click-Wrap Overlay ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++                // ├ö├Â├ç├ö├Â├ç Legal Compliance: EULA Click-Wrap Overlay ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
+                 // Shown on first launch only. User must accept before using the app.
+                 // Persisted via localStorage. Satisfies Consumer Rights Act 2015.
+                 {
+@@ -18805,7 +19516,7 @@ window.__consoleDupCount = 0;
+                     }
+                 }
+ 
+-                // ÔöÇÔöÇ Legal Compliance: Data Attribution Footer ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
++                // ├ö├Â├ç├ö├Â├ç Legal Compliance: Data Attribution Footer ├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç├ö├Â├ç
+                 // Satisfies TfL Open Data attribution requirement and National Rail credit.
+                 div {
+                     style: "position:fixed;bottom:0;left:0;right:0;height:20px;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;gap:16px;z-index:8000;border-top:1px solid rgba(255,255,255,.04);",
+@@ -18848,6 +19559,9 @@ window.__consoleDupCount = 0;
+             }
+         }
+ 
++        #[component]
++        }
++
+         #[component]
+         pub fn LogConsoleCompanionApp() -> Element {
+             log_info("LogConsoleCompanionApp - initialising companion diagnostics");
+@@ -18935,6 +19649,7 @@ window.__consoleDupCount = 0;
+                                 else { "#39ff14" };
+                             Some(rsx! {
+                                 span {
++                                    key: "{line}",
+                                     style: "color: {text_color}; font-family: var(--font-mono); font-size: 11px; line-height: 1.42; white-space: pre-wrap; word-break: break-all;",
+                                     "{line}"
+                                 }
