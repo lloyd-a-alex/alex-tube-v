@@ -19560,9 +19560,7 @@ window.__consoleDupCount = 0;
         }
 
         #[component]
-        }
-
-        #[component]
+        #[allow(non_snake_case)]
         pub fn LogConsoleCompanionApp() -> Element {
             log_info("LogConsoleCompanionApp - initialising companion diagnostics");
             let streaming_logs = use_signal(get_all_logs);
@@ -19662,6 +19660,7 @@ window.__consoleDupCount = 0;
 
         // Fix 3: Crash Recovery Component Tree UI Implementation
         #[component]
+        #[allow(non_snake_case)]
         pub fn CrashRecoveryPanel() -> Element {
             log_info("CrashRecoveryPanel - initialising panic dispatch interface");
             let crash_text = use_signal(|| {
