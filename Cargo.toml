@@ -62,12 +62,18 @@ bytemuck = { version = "1.14", features = ["derive"] }
 rkyv = { version = "0.7", features = ["validation"] }
 crossbeam-channel = "0.5"
 
-# Desktop
-dioxus = { version = "0.5", features = ["fullstack", "axum", "desktop"] }
+# Desktop (optional, enabled by default via 'desktop' feature)
+dioxus = { version = "0.5", features = ["fullstack", "axum", "desktop"], optional = true }
 arc-swap = "1.7"
 r2d2 = "0.8"
 memmap2 = "0.9"
 open = "5"
+
+# Shuttle deployment (optional, enabled via 'shuttle' feature)
+shuttle-runtime = { version = "0.49", optional = true }
+shuttle-axum = { version = "0.49", optional = true }
+# Note: shuttle-shared-db is omitted for now to avoid libsqlite3-sys conflicts.
+# SQLite caching is used for both desktop and shuttle builds.
 
 
 [dev-dependencies]
@@ -96,6 +102,8 @@ opt-level = 1
 overflow-checks = true
 
 [features]
-default = []
+default = ["desktop"]
+desktop = ["dioxus"]
+shuttle = ["shuttle-runtime", "shuttle-axum"]
 server = ["dioxus/axum"]
 web = []

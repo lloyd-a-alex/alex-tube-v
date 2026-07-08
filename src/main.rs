@@ -46,6 +46,8 @@
 //!
 //! | Feature | Description |
 //! |---------|-------------|
+//! | `desktop` | (Default) Enables Dioxus desktop UI with native WebView |
+//! | `shuttle` | Enables Shuttle deployment runtime (disables desktop UI) |
 //! | `server` | Enables Axum integration (implies `dioxus/axum`) |
 //! | `web` | Enables web-specific Dioxus features |
 //!
@@ -75,6 +77,7 @@
 //!
 //! MIT License — see LICENSE file for details.
 
+#[cfg(feature = "desktop")]
 use dioxus::prelude::*;
 
 // ============================================================================
@@ -111,11 +114,14 @@ use dioxus::prelude::*;
 //     tan(PI/4 + lat/2) term diverges to infinity past this limit.
 //
 // ============================================================================
+#[cfg(feature = "desktop")]
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+#[cfg(feature = "desktop")]
 use std::time::Instant;
+use std::time::Duration;
 
+#[cfg(feature = "desktop")]
 use chrono::Utc;
 
 // ============================================================================
@@ -542,6 +548,7 @@ pub(crate) use primitives::*;
 pub(crate) use routing::*;
 pub(crate) use server::*;
 pub(crate) use spatial::*;
+#[cfg(feature = "desktop")]
 pub(crate) use ui::*;
 
 // Consolidated CSS natively inline
@@ -7238,6 +7245,7 @@ mod network {
 }
 mod server {
     pub(crate) use handlers::*;
+    #[cfg(feature = "desktop")]
     pub(crate) use router::*;
     pub(crate) use state::*;
 
@@ -9150,6 +9158,48 @@ mod server {
             BOTS.iter().any(|b| ua_lower.contains(b))
         }
 
+        /// Build the full standalone HTML page for the interactive web map application.
+        /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
+        /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
+        /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
+        pub(crate) fn build_webapp_html() -> String {
+            let head = crate::ui::build_webview_head("");
+            format!(
+                r#"<!DOCTYPE html>
+<html lang="en-GB">
+<head>{head}</head>
+<body>
+    <div id="map-viewport" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>
+    <div id="sr-announcer" aria-live="polite" class="sr-only"
+         style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;"></div>
+    <div id="fps-counter-widget" style="display:none;"></div>
+    <script>
+        if (typeof dioxus === 'undefined' || !dioxus.send) {{
+            window.dioxusFallback = {{
+                send: function(msg) {{ console.log('dioxus.send (web fallback):', msg); }}
+            }};
+            window.dioxus = window.dioxusFallback;
+        }}
+        window.__apiBase = '';
+        window.__dataBase = '/data';
+        (function() {{
+            function init() {{
+                if (window.initMap) {{
+                    window.initMap();
+                }} else {{
+                    console.error('initMap not available - map init deferred');
+                    setTimeout(init, 500);
+                }}
+            }}
+            if (window.recordFrame) window.recordFrame();
+            init();
+        }})();
+    </script>
+</body>
+</html>"#
+            )
+        }
+
         /// Build the full static HTML page served to crawlers at `/`.
         /// Contains all Open Graph, Twitter Card, Schema.org, and canonical metadata
         /// so that Discord, Twitter/X, Slack, iMessage, WhatsApp, and search engines
@@ -9205,7 +9255,7 @@ mod server {
 
         /// Axum handler for the root `/` route.
         /// Detects crawler User-Agents and serves rich static HTML for embed previews.
-        /// Normal browsers receive a lightweight landing page with a link to the app.
+        /// Normal browsers receive the full interactive map web application.
         #[tracing::instrument(name = "serve_root", skip_all)]
         pub(crate) async fn serve_root(headers: axum::http::HeaderMap) -> axum::response::Response {
             let ua = headers
@@ -9217,11 +9267,20 @@ mod server {
                 log_info("Root route: serving crawler SEO payload");
                 axum::response::Html(build_crawler_html()).into_response()
             } else {
-                log_debug("Root route: serving standard landing page");
-                axum::response::Html(
-                    r#"<!DOCTYPE html><html lang="en-GB"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Alex's Tube V</title><meta name="description" content="London Transport Network Engine"><meta property="og:title" content="Alex's Tube V"><meta property="og:description" content="Interactive London Transport map with spatial analysis."><meta property="og:image" content="https://shuttleapp.rs/assets/og-preview.png"><link rel="canonical" href="https://shuttleapp.rs"></head><body style="background:#0c0e12;color:#f0f4f8;font-family:Inter,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><h1 style="font-size:2rem;margin-bottom:0.5rem">Alex&rsquo;s Tube &#8547;</h1><p>London Transport Network Engine</p><a href="https://shuttleapp.rs" style="color:#00bcd4">Launch application</a></div></body></html>"#
-                ).into_response()
+                log_debug("Root route: serving interactive web app (full map)");
+                // Serve the full interactive map application for all browser clients.
+                // This includes the Leaflet map, all JavaScript, and the complete UI
+                // (minus Dioxus IPC, which has a fallback).
+                axum::response::Html(build_webapp_html()).into_response()
             }
+        }
+
+        /// Axum handler for the `/map` route - alternative entry point for the web app.
+        /// Always serves the full interactive map, regardless of User-Agent.
+        #[tracing::instrument(name = "serve_web_app", skip_all)]
+        pub(crate) async fn serve_web_app() -> axum::response::Html<String> {
+            log_debug("Map route: serving interactive web app");
+            axum::response::Html(build_webapp_html())
         }
         #[tracing::instrument(name = "get_config", skip_all)]
         pub(crate) async fn get_config() -> Json<Value> {
@@ -11511,11 +11570,12 @@ mod server {
             config: Config,
             shutdown_token: tokio_util::sync::CancellationToken,
             port_sender: tokio::sync::oneshot::Sender<u16>,
+            bind_addr_override: Option<std::net::SocketAddr>,
         ) -> Result<(), Box<dyn std::error::Error>> {
             log_info("run_server called - starting Axum web server");
             log_debug(&format!(
-                "run_server - server_host: {}, server_port: {} (0 = ephemeral)",
-                config.server_host, config.server_port
+                "run_server - server_host: {}, server_port: {} (0 = ephemeral), bind_addr_override: {:?}",
+                config.server_host, config.server_port, bind_addr_override
             ));
 
             // Guard: wrap route construction in catch_unwind so a bad route pattern
@@ -11524,6 +11584,7 @@ mod server {
             let app_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Router::new()
                     .route("/", get(serve_root))
+                    .route("/map", get(serve_web_app))
                     .route("/api/lines", get(get_lines))
                     .route("/api/lines/load", post(load_line))
                     .route("/api/lines/save", post(save_line))
@@ -11592,13 +11653,18 @@ mod server {
             // in the main initialization block_on. No need for a background warmup that
             // could race with the server accepting requests.
 
+            // If bind_addr_override is provided (e.g. by Shuttle), use it directly.
+            // Otherwise, derive from config.server_host and config.server_port.
             // Security: bind to port 0 (ephemeral) so the OS assigns a random available port.
             // This prevents other local processes from predicting our API port and sending
             // malicious requests. The actual port is sent back to the main thread via oneshot.
-            let bind_addr: std::net::SocketAddr =
+            let bind_addr: std::net::SocketAddr = if let Some(addr) = bind_addr_override {
+                addr
+            } else {
                 format!("{}:{}", config.server_host, config.server_port)
                     .parse()
-                    .expect("Invalid operational binding target");
+                    .expect("Invalid operational binding target")
+            };
 
             log_debug("run_server - binding TCP listener");
             let listener = tokio::net::TcpListener::bind(bind_addr).await?;
@@ -12033,7 +12099,13 @@ mod server {
 //
 // ============================================================================
 
+#[cfg(feature = "desktop")]
 use crate::server::run_server;
+
+/// Desktop entry point — launches the Dioxus desktop window with the embedded WebView.
+/// Only compiled when the `desktop` feature is enabled (default).
+/// For the Shuttle web deployment, see `shuttle_main` instead.
+#[cfg(feature = "desktop")]
 fn main() {
     // ----------------------------------------------------------------
     // Console child window: when the main process spawns a console via
@@ -12578,7 +12650,7 @@ fn main() {
     rt.spawn(async move {
         log_debug("main - server task started on shared runtime");
         if let Err(e) =
-            run_server(server_state, server_config, server_shutdown_token, port_tx).await
+            run_server(server_state, server_config, server_shutdown_token, port_tx, None).await
         {
             log_error(&format!("main - background data service failed: {}", e));
         }
@@ -12793,10 +12865,223 @@ fn main() {
     }
 }
 
+// ============================================================================
+// SHUTTLE ENTRY POINT — Web deployment (no desktop UI)
+// ============================================================================
+// This entry point is used when building for Shuttle deployment.
+// It starts only the Axum server with the spatial engine, serving the
+// interactive map web app at the root URL. No Dioxus desktop window,
+// no WebView, no console child process.
+// ============================================================================
+#[cfg(feature = "shuttle")]
+#[shuttle_runtime::main]
+async fn shuttle_main(
+    #[shuttle_runtime::Secrets] secrets: shuttle_runtime::SecretStore,
+) -> Result<shuttle_axum::AxumService, shuttle_runtime::Error> {
+    log_info("shuttle_main - starting Shuttle web deployment");
+
+    // Override config with Shuttle environment
+    let mut config = Config::load();
+
+    // Apply secrets from Shuttle SecretStore
+    if let Some(key) = secrets.get("TFL_API_KEY") {
+        std::env::set_var("TFL_API_KEY", key);
+        log_info("shuttle_main - TFL_API_KEY loaded from Shuttle secrets");
+    }
+    if let Some(url) = secrets.get("OVERPASS_URL") {
+        config.overpass_base_url = url;
+        log_info("shuttle_main - Overpass URL overridden from Shuttle secrets");
+    }
+
+    // Shuttle provides the port via the PORT environment variable
+    let port = std::env::var("PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3000);
+    config.server_host = "0.0.0.0".to_string();
+    config.server_port = port;
+
+    log_info(&format!(
+        "shuttle_main - configuration loaded, binding to 0.0.0.0:{}",
+        port
+    ));
+
+    // Create application state with shared global state
+    let state = AppState::new(config.clone());
+
+    // Initialize the routing graph (loads tracks from embedded data)
+    log_info("shuttle_main - initializing routing graph");
+    state
+        .initialize_routing_graph(&config.london_bounds)
+        .await
+        .map_err(|e| {
+            shuttle_runtime::Error::from(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Routing graph init failed: {}", e),
+            ))
+        })?;
+
+    // Seed sample lines from the embedded basemap data
+    log_info("shuttle_main - seeding sample network state");
+    let (mut lines_loaded, _) = state.ensure_sample_network_state().await;
+
+    // Load custom lines from cache (if any exist) and merge with sample lines
+    match state.cache.load_custom_lines() {
+        Ok(custom_lines) => {
+            if !custom_lines.is_empty() {
+                log_info(&format!(
+                    "shuttle_main - loading {} custom lines from cache",
+                    custom_lines.len()
+                ));
+                lines_loaded.extend(custom_lines);
+            }
+        }
+        Err(e) => {
+            log_warn(&format!(
+                "shuttle_main - failed to load custom lines: {}",
+                e
+            ));
+        }
+    }
+    // Store merged lines in the global state
+    state.lines.store(Arc::new(lines_loaded));
+    log_info(&format!(
+        "shuttle_main - {} lines in state after loading sample + custom",
+        state.lines.load().len()
+    ));
+
+    // Load free stations from cache and merge with existing stations
+    {
+        let stations_snapshot = state.stations.load();
+        let mut stations: Vec<Station> = stations_snapshot.as_ref().clone();
+        drop(stations_snapshot);
+        match state.cache.load_free_stations() {
+            Ok(free_stations) => {
+                if !free_stations.is_empty() {
+                    log_info(&format!(
+                        "shuttle_main - loading {} free stations from cache",
+                        free_stations.len()
+                    ));
+                    stations.extend(free_stations);
+                }
+            }
+            Err(e) => {
+                log_warn(&format!(
+                    "shuttle_main - failed to load free stations: {}",
+                    e
+                ));
+            }
+        }
+        state.stations.store(Arc::new(stations));
+    }
+
+    // Build TransitNetworkGrid for the routing engine
+    {
+        let stations_snap = state.stations.load();
+        let lines_snap = state.lines.load();
+        let grid = crate::spatial::TransitNetworkGrid::from_stations_and_lines(
+            &stations_snap,
+            &lines_snap,
+        );
+        state.transit_grid.store(Arc::new(grid));
+        log_info("shuttle_main - TransitNetworkGrid built");
+    }
+
+    // Compute initial network load
+    {
+        let graph = state.routing_graph.load();
+        if !graph.nodes.is_empty() {
+            let graph_for_sim = (*graph).clone();
+            drop(graph);
+            let current_loads = tokio::task::spawn_blocking(move || {
+                graph_for_sim.simulate_network_load(2_000)
+            })
+            .await
+            .unwrap_or_default();
+            state.edge_loads.store(Arc::new(current_loads));
+            log_info("shuttle_main - initial edge loads computed");
+        }
+    }
+
+    log_info("shuttle_main - state initialized, building Axum router");
+
+    // Shuttle expects us to return an axum::Router. We build the same routes
+    // as run_server() but without the manual TCP binding — Shuttle handles that.
+    use axum::Router;
+    use axum::routing::{get, post};
+    use tower_http::cors::CorsLayer;
+    use axum::http::Method;
+    use axum::http::header::{ACCEPT, CONTENT_TYPE};
+
+    // Build the router with the same routes as the desktop server
+    let app = Router::new()
+        .route("/", get(serve_root))
+        .route("/map", get(serve_web_app))
+        .route("/api/lines", get(get_lines))
+        .route("/api/lines/load", post(load_line))
+        .route("/api/lines/save", post(save_line))
+        .route("/api/stations", get(get_stations))
+        .route("/api/stations/{id}/arrivals", get(get_station_arrivals))
+        .route("/api/stations/save", post(save_station))
+        .route("/api/construction", get(get_construction_state))
+        .route("/api/construction/update", post(update_construction_state))
+        .route("/api/route", post(find_route))
+        .route("/api/simulate-congestion", post(simulate_congestion))
+        .route("/api/transit-deserts", post(get_transit_deserts))
+        .route("/api/coverage-stats", post(get_coverage_stats))
+        .route("/api/ai/add-station", post(ai_add_station))
+        .route("/api/ai/link-stations", post(ai_link_stations))
+        .route("/api/disruptions", get(get_disruptions))
+        .route("/api/weather", get(get_weather))
+        .route("/api/disruptions/apply", post(apply_disruption))
+        .route("/live-congestion", get(get_live_congestion_bincode))
+        .route("/network-state", get(get_network_state_bincode))
+        .route("/api/tracks", get(get_tracks))
+        .route("/api/basemap", get(get_basemap_lines))
+        .route("/api/tracks/refresh", post(refresh_tracks))
+        .route("/api/lines/delete/{id}", post(delete_line))
+        .route("/api/stations/clear", post(clear_ai_stations))
+        .route("/api/logs", get(get_logs))
+        .route("/api/config", get(get_config))
+        .route("/api/health", get(get_health))
+        .route("/api/journey", post(journey_plan))
+        .route("/api/isochrone", post(get_isochrone))
+        .route("/api/transit-score", post(get_transit_score))
+        .route("/api/cost-estimate", post(estimate_cost))
+        .route("/api/export/geojson", post(export_network))
+        .route("/api/search/stations", post(search_stations))
+        .route("/api/network-stats", get(get_network_stats))
+        .route("/api/demand-grid", post(get_demand_grid))
+        .route("/api/ide/write", post(write_to_ide_workspace))
+        .route("/api/lines/inbound/{id}", get(get_line_routes_inbound))
+        .route("/api/stops", get(get_stop_points))
+        .route("/api/arrivals/{line_id}", get(get_arrivals))
+        .with_state(state.clone())
+        .layer(
+            CorsLayer::new()
+                .allow_origin([
+                    format!("http://127.0.0.1:{}", port).parse().unwrap(),
+                    format!("http://localhost:{}", port).parse().unwrap(),
+                    "http://dioxus.index.html".parse().unwrap(),
+                    "dioxus://index.html".parse().unwrap(),
+                ])
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::PUT])
+                .allow_headers([CONTENT_TYPE, ACCEPT]),
+        );
+
+    // Convert our router to a plain axum::Router (Shuttle expects this type)
+    let axum_router: axum::Router = app;
+    let svc: shuttle_axum::AxumService = axum_router.into();
+    log_info("shuttle_main - router built, handing control to Shuttle runtime");
+    Ok(svc)
+}
+
 mod ui {
 
     // pub(crate) use api_client::*;
 
+    // Components module is desktop-only (requires Dioxus runtime)
+    #[cfg(feature = "desktop")]
     pub(crate) use components::*;
 
     // unused pub(crate) use js::*;
@@ -15327,13 +15612,7 @@ window.initMap = async function() {
         };
 
         window.map.on('moveend', function() {
-            // Reset canvas transform and trigger redraw
             window._panStartPixel = null;
-            var stationCanvas = document.getElementById('station-render-canvas') || (window._stationCanvas && window._stationCanvas._canvas);
-            if (stationCanvas) {
-                stationCanvas.style.transform = 'translate3d(0, 0, 0)';
-                stationCanvas.style.transition = '';
-            }
             
             clearTimeout(window._renderDebounceTimer);
             if (window._isInteracting) {
@@ -15420,12 +15699,11 @@ window.initMap = async function() {
         let activeHighlightPolyline = null;
         window.focusOnTrackAndZoom = function(lat, lon, lineSegmentsArray) {
             window.map.flyTo([lat, lon], 14, { animate: true, duration: 1.2 });
-            if (activeHighlightPolyline) { window.map.removeLayer(activeHighlightPolyline); }
+            if (activeHighlightPolyline) { window.map.removeLayer(activeHighlightPolyline); activeHighlightPolyline = null; }
             if (lineSegmentsArray && lineSegmentsArray.length > 0) {
                 activeHighlightPolyline = L.polyline(lineSegmentsArray, {
                     color: '#ffff00', weight: 8, opacity: 0.75, lineJoin: 'round', dashArray: '10, 10', interactive: false
                 }).addTo(window.map);
-                window.map.fitBounds(activeHighlightPolyline.getBounds(), { padding: [30, 30] });
             }
         };
 
@@ -15656,17 +15934,35 @@ function offsetPoint(lat, lon, bearingRad, offsetM) {
 }
 
 // Offset an entire coordinate array perpendicular to the line direction.
-// Uses the average bearing of the polyline for a consistent offset.
+// Uses per-segment bearing for a natural offset that follows curves.
 function offsetCoords(coords, offsetM) {
     if (coords.length < 2 || offsetM === 0) return coords;
-    // Calculate average bearing from first to last point
-    const first = coords[0], last = coords[coords.length - 1];
-    const dLat = last[0] - first[0];
-    const dLon = last[1] - first[1];
-    const bearing = Math.atan2(dLon, dLat); // radians
-    // Offset perpendicular (90 degrees to the right)
-    const perpBearing = bearing + Math.PI / 2;
-    return coords.map(pt => offsetPoint(pt[0], pt[1], perpBearing, offsetM));
+    var result = [];
+    for (var i = 0; i < coords.length; i++) {
+        var bearing;
+        if (i === 0) {
+            var dLat = coords[1][0] - coords[0][0];
+            var dLon = coords[1][1] - coords[0][1];
+            bearing = Math.atan2(dLon, dLat);
+        } else if (i === coords.length - 1) {
+            var dLat = coords[i][0] - coords[i-1][0];
+            var dLon = coords[i][1] - coords[i-1][1];
+            bearing = Math.atan2(dLon, dLat);
+        } else {
+            var dLat1 = coords[i][0] - coords[i-1][0];
+            var dLon1 = coords[i][1] - coords[i-1][1];
+            var dLat2 = coords[i+1][0] - coords[i][0];
+            var dLon2 = coords[i+1][1] - coords[i][1];
+            var b1 = Math.atan2(dLon1, dLat1);
+            var b2 = Math.atan2(dLon2, dLat2);
+            var x = Math.cos(b1) + Math.cos(b2);
+            var y = Math.sin(b1) + Math.sin(b2);
+            bearing = Math.atan2(y, x);
+        }
+        var perpBearing = bearing + Math.PI / 2;
+        result.push(offsetPoint(coords[i][0], coords[i][1], perpBearing, offsetM));
+    }
+    return result;
 }
 
 // Check if two polylines share a segment (have overlapping coordinates anywhere)
@@ -15708,6 +16004,7 @@ function linesShareSegment(coordsA, coordsB, thresholdDeg) {
 // Returns a Map<lineId, offsetIndex> where offsetIndex is 0, ±1, ±2, etc.
 // Slightly shift colour shades per branch so same-operator branches differ subtly.
 function shadeColor(color, amount) {
+    if (!color || color[0] !== '#') return color;
     var num = parseInt(color.replace('#', ''), 16);
     var r = Math.min(255, Math.max(0, (num >> 16) + amount));
     var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));
@@ -15715,7 +16012,7 @@ function shadeColor(color, amount) {
     return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
 }
 function getBranchVariant(baseColor, lineId) {
-    if (!lineId) return baseColor;
+    if (!lineId || !baseColor) return baseColor || '#888888';
     // Use line ID to derive a small consistent offset (-20 to +20)
     var hash = 0;
     for (var i = 0; i < lineId.length; i++) hash = ((hash << 5) - hash) + lineId.charCodeAt(i);
@@ -15833,10 +16130,9 @@ while (true) {
                             existing.polys[g * 2 + 1].setLatLngs(coords);
                             
                             var lineColor = line.color;
-                            if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
+                            if (!lineColor) {
                                 lineColor = getLineFallbackColor(line);
                             }
-                            lineColor = getBranchVariant(lineColor, line.id);
                             var dashStyle = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
                             var branchColor = getBranchVariant(lineColor, line.id);
                             existing.polys[g * 2].setStyle({ color: '#000000', weight: 3, dashArray: dashStyle, opacity: 0.6 });
@@ -15864,10 +16160,9 @@ while (true) {
                 if (coords.length > 1) {
                     try {
                         var lineColor = line.color;
-                        if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
+                        if (!lineColor) {
                             lineColor = getLineFallbackColor(line);
                         }
-                        lineColor = getBranchVariant(lineColor, line.id);
                         var dashPattern = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
                         
                         var branchColor = getBranchVariant(lineColor, line.id);
@@ -16394,6 +16689,13 @@ window.__consoleDupCount = 0;
             h
         }
 
+        /// Build the full standalone HTML page for the web application.
+        /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
+        /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
+        /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
+        /// Desktop-only: configure the Dioxus WebView window.
+        /// This function uses Dioxus types and is only compiled when `desktop` feature is active.
+        #[cfg(feature = "desktop")]
         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
             log_info("build_desktop_window_configuration - configuring desktop WebView");
             // The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is set once, early, in
@@ -16487,6 +16789,7 @@ window.__consoleDupCount = 0;
         }
     }
 
+    #[cfg(feature = "desktop")]
     mod components {
         use super::api_client::*;
         use super::js::*;
@@ -16548,6 +16851,7 @@ window.__consoleDupCount = 0;
             });
         }
 
+        #[cfg(feature = "desktop")]
         pub fn build_console_window_configuration() -> dioxus::desktop::Config {
             log_info("build_console_window_configuration - configuring analytics console window");
             let window = dioxus::desktop::WindowBuilder::new()
@@ -16570,6 +16874,7 @@ window.__consoleDupCount = 0;
         /// timeout to avoid blocking the parent process's connection pool. It runs
         /// in its OWN Tokio runtime (created implicitly by Dioxus) because the child
         /// process has no access to the parent's runtime.
+        #[cfg(feature = "desktop")]
         #[component]
         pub fn ConsoleStandaloneApp() -> Element {
             // Log initialization only once on mount
@@ -16836,6 +17141,7 @@ window.__consoleDupCount = 0;
         /// components that own independent state ? this keeps the reactive graph flat
         /// and avoids the "prop drilling" / context-override pitfalls common in deeply
         /// nested Dioxus trees.
+        #[cfg(feature = "desktop")]
         #[allow(dependency_on_unit_never_type_fallback)]
         pub fn app() -> Element {
             // ── Panic-safe guard: if a prior Dioxus rendering panic occurred, render a
@@ -20247,14 +20553,13 @@ window.__consoleDupCount = 0;
                                     let lat = st.coord.lat;
                                     let lon = st.coord.lon;
                                     let is_interchange = *matrix.get(&st.id).unwrap_or(&0) > 1;
-                                    let geom_json = serde_json::to_string(&line.geometry).unwrap_or_else(|_| "[]".to_string());
                                     rsx! {
                                         button {
                                             key: "{st_idx}_{st.id}",
                                             class: "station-node-link",
                                             style: "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;",
                                             onclick: move |_| {
-                                                let js = format!("window.focusOnTrackAndZoom({}, {}, {});", lat, lon, geom_json);
+                                                let js = format!("window.focusOnTrackAndZoom({}, {}, []);", lat, lon);
                                                 eval(&js);
                                             },
                                             "{st_name}"
