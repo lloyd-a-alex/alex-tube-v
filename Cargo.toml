@@ -45,7 +45,7 @@ tracing = "0.1"
 mimalloc = { version = "0.1", default-features = false }
 
 # Binary Serialization
-bincode = "1.3"
+bincode = "3.0"
 
 # Security: cryptographic hash for cache integrity verification
 sha2 = "0.11"
