@@ -12350,6 +12350,297 @@ mod server {
             crate::cycle_network::tick_docking();
             Json(ApiResponse::success("Docking ticked".into()))
         }
+
+        // === MaaS (Mobility as a Service) handlers ===
+        pub(crate) async fn get_maas_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::mobility_service::MaaSProvider>>> {
+            let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
+            let lon: f64 = params.get("lon").and_then(|v| v.parse().ok()).unwrap_or(-0.1278);
+            let radius: f64 = params.get("radius").and_then(|v| v.parse().ok()).unwrap_or(1500.0);
+            let stype = params.get("type").map(|s| s.as_str());
+            let providers = crate::mobility_service::get_nearby_maas(lat, lon, radius, stype);
+            Json(ApiResponse::success(providers))
+        }
+
+        pub(crate) async fn tick_maas_handler() -> Json<ApiResponse<String>> {
+            crate::mobility_service::tick_maas();
+            Json(ApiResponse::success("MaaS ticked".into()))
+        }
+
+        // === Noise monitoring handlers ===
+        pub(crate) async fn get_noise_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::noise_monitoring::NoiseReading>>> {
+            let station_id = params.get("station_id");
+            let readings = match station_id {
+                Some(id) => crate::noise_monitoring::get_noise_by_station(id)
+                    .map(|r| vec![r])
+                    .unwrap_or_default(),
+                None => crate::noise_monitoring::get_noise_summary(),
+            };
+            Json(ApiResponse::success(readings))
+        }
+
+        pub(crate) async fn tick_noise_handler() -> Json<ApiResponse<String>> {
+            crate::noise_monitoring::tick_noise();
+            Json(ApiResponse::success("Noise ticked".into()))
+        }
+
+        // === Station vendors handlers ===
+        pub(crate) async fn get_vendors_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::station_vendors::StationVendor>>> {
+            let station_id = params.get("station_id");
+            let vendors = match station_id {
+                Some(id) => crate::station_vendors::get_vendors_for_station(id),
+                None => crate::station_vendors::get_all_vendors(),
+            };
+            Json(ApiResponse::success(vendors))
+        }
+
+        pub(crate) async fn tick_vendors_handler() -> Json<ApiResponse<String>> {
+            crate::station_vendors::tick_vendors();
+            Json(ApiResponse::success("Vendors ticked".into()))
+        }
+
+        // === Air quality monitoring ===
+        pub(crate) async fn get_air_quality_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::air_quality::AirQualityReading>>> {
+            let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
+            let lon: f64 = params.get("lon").and_then(|v| v.parse().ok()).unwrap_or(-0.1278);
+            let radius: f64 = params.get("radius").and_then(|v| v.parse().ok()).unwrap_or(2000.0);
+            let readings = crate::air_quality::get_nearby_readings(lat, lon, radius);
+            Json(ApiResponse::success(readings))
+        }
+
+        // === Crowd density real-time ===
+        pub(crate) async fn get_crowd_density_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::crowd_density::CrowdDensityPoint>>> {
+            let station_id = params.get("station_id");
+            let points = match station_id {
+                Some(id) => crate::crowd_density::get_density_for_station(id),
+                None => crate::crowd_density::get_all_density(),
+            };
+            Json(ApiResponse::success(points))
+        }
+
+        pub(crate) async fn tick_crowd_density_handler() -> Json<ApiResponse<String>> {
+            crate::crowd_density::tick_density();
+            Json(ApiResponse::success("Crowd density ticked".into()))
+        }
+
+        // === Wi-Fi hotspot finder ===
+        pub(crate) async fn get_wifi_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::wifi_finder::WifiHotspot>>> {
+            let station_id = params.get("station_id");
+            let hotspots = match station_id {
+                Some(id) => crate::wifi_finder::get_hotspots_for_station(id),
+                None => crate::wifi_finder::get_all_hotspots(),
+            };
+            Json(ApiResponse::success(hotspots))
+        }
+
+        // === Step-free journey planner (enhanced accessibility) ===
+        pub(crate) async fn plan_step_free_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<crate::accessibility_route_planner::AccessibleRoute>> {
+            let from = params.get("from").cloned().unwrap_or_default();
+            let to = params.get("to").cloned().unwrap_or_default();
+            let route = crate::accessibility_route_planner::plan_accessible_route(&from, &to, true);
+            Json(ApiResponse::success(route))
+        }
+
+        // === Network resilience score ===
+        pub(crate) async fn get_resilience_score_handler() -> Json<ApiResponse<crate::network_resilience::ResilienceReport>> {
+            let report = crate::network_resilience::compute_resilience_report();
+            Json(ApiResponse::success(report))
+        }
+
+        // === Multi-city support ===
+        pub(crate) async fn get_cities_handler() -> Json<ApiResponse<Vec<crate::city_config::CityInfo>>> {
+            let cities = crate::city_config::get_all_cities();
+            Json(ApiResponse::success(cities))
+        }
+
+        pub(crate) async fn set_city_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<String>> {
+            let city_id = params.get("id").cloned().unwrap_or_else(|| "london".into());
+            let result = crate::city_config::switch_city(&city_id);
+            Json(ApiResponse::success(result))
+        }
+
+        // === Fare calculator ===
+        pub(crate) async fn calculate_fare_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<crate::fare_calculator::FareEstimate>> {
+            let from = params.get("from").cloned().unwrap_or_default();
+            let to = params.get("to").cloned().unwrap_or_default();
+            let zones = params.get("zones").and_then(|v| v.parse().ok()).unwrap_or(1);
+            let estimate = crate::fare_calculator::estimate_fare(&from, &to, zones);
+            Json(ApiResponse::success(estimate))
+        }
+
+        // === Carbon footprint ===
+        pub(crate) async fn get_carbon_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<crate::carbon_estimator::CarbonReport>> {
+            let distance_km: f64 = params.get("distance").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+            let mode = params.get("mode").cloned().unwrap_or_else(|| "tube".into());
+            let report = crate::carbon_estimator::estimate_carbon(distance_km, &mode);
+            Json(ApiResponse::success(report))
+        }
+
+        // === Live departure board ===
+        pub(crate) async fn get_departures_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::realtime_integration::Departure>>> {
+            let station_id = params.get("station_id").cloned().unwrap_or_default();
+            let departures = crate::realtime_integration::get_departures(&station_id);
+            Json(ApiResponse::success(departures))
+        }
+
+        // === Service disruption ===
+        pub(crate) async fn get_disruptions_handler() -> Json<ApiResponse<Vec<crate::disruption_simulator::Disruption>>> {
+            let disruptions = crate::disruption_simulator::get_active_disruptions();
+            Json(ApiResponse::success(disruptions))
+        }
+
+        // === Occupancy ===
+        pub(crate) async fn get_occupancy_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::occupancy_engine::OccupancyReading>>> {
+            let station_id = params.get("station_id");
+            let readings = match station_id {
+                Some(id) => crate::occupancy_engine::get_station_occupancy(id),
+                None => crate::occupancy_engine::get_all_occupancy(),
+            };
+            Json(ApiResponse::success(readings))
+        }
+
+        // === Transit deserts ===
+        pub(crate) async fn get_deserts_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::transit_deserts::DesertCell>>> {
+            let bounds_json = params.get("bounds").cloned().unwrap_or_else(|| "{}".into());
+            let deserts = crate::transit_deserts::compute_deserts(&bounds_json);
+            Json(ApiResponse::success(deserts))
+        }
+
+        // === POI near station ===
+        pub(crate) async fn get_pois_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::poi_database::Poi>>> {
+            let station_id = params.get("station_id").cloned().unwrap_or_default();
+            let pois = crate::poi_database::get_pois_for_station(&station_id);
+            Json(ApiResponse::success(pois))
+        }
+
+        // === Smart alerts ===
+        pub(crate) async fn get_alerts_handler() -> Json<ApiResponse<Vec<crate::smart_alerts::SmartAlert>>> {
+            let alerts = crate::smart_alerts::get_active_alerts();
+            Json(ApiResponse::success(alerts))
+        }
+
+        // === Journey reliability ===
+        pub(crate) async fn get_reliability_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::journey_reliability::ReliabilityStat>>> {
+            let line_id = params.get("line").cloned().unwrap_or_default();
+            let stats = crate::journey_reliability::get_reliability_for_line(&line_id);
+            Json(ApiResponse::success(stats))
+        }
+
+        // === Station popularity ===
+        pub(crate) async fn get_popularity_handler() -> Json<ApiResponse<Vec<crate::station_popularity::PopularityEntry>>> {
+            let entries = crate::station_popularity::get_top_stations(50);
+            Json(ApiResponse::success(entries))
+        }
+
+        // === Citizen reports ===
+        pub(crate) async fn submit_citizen_report_handler(
+            Json(body): Json<crate::citizen_reports::CitizenReport>,
+        ) -> Json<ApiResponse<String>> {
+            let id = crate::citizen_reports::submit_report(body);
+            Json(ApiResponse::success(id))
+        }
+
+        pub(crate) async fn get_citizen_reports_handler() -> Json<ApiResponse<Vec<crate::citizen_reports::CitizenReport>>> {
+            let reports = crate::citizen_reports::get_reports();
+            Json(ApiResponse::success(reports))
+        }
+
+        // === Social sharing ===
+        pub(crate) async fn create_share_handler(
+            Json(body): Json<crate::social_sharing::ShareRequest>,
+        ) -> Json<ApiResponse<crate::social_sharing::ShareLink>> {
+            let link = crate::social_sharing::create_share(body);
+            Json(ApiResponse::success(link))
+        }
+
+        // === Data export ===
+        pub(crate) async fn export_data_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<String>> {
+            let format = params.get("format").cloned().unwrap_or_else(|| "geojson".into());
+            let data = crate::data_exporter::export(&format);
+            Json(ApiResponse::success(data))
+        }
+
+        // === Weather ===
+        pub(crate) async fn get_weather_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<crate::weather_integration::WeatherSnapshot>> {
+            let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
+            let lon: f64 = params.get("lon").and_then(|v| v.parse().ok()).unwrap_or(-0.1278);
+            let weather = crate::weather_integration::get_weather(lat, lon);
+            Json(ApiResponse::success(weather))
+        }
+
+        // === WebGL scene state ===
+        pub(crate) async fn get_webgl_state_handler() -> Json<ApiResponse<crate::webgl_visualization::SceneState>> {
+            let state = crate::webgl_visualization::get_scene_state();
+            Json(ApiResponse::success(state))
+        }
+
+        // === Offline mode status ===
+        pub(crate) async fn get_offline_status_handler() -> Json<ApiResponse<crate::offline_mode::OfflineStatus>> {
+            let status = crate::offline_mode::get_status();
+            Json(ApiResponse::success(status))
+        }
+
+        // === i18n strings ===
+        pub(crate) async fn get_i18n_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<std::collections::HashMap<String, String>>> {
+            let lang = params.get("lang").cloned().unwrap_or_else(|| "en".into());
+            let strings = crate::i18n::get_strings(&lang);
+            Json(ApiResponse::success(strings))
+        }
+
+        // === Network stats ===
+        pub(crate) async fn get_network_stats_handler() -> Json<ApiResponse<crate::network::NetworkStatsResponse>> {
+            let stats = crate::network::compute_stats();
+            Json(ApiResponse::success(stats))
+        }
+
+        // === Accessibility DB ===
+        pub(crate) async fn get_accessibility_db_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::AccessibilityRecord>>> {
+            let records = crate::accessibility_db::get_all_records();
+            Json(ApiResponse::success(records))
+        }
+
+        // === Multi-modal route ===
+        pub(crate) async fn plan_multimodal_handler(
+            Json(body): Json<crate::multi_modal_router::MultiModalRequest>,
+        ) -> Json<ApiResponse<crate::multi_modal_router::MultiModalResponse>> {
+            let resp = crate::multi_modal_router::plan(body);
+            Json(ApiResponse::success(resp))
+        }
     }
     mod router {
         use super::handlers::*;
@@ -12507,6 +12798,97 @@ mod server {
                     .route("/api/cycle/routes", get(get_cycle_routes))
                     .route("/api/cycle/docking", get(get_docking_stations))
                     .route("/api/cycle/tick", post(tick_docking_handler))
+                    // MaaS
+                    .route("/api/maas", get(get_maas_handler))
+                    .route("/api/maas/tick", post(tick_maas_handler))
+                    // Noise
+                    .route("/api/noise", get(get_noise_handler))
+                    .route("/api/noise/tick", post(tick_noise_handler))
+                    // Vendors
+                    .route("/api/vendors", get(get_vendors_handler))
+                    .route("/api/vendors/tick", post(tick_vendors_handler))
+                    // Air quality
+                    .route("/api/air-quality", get(get_air_quality_handler))
+                    // Crowd density
+                    .route("/api/crowd-density", get(get_crowd_density_handler))
+                    .route("/api/crowd-density/tick", post(tick_crowd_density_handler))
+                    // WiFi
+                    .route("/api/wifi", get(get_wifi_handler))
+                    // Step-free
+                    .route("/api/step-free", get(plan_step_free_handler))
+                    // Resilience
+                    .route("/api/resilience", get(get_resilience_score_handler))
+                    // Cities
+                    .route("/api/cities", get(get_cities_handler))
+                    .route("/api/cities/switch", get(set_city_handler))
+                    // Fare
+                    .route("/api/fare", get(calculate_fare_handler))
+                    // Carbon
+                    .route("/api/carbon", get(get_carbon_handler))
+                    // Departures
+                    .route("/api/departures", get(get_departures_handler))
+                    // Disruptions
+                    .route("/api/disruptions", get(get_disruptions_handler))
+                    // Occupancy
+                    .route("/api/occupancy", get(get_occupancy_handler))
+                    // Deserts
+                    .route("/api/deserts", get(get_deserts_handler))
+                    // POI
+                    .route("/api/pois", get(get_pois_handler))
+                    // Alerts
+                    .route("/api/alerts", get(get_alerts_handler))
+                    // Reliability
+                    .route("/api/reliability", get(get_reliability_handler))
+                    // Popularity
+                    .route("/api/popularity", get(get_popularity_handler))
+                    // Citizen reports
+                    .route("/api/citizen-reports", get(get_citizen_reports_handler).post(submit_citizen_report_handler))
+                    // Social sharing
+                    .route("/api/share", post(create_share_handler))
+                    // Export
+                    .route("/api/export", get(export_data_handler))
+                    // Weather
+                    .route("/api/weather", get(get_weather_handler))
+                    // WebGL
+                    .route("/api/webgl-state", get(get_webgl_state_handler))
+                    // Offline
+                    .route("/api/offline-status", get(get_offline_status_handler))
+                    // i18n
+                    .route("/api/i18n", get(get_i18n_handler))
+                    // Network stats
+                    .route("/api/network-stats", get(get_network_stats_handler))
+                    // Accessibility DB
+                    .route("/api/accessibility-db", get(get_accessibility_db_handler))
+                    // Multi-modal
+                    .route("/api/multimodal", post(plan_multimodal_handler))
+                    // Amenities
+                    .route("/api/amenities", get(get_amenities_handler))
+                    // Energy
+                    .route("/api/energy", get(get_energy_handler))
+                    // Signal optimizer
+                    .route("/api/signals", get(get_signals_handler))
+                    // Platforms
+                    .route("/api/platforms", get(get_platforms_handler))
+                    // Ticket machines
+                    .route("/api/ticket-machines", get(get_ticket_machines_handler))
+                    // Emergency
+                    .route("/api/emergency", get(get_emergency_handler))
+                    // Bike parking
+                    .route("/api/bike-parking", get(get_bike_parking_handler))
+                    // River
+                    .route("/api/river", get(get_river_handler))
+                    // Taxi
+                    .route("/api/taxi", get(get_taxi_handler))
+                    // Lost property
+                    .route("/api/lost-property", get(get_lost_property_handler))
+                    // Photos
+                    .route("/api/photos", get(get_photos_handler))
+                    // Accessibility routes
+                    .route("/api/accessibility-routes", get(get_accessibility_routes_handler))
+                    // Night tube
+                    .route("/api/night-tube", get(get_night_tube_handler))
+                    // Construction
+                    .route("/api/construction", get(get_construction_handler))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -17221,6 +17603,7 @@ mod weather_integration {
 // ============================================================================
 mod historical_archive {
     use crate::primitives::*;
+    use crate::logger::*;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -18055,6 +18438,7 @@ mod crowd_sourcing {
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::collections::HashMap;
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18156,6 +18540,7 @@ mod parking_integration {
     use crate::primitives::*;
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct ParkingFacility {
@@ -18360,17 +18745,1457 @@ mod cycle_network {
     }
 }
 
+// ============================================================================
+// MOBILITY AS A SERVICE (MaaS) - E-scooters, car share, ride-hail, bike hire
+// ============================================================================
+mod mobility_service {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct MaaSProvider {
+        pub(crate) id: String,
+        pub(crate) name: String,
+        pub(crate) service_type: String, // "escooter", "ebike", "carshare", "ridehail", "bikehire"
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) station_id: String,
+        pub(crate) available_units: u32,
+        pub(crate) total_units: u32,
+        pub(crate) price_per_min_gbp: f64,
+        pub(crate) is_active: bool,
+    }
+
+    pub(crate) static MAAS_PROVIDERS: once_cell::sync::Lazy<std::sync::Mutex<Vec<MaaSProvider>>> =
+        once_cell::sync::Lazy::new(|| {
+            std::sync::Mutex::new(Vec::new())
+        });
+
+    pub(crate) fn initialize_maas(stations: &[Station]) {
+        let mut db = MAAS_PROVIDERS.lock().unwrap();
+        db.clear();
+        let open_stations: Vec<&Station> = stations.iter().filter(|s| s.is_open).collect();
+        if open_stations.is_empty() { return; }
+
+        let types = ["escooter", "ebike", "carshare", "ridehail", "bikehire"];
+        let names = [
+            ("Lime", "escooter"), ("Voi", "escooter"), ("Tier", "escooter"),
+            ("Santander", "bikehire"), ("HumanForest", "ebike"),
+            ("Uber", "ridehail"), ("Bolt", "ridehail"),
+            ("Zipcar", "carshare"), ("Enterprise Car Club", "carshare"),
+        ];
+        let prices: HashMap<&str, f64> = [
+            ("escooter", 0.25), ("ebike", 0.15), ("carshare", 0.45),
+            ("ridehail", 1.50), ("bikehire", 0.08),
+        ].iter().cloned().collect();
+
+        for (name, stype) in &names {
+            // Place near a random open station
+            if let Some(st) = open_stations.get(fastrand::usize(..open_stations.len())) {
+                let price = prices.get(stype).copied().unwrap_or(0.20);
+                let total = match *stype {
+                    "carshare" => fastrand::u32(2..=6),
+                    "ridehail" => fastrand::u32(5..=20),
+                    _ => fastrand::u32(8..=30),
+                };
+                db.push(MaaSProvider {
+                    id: format!("maas_{}_{}", stype, db.len() + 1),
+                    name: name.to_string(),
+                    service_type: stype.to_string(),
+                    lat: st.coord.lat + fastrand::f64() * 0.005 - 0.0025,
+                    lon: st.coord.lon + fastrand::f64() * 0.005 - 0.0025,
+                    station_id: st.id.clone(),
+                    available_units: total / 2 + fastrand::u32(0..=total / 2),
+                    total_units: total,
+                    price_per_min_gbp: price,
+                    is_active: true,
+                });
+            }
+        }
+        log_info(&format!("mobility_service: initialized {} MaaS providers", db.len()));
+    }
+
+    pub(crate) fn get_nearby_maas(lat: f64, lon: f64, radius_m: f64, service_type: Option<&str>) -> Vec<MaaSProvider> {
+        let db = MAAS_PROVIDERS.lock().unwrap();
+        let origin = Coordinate::new(lat, lon);
+        db.iter()
+            .filter(|p| p.is_active)
+            .filter(|p| {
+                if let Some(st) = service_type {
+                    p.service_type == st
+                } else {
+                    true
+                }
+            })
+            .filter(|p| {
+                let pt = Coordinate::new(p.lat, p.lon);
+                origin.distance_to(&pt) <= radius_m
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn tick_maas() {
+        let mut db = MAAS_PROVIDERS.lock().unwrap();
+        for provider in db.iter_mut() {
+            let change = fastrand::i32(-2..=3);
+            let new_avail = (provider.available_units as i32 + change)
+                .max(0)
+                .min(provider.total_units as i32) as u32;
+            provider.available_units = new_avail;
+            // Random deactivation/reactivation
+            if fastrand::f64() < 0.01 {
+                provider.is_active = !provider.is_active;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// NOISE MONITORING - Noise level data near stations
+// ============================================================================
+mod noise_monitoring {
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct NoiseReading {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) db_level: f64,       // decibels
+        pub(crate) category: String,     // "quiet", "moderate", "loud", "very_loud"
+        pub(crate) peak_db: f64,
+        pub(crate) source: String,       // "train", "traffic", "construction", "crowd"
+        pub(crate) timestamp_ms: i64,
+    }
+
+    pub(crate) static NOISE_READINGS: once_cell::sync::Lazy<std::sync::Mutex<Vec<NoiseReading>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_noise_monitoring(stations: &[Station]) {
+        let mut db = NOISE_READINGS.lock().unwrap();
+        db.clear();
+        let sources = ["train", "traffic", "construction", "crowd"];
+        for station in stations.iter().filter(|s| s.is_open).take(100) {
+            let base_db = fastrand::f64() * 30.0 + 50.0; // 50-80 dB
+            let source = sources[fastrand::usize(..sources.len())];
+            let peak = base_db + fastrand::f64() * 15.0;
+            let category = if base_db < 55.0 { "quiet".into() }
+                else if base_db < 65.0 { "moderate".into() }
+                else if base_db < 75.0 { "loud".into() }
+                else { "very_loud".into() };
+
+            db.push(NoiseReading {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                db_level: (base_db * 10.0).round() / 10.0,
+                category,
+                peak_db: (peak * 10.0).round() / 10.0,
+                source: source.to_string(),
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+    }
+
+    pub(crate) fn get_noise_by_station(station_id: &str) -> Option<NoiseReading> {
+        let db = NOISE_READINGS.lock().unwrap();
+        db.iter().find(|r| r.station_id == station_id).cloned()
+    }
+
+    pub(crate) fn get_noise_summary() -> Vec<NoiseReading> {
+        let db = NOISE_READINGS.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_noise() {
+        let mut db = NOISE_READINGS.lock().unwrap();
+        for reading in db.iter_mut() {
+            let drift = fastrand::f64() * 6.0 - 3.0;
+            let new_db = (reading.db_level + drift).clamp(35.0, 95.0);
+            reading.db_level = (new_db * 10.0).round() / 10.0;
+            reading.peak_db = (reading.peak_db + fastrand::f64() * 4.0 - 2.0).max(reading.db_level);
+            reading.timestamp_ms = chrono::Utc::now().timestamp_millis();
+            reading.category = if reading.db_level < 55.0 { "quiet".into() }
+                else if reading.db_level < 65.0 { "moderate".into() }
+                else if reading.db_level < 75.0 { "loud".into() }
+                else { "very_loud".into() };
+        }
+    }
+}
+
+// ============================================================================
+// STATION VENDORS - Shops, cafes, ATMs, amenities at stations
+// ============================================================================
+mod station_vendors {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct StationVendor {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) vendor_type: String, // "cafe", "shop", "atm", "toilet", "ticket", "luggage", "charger"
+        pub(crate) name: String,
+        pub(crate) opening_hours: String,
+        pub(crate) has_wheelchair_access: bool,
+        pub(crate) rating: f64, // 1.0-5.0
+        pub(crate) is_open_now: bool,
+    }
+
+    pub(crate) static STATION_VENDORS: once_cell::sync::Lazy<std::sync::Mutex<Vec<StationVendor>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_vendors(stations: &[Station]) {
+        let mut db = STATION_VENDORS.lock().unwrap();
+        db.clear();
+
+        let vendor_templates: Vec<(&str, &str, &str, bool)> = vec![
+            ("cafe", "Costa Coffee", "06:00-21:00", true),
+            ("cafe", "Pret A Manger", "06:30-20:00", true),
+            ("shop", "WH Smith", "06:00-22:00", true),
+            ("shop", "M&S Simply Food", "06:30-21:00", true),
+            ("atm", "ATM", "24 hours", true),
+            ("toilet", "Public Toilets", "06:00-23:00", true),
+            ("ticket", "Ticket Machine", "24 hours", true),
+            ("luggage", "Left Luggage", "07:00-22:00", false),
+            ("charger", "Phone Charging", "24 hours", true),
+            ("cafe", "Greggs", "06:00-19:00", true),
+        ];
+
+        for station in stations.iter().filter(|s| s.is_open).take(120) {
+            let num_vendors = fastrand::usize(2..=6);
+            for _ in 0..num_vendors {
+                let template = vendor_templates[fastrand::usize(..vendor_templates.len())];
+                db.push(StationVendor {
+                    id: format!("vendor_{}_{}", station.id, db.len() + 1),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    vendor_type: template.0.to_string(),
+                    name: template.1.to_string(),
+                    opening_hours: template.2.to_string(),
+                    has_wheelchair_access: template.3,
+                    rating: (fastrand::f64() * 2.0 + 3.0).min(5.0),
+                    is_open_now: fastrand::f64() < 0.7,
+                });
+            }
+        }
+        log_info(&format!("station_vendors: initialized {} vendors across {} stations", db.len(), stations.len()));
+    }
+
+    pub(crate) fn get_vendors_for_station(station_id: &str) -> Vec<StationVendor> {
+        let db = STATION_VENDORS.lock().unwrap();
+        db.iter().filter(|v| v.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all_vendors() -> Vec<StationVendor> {
+        let db = STATION_VENDORS.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_vendors() {
+        let mut db = STATION_VENDORS.lock().unwrap();
+        let hour = chrono::Utc::now().format("%H").parse::<u32>().unwrap_or(12);
+        for vendor in db.iter_mut() {
+            vendor.is_open_now = (6..=22).contains(&hour) && fastrand::f64() < 0.9;
+            vendor.rating = (vendor.rating + fastrand::f64() * 0.2 - 0.1).clamp(1.0, 5.0);
+        }
+    }
+}
+
+// ============================================================================
+// AIR QUALITY MONITORING - PM2.5, NO2, O3 near stations
+// ============================================================================
+mod air_quality {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct AirQualityReading {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) pm25: f64,   // µg/m³
+        pub(crate) no2: f64,    // µg/m³
+        pub(crate) o3: f64,     // µg/m³
+        pub(crate) aqi: u32,    // Air Quality Index 0-500
+        pub(crate) category: String, // "good", "moderate", "poor", "hazardous"
+        pub(crate) timestamp_ms: i64,
+    }
+
+    pub(crate) static AIR_READINGS: once_cell::sync::Lazy<std::sync::Mutex<Vec<AirQualityReading>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_air_quality(stations: &[Station]) {
+        let mut db = AIR_READINGS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(150) {
+            let pm25 = fastrand::f64() * 40.0 + 5.0;
+            let no2 = fastrand::f64() * 60.0 + 10.0;
+            let o3 = fastrand::f64() * 50.0 + 20.0;
+            let aqi = (pm25 * 2.0 + no2 * 1.5 + o3 * 0.5) as u32;
+            let category = if aqi < 50 { "good".into() }
+                else if aqi < 100 { "moderate".into() }
+                else if aqi < 200 { "poor".into() }
+                else { "hazardous".into() };
+            db.push(AirQualityReading {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                lat: station.coord.lat,
+                lon: station.coord.lon,
+                pm25: (pm25 * 10.0).round() / 10.0,
+                no2: (no2 * 10.0).round() / 10.0,
+                o3: (o3 * 10.0).round() / 10.0,
+                aqi,
+                category,
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        log_info(&format!("air_quality: initialized {} readings", db.len()));
+    }
+
+    pub(crate) fn get_nearby_readings(lat: f64, lon: f64, radius_m: f64) -> Vec<AirQualityReading> {
+        let db = AIR_READINGS.lock().unwrap();
+        let origin = Coordinate::new(lat, lon);
+        db.iter()
+            .filter(|r| {
+                let pt = Coordinate::new(r.lat, r.lon);
+                origin.distance_to(&pt) <= radius_m
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn get_all_readings() -> Vec<AirQualityReading> {
+        let db = AIR_READINGS.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_air_quality() {
+        let mut db = AIR_READINGS.lock().unwrap();
+        for r in db.iter_mut() {
+            r.pm25 = (r.pm25 + fastrand::f64() * 4.0 - 2.0).clamp(1.0, 200.0);
+            r.no2 = (r.no2 + fastrand::f64() * 6.0 - 3.0).clamp(2.0, 300.0);
+            r.o3 = (r.o3 + fastrand::f64() * 5.0 - 2.5).clamp(5.0, 250.0);
+            r.aqi = (r.pm25 * 2.0 + r.no2 * 1.5 + r.o3 * 0.5) as u32;
+            r.category = if r.aqi < 50 { "good".into() }
+                else if r.aqi < 100 { "moderate".into() }
+                else if r.aqi < 200 { "poor".into() }
+                else { "hazardous".into() };
+            r.timestamp_ms = chrono::Utc::now().timestamp_millis();
+        }
+    }
+}
+
+// ============================================================================
+// CROWD DENSITY - Real-time passenger density heatmap
+// ============================================================================
+mod crowd_density {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct CrowdDensityPoint {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) density: f64,      // 0.0 - 1.0 (fraction of capacity)
+        pub(crate) people_estimate: u32,
+        pub(crate) level: String,     // "quiet", "busy", "very_busy", "overcrowded"
+        pub(crate) trend: String,     // "rising", "falling", "stable"
+        pub(crate) timestamp_ms: i64,
+    }
+
+    pub(crate) static CROWD_DENSITY: once_cell::sync::Lazy<std::sync::Mutex<Vec<CrowdDensityPoint>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_crowd_density(stations: &[Station]) {
+        let mut db = CROWD_DENSITY.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open) {
+            let density = fastrand::f64();
+            let capacity = if station.is_interchange { 30000 } else { 12000 };
+            let people = (density * capacity as f64) as u32;
+            let level = if density < 0.3 { "quiet".into() }
+                else if density < 0.6 { "busy".into() }
+                else if density < 0.85 { "very_busy".into() }
+                else { "overcrowded".into() };
+            db.push(CrowdDensityPoint {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                lat: station.coord.lat,
+                lon: station.coord.lon,
+                density: (density * 100.0).round() / 100.0,
+                people_estimate: people,
+                level,
+                trend: "stable".into(),
+                timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            });
+        }
+        log_info(&format!("crowd_density: initialized {} points", db.len()));
+    }
+
+    pub(crate) fn get_density_for_station(station_id: &str) -> Vec<CrowdDensityPoint> {
+        let db = CROWD_DENSITY.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all_density() -> Vec<CrowdDensityPoint> {
+        let db = CROWD_DENSITY.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_density() {
+        let mut db = CROWD_DENSITY.lock().unwrap();
+        for p in db.iter_mut() {
+            let drift = fastrand::f64() * 0.1 - 0.05;
+            let new_density = (p.density + drift).clamp(0.0, 1.0);
+            p.density = (new_density * 100.0).round() / 100.0;
+            let capacity = 15000;
+            p.people_estimate = (new_density * capacity as f64) as u32;
+            p.level = if new_density < 0.3 { "quiet".into() }
+                else if new_density < 0.6 { "busy".into() }
+                else { "overcrowded".into() };
+                else if new_density < 0.85 { "very_busy".into() }
+            p.trend = if drift > 0.02 { "rising".into() }
+                else if drift < -0.02 { "falling".into() }
+                else { "stable".into() };
+            p.timestamp_ms = chrono::Utc::now().timestamp_millis();
+        }
+    }
+}
+
+// ============================================================================
+// WIFI HOTSPOT FINDER - Public Wi-Fi at stations
+// ============================================================================
+mod wifi_finder {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct WifiHotspot {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) ssid: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) speed_mbps: f64,
+        pub(crate) is_free: bool,
+        pub(crate) has_power: bool,
+        pub(crate) is_crowded: bool,
+    }
+
+    pub(crate) static WIFI_HOTSPOTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<WifiHotspot>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_wifi(stations: &[Station]) {
+        let mut db = WIFI_HOTSPOTS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(200) {
+            let count = fastrand::u32(1..=3);
+            for i in 0..count {
+                db.push(WifiHotspot {
+                    id: format!("wifi_{}_{}", station.id, i + 1),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    ssid: format!("TfL-WiFi-{}", station.name.replace(' ', "").chars().take(8).collect::<String>()),
+                    lat: station.coord.lat + fastrand::f64() * 0.002 - 0.001,
+                    lon: station.coord.lon + fastrand::f64() * 0.002 - 0.001,
+                    speed_mbps: (fastrand::f64() * 80.0 + 10.0).round(),
+                    is_free: true,
+                    has_power: fastrand::f64() < 0.4,
+                    is_crowded: fastrand::f64() < 0.3,
+                });
+            }
+        }
+        log_info(&format!("wifi_finder: initialized {} hotspots", db.len()));
+    }
+
+    pub(crate) fn get_hotspots_for_station(station_id: &str) -> Vec<WifiHotspot> {
+        let db = WIFI_HOTSPOTS.lock().unwrap();
+        db.iter().filter(|h| h.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all_hotspots() -> Vec<WifiHotspot> {
+        let db = WIFI_HOTSPOTS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// TRANSIT DESERTS - Identify areas poorly served by transit
+// ============================================================================
+mod transit_deserts {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct DesertCell {
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) nearest_station_dist_m: f64,
+        pub(crate) severity: String, // "none", "mild", "moderate", "severe"
+        pub(crate) population: u32,
+        pub(crate) has_service: bool,
+    }
+
+    pub(crate) fn compute_deserts(bounds_json: &str) -> Vec<DesertCell> {
+        // Parse bounds if provided, else use Greater London
+        let (min_lat, min_lon, max_lat, max_lon) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(bounds_json) {
+            (
+                v["min_lat"].as_f64().unwrap_or(51.3),
+                v["min_lon"].as_f64().unwrap_or(-0.5),
+                v["max_lat"].as_f64().unwrap_or(51.7),
+                v["max_lon"].as_f64().unwrap_or(0.3),
+            )
+        } else {
+            (51.3, -0.5, 51.7, 0.3)
+        };
+
+        let stations = crate::network::get_stations_snapshot();
+        let mut cells = Vec::new();
+        let step = 0.01;
+        let mut lat = min_lat;
+        while lat <= max_lat {
+            let mut lon = min_lon;
+            while lon <= max_lon {
+                let pt = Coordinate::new(lat, lon);
+                let nearest = stations.iter()
+                    .filter(|s| s.is_open)
+                    .map(|s| pt.distance_to(&s.coord))
+                    .fold(f64::INFINITY, f64::min);
+                let severity = if nearest < 400.0 { "none".into() }
+                    else if nearest < 800.0 { "mild".into() }
+                    else if nearest < 1500.0 { "moderate".into() }
+                    else { "severe".into() };
+                let has_service = nearest < 400.0;
+                cells.push(DesertCell {
+                    lat,
+                    lon,
+                    nearest_station_dist_m: (nearest * 10.0).round() / 10.0,
+                    severity,
+                    population: (fastrand::f64() * 5000.0) as u32,
+                    has_service,
+                });
+                lon += step;
+            }
+            lat += step;
+        }
+        log_info(&format!("transit_deserts: computed {} cells", cells.len()));
+        cells
+    }
+}
+
+// ============================================================================
+// ACCESSIBILITY AUDIT - Comprehensive step-free access scoring
+// ============================================================================
+mod accessibility_audit {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct AccessibilityAudit {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) step_free_access: bool,
+        pub(crate) lift_count: u32,
+        pub(crate) escalator_count: u32,
+        pub(crate) ramp_available: bool,
+        pub(crate) accessible_toilets: bool,
+        pub(crate) audio_announcements: bool,
+        pub(crate) tactile_paving: bool,
+        pub(crate) score: f64, // 0-100
+        pub(crate) grade: String,
+    }
+
+    pub(crate) static AUDITS: once_cell::sync::Lazy<std::sync::Mutex<Vec<AccessibilityAudit>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_audits(stations: &[Station]) {
+        let mut db = AUDITS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open) {
+            let step_free = fastrand::f64() < 0.6;
+            let lift_count = if step_free { fastrand::u32(1..=4) } else { 0 };
+            let escalator_count = if step_free { fastrand::u32(0..=6) } else { 0 };
+            let ramp = step_free && fastrand::f64() < 0.5;
+            let toilets = fastrand::f64() < 0.7;
+            let audio = fastrand::f64() < 0.8;
+            let tactile = fastrand::f64() < 0.9;
+            let mut score = 0.0;
+            if step_free { score += 40.0; }
+            score += lift_count as f64 * 8.0;
+            score += escalator_count as f64 * 3.0;
+            if ramp { score += 10.0; }
+            if toilets { score += 8.0; }
+            if audio { score += 7.0; }
+            if tactile { score += 7.0; }
+            score = score.min(100.0);
+            let grade = if score >= 80.0 { "A".into() }
+                else if score >= 60.0 { "B".into() }
+                else if score >= 40.0 { "C".into() }
+                else { "D".into() };
+            db.push(AccessibilityAudit {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                step_free_access: step_free,
+                lift_count,
+                escalator_count,
+                ramp_available: ramp,
+                accessible_toilets: toilets,
+                audio_announcements: audio,
+                tactile_paving: tactile,
+                score: (score * 10.0).round() / 10.0,
+                grade,
+            });
+        }
+        log_info(&format!("accessibility_audit: initialized {} audits", db.len()));
+    }
+
+    pub(crate) fn get_audit(station_id: &str) -> Option<AccessibilityAudit> {
+        let db = AUDITS.lock().unwrap();
+        db.iter().find(|a| a.station_id == station_id).cloned()
+    }
+
+    pub(crate) fn get_all_audits() -> Vec<AccessibilityAudit> {
+        let db = AUDITS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// ENERGY GRID - Power consumption of the network
+// ============================================================================
+mod energy_grid {
+    use crate::logger::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct EnergyReport {
+        pub(crate) total_kwh_per_day: f64,
+        pub(crate) traction_kwh: f64,
+        pub(crate) stations_kwh: f64,
+        pub(crate) signalling_kwh: f64,
+        pub(crate) renewable_pct: f64,
+        pub(crate) co2_kg_per_day: f64,
+        pub(crate) cost_gbp_per_day: f64,
+    }
+
+    pub(crate) static ENERGY: once_cell::sync::Lazy<std::sync::Mutex<EnergyReport>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(EnergyReport {
+            total_kwh_per_day: 0.0,
+            traction_kwh: 0.0,
+            stations_kwh: 0.0,
+            signalling_kwh: 0.0,
+            renewable_pct: 0.0,
+            co2_kg_per_day: 0.0,
+            cost_gbp_per_day: 0.0,
+        }));
+
+    pub(crate) fn initialize_energy(station_count: usize, line_count: usize) {
+        let mut e = ENERGY.lock().unwrap();
+        e.traction_kwh = line_count as f64 * 45000.0;
+        e.stations_kwh = station_count as f64 * 3200.0;
+        e.signalling_kwh = station_count as f64 * 450.0;
+        e.total_kwh_per_day = e.traction_kwh + e.stations_kwh + e.signalling_kwh;
+        e.renewable_pct = 42.0;
+        e.co2_kg_per_day = e.total_kwh_per_day * 0.21 * (1.0 - e.renewable_pct / 100.0);
+        e.cost_gbp_per_day = e.total_kwh_per_day * 0.18;
+        log_info(&format!("energy_grid: {} kWh/day, {}% renewable", e.total_kwh_per_day as u32, e.renewable_pct as u32));
+    }
+
+    pub(crate) fn get_report() -> EnergyReport {
+        let e = ENERGY.lock().unwrap();
+        e.clone()
+    }
+
+    pub(crate) fn tick_energy() {
+        let mut e = ENERGY.lock().unwrap();
+        let factor = 0.95 + fastrand::f64() * 0.1;
+        e.total_kwh_per_day *= factor;
+        e.traction_kwh *= factor;
+        e.stations_kwh *= factor;
+        e.signalling_kwh *= factor;
+        e.renewable_pct = (e.renewable_pct + fastrand::f64() * 2.0 - 1.0).clamp(0.0, 100.0);
+        e.co2_kg_per_day = e.total_kwh_per_day * 0.21 * (1.0 - e.renewable_pct / 100.0);
+        e.cost_gbp_per_day = e.total_kwh_per_day * 0.18;
+    }
+}
+
+// ============================================================================
+// SIGNAL TIMING OPTIMIZER - Optimize train frequencies
+// ============================================================================
+mod signal_optimizer {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct SignalPlan {
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) headway_sec: u32,      // time between trains
+        pub(crate) trains_needed: u32,
+        pub(crate) throughput_per_hour: u32,
+        pub(crate) efficiency: f64,       // 0-1
+        pub(crate) recommendation: String,
+    }
+
+    pub(crate) static SIGNAL_PLANS: once_cell::sync::Lazy<std::sync::Mutex<Vec<SignalPlan>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn optimize_signals(lines: &[Line]) {
+        let mut db = SIGNAL_PLANS.lock().unwrap();
+        db.clear();
+        for line in lines.iter() {
+            let base_headway = if line.is_custom { 600 } else { 120 + fastrand::u32(0..=180) };
+            let trains = (line.stations.len() as f64 * 2.5) as u32 + 4;
+            let throughput = (3600.0 / base_headway as f64 * trains as f64 * 0.8) as u32;
+            let efficiency = 0.6 + fastrand::f64() * 0.35;
+            let rec = if efficiency < 0.7 {
+                "Increase frequency during peak hours".into()
+            } else if base_headway > 300 {
+                "Reduce headway to improve capacity".into()
+            } else {
+                "Maintain current schedule".into()
+            };
+            db.push(SignalPlan {
+                line_id: line.id.clone(),
+                line_name: line.name.clone(),
+                headway_sec: base_headway,
+                trains_needed: trains,
+                throughput_per_hour: throughput,
+                efficiency: (efficiency * 100.0).round() / 100.0,
+                recommendation: rec,
+            });
+        }
+        log_info(&format!("signal_optimizer: optimized {} lines", db.len()));
+    }
+
+    pub(crate) fn get_plans() -> Vec<SignalPlan> {
+        let db = SIGNAL_PLANS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// PLATFORM CAPACITY - Real-time platform crowding prediction
+// ============================================================================
+mod platform_capacity {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct PlatformStatus {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) platform_number: u32,
+        pub(crate) capacity_pct: f64,
+        pub(crate) safe_boarding: bool,
+        pub(crate) next_train_sec: u32,
+        pub(crate) status: String, // "clear", "busy", "hold"
+    }
+
+    pub(crate) static PLATFORMS: once_cell::sync::Lazy<std::sync::Mutex<Vec<PlatformStatus>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_platforms(stations: &[Station]) {
+        let mut db = PLATFORMS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(100) {
+            let platforms = if station.is_interchange { fastrand::u32(3..=8) } else { fastrand::u32(1..=3) };
+            for p in 1..=platforms {
+                let cap = fastrand::f64() * 100.0;
+                let status = if cap < 50.0 { "clear".into() }
+                    else if cap < 80.0 { "busy".into() }
+                    else { "hold".into() };
+                db.push(PlatformStatus {
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    platform_number: p,
+                    capacity_pct: (cap * 10.0).round() / 10.0,
+                    safe_boarding: cap < 80.0,
+                    next_train_sec: fastrand::u32(30..=600),
+                    status,
+                });
+            }
+        }
+        log_info(&format!("platform_capacity: initialized {} platforms", db.len()));
+    }
+
+    pub(crate) fn get_platforms_for_station(station_id: &str) -> Vec<PlatformStatus> {
+        let db = PLATFORMS.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn tick_platforms() {
+        let mut db = PLATFORMS.lock().unwrap();
+        for p in db.iter_mut() {
+            let drift = fastrand::f64() * 20.0 - 10.0;
+            p.capacity_pct = (p.capacity_pct + drift).clamp(0.0, 100.0);
+            p.status = if p.capacity_pct < 50.0 { "clear".into() }
+                else if p.capacity_pct < 80.0 { "busy".into() }
+                else { "hold".into() };
+            p.safe_boarding = p.capacity_pct < 80.0;
+            p.next_train_sec = if p.next_train_sec < 30 { fastrand::u32(120..=600) } else { p.next_train_sec - 30 };
+        }
+    }
+}
+
+// ============================================================================
+// TICKET MACHINE LOCATOR - Find ticket machines & gates
+// ============================================================================
+mod ticket_machines {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct TicketMachine {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) machine_type: String, // "ticket", "topup", "gate", "oyster"
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) is_operational: bool,
+        pub(crate) accepts_cash: bool,
+        pub(crate) queue_length: u32,
+    }
+
+    pub(crate) static MACHINES: once_cell::sync::Lazy<std::sync::Mutex<Vec<TicketMachine>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_machines(stations: &[Station]) {
+        let mut db = MACHINES.lock().unwrap();
+        db.clear();
+        let types = ["ticket", "topup", "gate", "oyster"];
+        for station in stations.iter().filter(|s| s.is_open).take(150) {
+            let count = fastrand::u32(2..=6);
+            for i in 0..count {
+                let mtype = types[fastrand::usize(..types.len())];
+                db.push(TicketMachine {
+                    id: format!("tm_{}_{}", station.id, i + 1),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    machine_type: mtype.into(),
+                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
+                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    is_operational: fastrand::f64() < 0.92,
+                    accepts_cash: mtype == "ticket" && fastrand::f64() < 0.7,
+                    queue_length: fastrand::u32(0..=12),
+                });
+            }
+        }
+        log_info(&format!("ticket_machines: initialized {} machines", db.len()));
+    }
+
+    pub(crate) fn get_machines_for_station(station_id: &str) -> Vec<TicketMachine> {
+        let db = MACHINES.lock().unwrap();
+        db.iter().filter(|m| m.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all_machines() -> Vec<TicketMachine> {
+        let db = MACHINES.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// EMERGENCY SERVICES - First aid, help points, evacuation routes
+// ============================================================================
+mod emergency_services {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct EmergencyPoint {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) point_type: String, // "first_aid", "help_point", "defibrillator", "exit"
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) is_available: bool,
+        pub(crate) floor: i32,
+    }
+
+    pub(crate) static EMERGENCY: once_cell::sync::Lazy<std::sync::Mutex<Vec<EmergencyPoint>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_emergency(stations: &[Station]) {
+        let mut db = EMERGENCY.lock().unwrap();
+        db.clear();
+        let types = ["first_aid", "help_point", "defibrillator", "exit"];
+        for station in stations.iter().filter(|s| s.is_open).take(120) {
+            for t in types.iter() {
+                let count = if *t == "exit" { fastrand::u32(2..=5) } else { fastrand::u32(1..=3) };
+                for i in 0..count {
+                    db.push(EmergencyPoint {
+                        id: format!("em_{}_{}_{}", station.id, t, i + 1),
+                        station_id: station.id.clone(),
+                        station_name: station.name.clone(),
+                        point_type: t.to_string(),
+                        lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
+                        lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                        is_available: fastrand::f64() < 0.95,
+                        floor: fastrand::i32(0..=3),
+                    });
+                }
+            }
+        }
+        log_info(&format!("emergency_services: initialized {} points", db.len()));
+    }
+
+    pub(crate) fn get_points_for_station(station_id: &str) -> Vec<EmergencyPoint> {
+        let db = EMERGENCY.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all_points() -> Vec<EmergencyPoint> {
+        let db = EMERGENCY.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// BIKE PARKING - Secure cycle parking at stations
+// ============================================================================
+mod bike_parking {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct BikeParking {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) spaces: u32,
+        pub(crate) available: u32,
+        pub(crate) covered: bool,
+        pub(crate) secure: bool,
+        pub(crate) has_repair: bool,
+    }
+
+    pub(crate) static BIKE_PARKING_DB: once_cell::sync::Lazy<std::sync::Mutex<Vec<BikeParking>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_bike_parking(stations: &[Station]) {
+        let mut db = BIKE_PARKING_DB.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(100) {
+            if fastrand::f64() < 0.6 {
+                let spaces = fastrand::u32(10..=80);
+                db.push(BikeParking {
+                    id: format!("bp_{}", station.id),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
+                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    spaces,
+                    available: fastrand::u32(0..=spaces),
+                    covered: fastrand::f64() < 0.5,
+                    secure: fastrand::f64() < 0.4,
+                    has_repair: fastrand::f64() < 0.3,
+                });
+            }
+        }
+        log_info(&format!("bike_parking: initialized {} facilities", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<BikeParking> {
+        let db = BIKE_PARKING_DB.lock().unwrap();
+        db.iter().filter(|b| b.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<BikeParking> {
+        let db = BIKE_PARKING_DB.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// RIVER SERVICES - Thames river bus piers
+// ============================================================================
+mod river_services {
+    use crate::logger::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct Pier {
+        pub(crate) id: String,
+        pub(crate) name: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) services: Vec<String>,
+        pub(crate) next_departure_min: u32,
+        pub(crate) is_operational: bool,
+    }
+
+    pub(crate) static PIERS: once_cell::sync::Lazy<std::sync::Mutex<Vec<Pier>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_piers() {
+        let mut db = PIERS.lock().unwrap();
+        db.clear();
+        let pier_data = [
+            ("westminster", "Westminster Pier", 51.5013, -0.1247),
+            ("london-eye", "London Eye Pier", 51.5034, -0.1192),
+            ("embankment", "Embankment Pier", 51.5074, -0.1227),
+            ("blackfriars", "Blackfriars Pier", 51.5118, -0.1036),
+            ("bankside", "Bankside Pier", 51.5085, -0.1050),
+            ("london-bridge", "London Bridge City Pier", 51.5065, -0.0865),
+            ("tower", "Tower Pier", 51.5055, -0.0766),
+            ("greenwich", "Greenwich Pier", 51.4817, -0.0097),
+            ("canary-wharf", "Canary Wharf Pier", 51.5026, -0.0197),
+            ("putney", "Putney Pier", 51.4670, -0.2160),
+        ];
+        for (id, name, lat, lon) in pier_data.iter() {
+            let services = vec!["RB1".into(), "RB2".into(), "RB6".into()];
+            db.push(Pier {
+                id: id.to_string(),
+                name: name.to_string(),
+                lat: *lat,
+                lon: *lon,
+                services,
+                next_departure_min: fastrand::u32(2..=30),
+                is_operational: true,
+            });
+        }
+        log_info(&format!("river_services: initialized {} piers", db.len()));
+    }
+
+    pub(crate) fn get_all_piers() -> Vec<Pier> {
+        let db = PIERS.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_piers() {
+        let mut db = PIERS.lock().unwrap();
+        for p in db.iter_mut() {
+            p.next_departure_min = if p.next_departure_min < 2 { fastrand::u32(10..=30) } else { p.next_departure_min - 1 };
+        }
+    }
+}
+
+// ============================================================================
+// TAXI RANKS - Black cab ranks at stations
+// ============================================================================
+mod taxi_ranks {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct TaxiRank {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) lat: f64,
+        pub(crate) lon: f64,
+        pub(crate) capacity: u32,
+        pub(crate) available_cabs: u32,
+        pub(crate) wheelchair_accessible: bool,
+        pub(crate) is_active: bool,
+    }
+
+    pub(crate) static TAXI_RANKS_DB: once_cell::sync::Lazy<std::sync::Mutex<Vec<TaxiRank>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_taxi_ranks(stations: &[Station]) {
+        let mut db = TAXI_RANKS_DB.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(80) {
+            if fastrand::f64() < 0.5 {
+                let cap = fastrand::u32(3..=12);
+                db.push(TaxiRank {
+                    id: format!("taxi_{}", station.id),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
+                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    capacity: cap,
+                    available_cabs: fastrand::u32(0..=cap),
+                    wheelchair_accessible: fastrand::f64() < 0.6,
+                    is_active: true,
+                });
+            }
+        }
+        log_info(&format!("taxi_ranks: initialized {} ranks", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<TaxiRank> {
+        let db = TAXI_RANKS_DB.lock().unwrap();
+        db.iter().filter(|t| t.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<TaxiRank> {
+        let db = TAXI_RANKS_DB.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// LOST PROPERTY - Lost & found tracking
+// ============================================================================
+mod lost_property {
+    use crate::logger::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct LostItem {
+        pub(crate) id: String,
+        pub(crate) item_type: String,
+        pub(crate) description: String,
+        pub(crate) found_at_station: String,
+        pub(crate) date_found: String,
+        pub(crate) is_claimed: bool,
+        pub(crate) category: String,
+    }
+
+    pub(crate) static LOST_ITEMS: once_cell::sync::Lazy<std::sync::Mutex<Vec<LostItem>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_lost_property() {
+        let mut db = LOST_ITEMS.lock().unwrap();
+        db.clear();
+        let types = ["phone", "umbrella", "bag", "wallet", "keys", "laptop", "book", "glasses", "toy", "jacket"];
+        let stations = ["Waterloo", "Victoria", "King's Cross", "Oxford Circus", "Liverpool Street", "Euston", "Paddington"];
+        for i in 0..200 {
+            let t = types[fastrand::usize(..types.len())];
+            let st = stations[fastrand::usize(..stations.len())];
+            db.push(LostItem {
+                id: format!("lost_{}", i + 1),
+                item_type: t.into(),
+                description: format!("{} found at {}", t, st),
+                found_at_station: st.into(),
+                date_found: format!("2026-{:02}-{:02}", fastrand::u32(1..=12), fastrand::u32(1..=28)),
+                is_claimed: fastrand::f64() < 0.3,
+                category: if t == "phone" || t == "laptop" || t == "wallet" { "valuable".into() } else { "general".into() },
+            });
+        }
+        log_info(&format!("lost_property: initialized {} items", db.len()));
+    }
+
+    pub(crate) fn search_items(query: &str) -> Vec<LostItem> {
+        let db = LOST_ITEMS.lock().unwrap();
+        db.iter()
+            .filter(|item| item.item_type.contains(query) || item.description.contains(query) || item.found_at_station.contains(query))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn get_all_items() -> Vec<LostItem> {
+        let db = LOST_ITEMS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// STATION PHOTOS - Image gallery metadata
+// ============================================================================
+mod station_photos {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct StationPhoto {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) url: String,
+        pub(crate) caption: String,
+        pub(crate) year: u32,
+        pub(crate) photographer: String,
+    }
+
+    pub(crate) static PHOTOS: once_cell::sync::Lazy<std::sync::Mutex<Vec<StationPhoto>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_photos(stations: &[Station]) {
+        let mut db = PHOTOS.lock().unwrap();
+        db.clear();
+        let captions = ["Platform view", "Entrance", "Roundel", "Tiled mural", "Escalators", "Booking hall", "Art installation", "Night view"];
+        for station in stations.iter().filter(|s| s.is_open).take(60) {
+            let count = fastrand::u32(1..=4);
+            for i in 0..count {
+                db.push(StationPhoto {
+                    id: format!("photo_{}_{}", station.id, i + 1),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    url: format!("https://photos.tube.v/{}/{}.jpg", station.id, i + 1),
+                    caption: captions[fastrand::usize(..captions.len())].into(),
+                    year: fastrand::u32(1960..=2026),
+                    photographer: format!("Contributor #{}", fastrand::u32(1..=999)),
+                });
+            }
+        }
+        log_info(&format!("station_photos: initialized {} photos", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<StationPhoto> {
+        let db = PHOTOS.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<StationPhoto> {
+        let db = PHOTOS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// ACCESSIBILITY ROUTE ENHANCER - Step-free with alternatives
+// ============================================================================
+mod accessibility_route_enhancer {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct RouteOption {
+        pub(crate) id: String,
+        pub(crate) summary: String,
+        pub(crate) total_walking_m: u32,
+        pub(crate) step_free: bool,
+        pub(crate) lifts_required: u32,
+        pub(crate) est_time_min: u32,
+        pub(crate) difficulty: String, // "easy", "moderate", "hard"
+    }
+
+    pub(crate) fn find_routes(from: &str, to: &str) -> Vec<RouteOption> {
+        let stations = crate::network::get_stations_snapshot();
+        let from_st = stations.iter().find(|s| s.id == from || s.name == from);
+        let to_st = stations.iter().find(|s| s.id == to || s.name == to);
+        let mut options = Vec::new();
+        if let (Some(f), Some(t)) = (from_st, to_st) {
+            let dist = f.coord.distance_to(&t.coord) as u32;
+            options.push(RouteOption {
+                id: "direct".into(),
+                summary: format!("Direct step-free route from {} to {}", f.name, t.name),
+                total_walking_m: dist / 2,
+                step_free: true,
+                lifts_required: fastrand::u32(0..=3),
+                est_time_min: dist / 80 + 5,
+                difficulty: "easy".into(),
+            });
+            options.push(RouteOption {
+                id: "alternate".into(),
+                summary: format!("Alternate via interchange (more lifts) from {} to {}", f.name, t.name),
+                total_walking_m: dist / 2 + 200,
+                step_free: true,
+                lifts_required: fastrand::u32(2..=5),
+                est_time_min: dist / 80 + 12,
+                difficulty: "moderate".into(),
+            });
+        }
+        log_info(&format!("accessibility_route_enhancer: found {} options for {}->{}", options.len(), from, to));
+        options
+    }
+}
+
+// ============================================================================
+// NIGHT TUBE SCHEDULE - Friday/Saturday night services
+// ============================================================================
+mod night_tube {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct NightService {
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) operates_nights: bool,
+        pub(crate) frequency_min: u32,
+        pub(crate) start_time: String,
+        pub(crate) end_time: String,
+        pub(crate) days: Vec<String>,
+    }
+
+    pub(crate) static NIGHT_SERVICES: once_cell::sync::Lazy<std::sync::Mutex<Vec<NightService>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_night_services(lines: &[Line]) {
+        let mut db = NIGHT_SERVICES.lock().unwrap();
+        db.clear();
+        let night_lines = ["central", "jubilee", "northern", "piccadilly", "victoria"];
+        for line in lines.iter() {
+            let operates = night_lines.contains(&line.id.as_str()) || night_lines.contains(&line.name.to_lowercase().replace(' ', "-").as_str());
+            db.push(NightService {
+                line_id: line.id.clone(),
+                line_name: line.name.clone(),
+                operates_nights: operates,
+                frequency_min: if operates { 10 } else { 0 },
+                start_time: "00:00".into(),
+                end_time: "05:00".into(),
+                days: if operates { vec!["Fri".into(), "Sat".into()] } else { vec![] },
+            });
+        }
+        log_info(&format!("night_tube: {} lines operate night services", db.iter().filter(|n| n.operates_nights).count()));
+    }
+
+    pub(crate) fn get_night_services() -> Vec<NightService> {
+        let db = NIGHT_SERVICES.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// CONSTRUCTION TRACKER - Planned works & closures
+// ============================================================================
+mod construction_tracker {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct ConstructionProject {
+        pub(crate) id: String,
+        pub(crate) title: String,
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) affected_stations: Vec<String>,
+        pub(crate) start_date: String,
+        pub(crate) end_date: String,
+        pub(crate) status: String, // "planned", "active", "completed"
+        pub(crate) impact: String, // "minor", "moderate", "severe"
+        pub(crate) description: String,
+    }
+
+    pub(crate) static PROJECTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ConstructionProject>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_projects(lines: &[Line]) {
+        let mut db = PROJECTS.lock().unwrap();
+        db.clear();
+        let titles = [
+            "Step-free access upgrade",
+            "New signalling system",
+            "Platform extension",
+            "Escalator replacement",
+            "Station refurbishment",
+            "New entrance",
+            "Lift installation",
+            "Track renewal",
+        ];
+        for line in lines.iter().take(15) {
+            if fastrand::f64() < 0.5 {
+                let stations: Vec<String> = line.stations.iter().take(3).map(|s| s.name.clone()).collect();
+                let status = ["planned", "active", "completed"][fastrand::usize(..3)];
+                db.push(ConstructionProject {
+                    id: format!("con_{}", line.id),
+                    title: titles[fastrand::usize(..titles.len())].into(),
+                    line_id: line.id.clone(),
+                    line_name: line.name.clone(),
+                    affected_stations: stations,
+                    start_date: format!("2026-{:02}-01", fastrand::u32(1..=12)),
+                    end_date: format!("2026-{:02}-28", fastrand::u32(1..=12)),
+                    status: status.into(),
+                    impact: ["minor", "moderate", "severe"][fastrand::usize(..3)].into(),
+                    description: format!("{} works on {} line affecting {} stations", titles[fastrand::usize(..titles.len())], line.name, stations.len()),
+                });
+            }
+        }
+        log_info(&format!("construction_tracker: initialized {} projects", db.len()));
+    }
+
+    pub(crate) fn get_projects() -> Vec<ConstructionProject> {
+        let db = PROJECTS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// STATION AMENITIES SUMMARY - Combined amenity report
+// ============================================================================
+mod station_amenities {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct AmenitySummary {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) has_wifi: bool,
+        pub(crate) has_toilets: bool,
+        pub(crate) has_shop: bool,
+        pub(crate) has_cafe: bool,
+        pub(crate) has_atm: bool,
+        pub(crate) has_ticket_machine: bool,
+        pub(crate) has_step_free: bool,
+        pub(crate) has_bike_parking: bool,
+        pub(crate) has_taxi_rank: bool,
+        pub(crate) has_emergency_point: bool,
+        pub(crate) amenity_score: f64,
+    }
+
+    pub(crate) fn summarize(station_id: &str) -> Option<AmenitySummary> {
+        let stations = crate::network::get_stations_snapshot();
+        let station = stations.iter().find(|s| s.id == station_id)?;
+        let vendors = crate::station_vendors::get_vendors_for_station(station_id);
+        let has_toilets = vendors.iter().any(|v| v.vendor_type == "toilet");
+        let has_shop = vendors.iter().any(|v| v.vendor_type == "shop");
+        let has_cafe = vendors.iter().any(|v| v.vendor_type == "cafe");
+        let has_atm = vendors.iter().any(|v| v.vendor_type == "atm");
+        let has_ticket = vendors.iter().any(|v| v.vendor_type == "ticket");
+        let has_wifi = !crate::wifi_finder::get_hotspots_for_station(station_id).is_empty();
+        let audit = crate::accessibility_audit::get_audit(station_id);
+        let has_step_free = audit.map(|a| a.step_free_access).unwrap_or(false);
+        let has_bike = !crate::bike_parking::get_for_station(station_id).is_empty();
+        let has_taxi = !crate::taxi_ranks::get_for_station(station_id).is_empty();
+        let has_emergency = !crate::emergency_services::get_points_for_station(station_id).is_empty();
+
+        let mut score = 0.0;
+        if has_wifi { score += 12.5; }
+        if has_toilets { score += 12.5; }
+        if has_shop { score += 12.5; }
+        if has_cafe { score += 12.5; }
+        if has_atm { score += 12.5; }
+        if has_ticket { score += 12.5; }
+        if has_step_free { score += 12.5; }
+        if has_bike { score += 12.5; }
+        if has_taxi { score += 12.5; }
+        if has_emergency { score += 12.5; }
+        score = score.min(100.0);
+
+        Some(AmenitySummary {
+            station_id: station.id.clone(),
+            station_name: station.name.clone(),
+            has_wifi,
+            has_toilets,
+            has_shop,
+            has_cafe,
+            has_atm,
+            has_ticket_machine: has_ticket,
+            has_step_free,
+            has_bike_parking: has_bike,
+            has_taxi_rank: has_taxi,
+            has_emergency_point: has_emergency,
+            amenity_score: (score * 10.0).round() / 10.0,
+        })
+    }
+}
+
 mod ui {
-
-    // pub(crate) use api_client::*;
-
-    // Components module is desktop-only (requires Dioxus runtime)
-    #[cfg(feature = "desktop")]
-    pub(crate) use components::*;
-
-    // unused pub(crate) use js::*;
-
-    pub(crate) use leaflet::*;
 
     // pub(crate) use styles::*; unused
 
@@ -19632,6 +21457,47 @@ window.initMap = async function() {
             }
         };
 
+        // === OVERLAY VISIBILITY TOGGLES ===
+        window.toggleAccessibilityLayer = function(visible) {
+            if (visible) {
+                if (!window.map.hasLayer(window.accessibilityLayer)) window.map.addLayer(window.accessibilityLayer);
+                window.loadAccessibilityLayer();
+            } else {
+                if (window.map.hasLayer(window.accessibilityLayer)) window.map.removeLayer(window.accessibilityLayer);
+            }
+        };
+        window.toggleParkingLayer = function(visible, stationId) {
+            if (visible) {
+                if (!window.map.hasLayer(window.parkingLayer)) window.map.addLayer(window.parkingLayer);
+                window.loadParkingLayer(stationId);
+            } else {
+                if (window.map.hasLayer(window.parkingLayer)) window.map.removeLayer(window.parkingLayer);
+            }
+        };
+        window.toggleCycleDockingLayer = function(visible) {
+            if (visible) {
+                if (!window.map.hasLayer(window.cycleDockingLayer)) window.map.addLayer(window.cycleDockingLayer);
+                window.loadCycleDockingLayer();
+            } else {
+                if (window.map.hasLayer(window.cycleDockingLayer)) window.map.removeLayer(window.cycleDockingLayer);
+            }
+        };
+        window.toggleTfLStatusLayer = function(visible) {
+            if (visible) {
+                if (!window.map.hasLayer(window.tflStatusLayer)) window.map.addLayer(window.tflStatusLayer);
+                window.loadTfLStatusLayer();
+            } else {
+                if (window.map.hasLayer(window.tflStatusLayer)) window.map.removeLayer(window.tflStatusLayer);
+            }
+        };
+        // Auto-refresh overlays every 60 seconds
+        setInterval(function() {
+            if (window.map && window.map.hasLayer(window.accessibilityLayer)) window.loadAccessibilityLayer();
+            if (window.map && window.map.hasLayer(window.parkingLayer)) window.loadParkingLayer();
+            if (window.map && window.map.hasLayer(window.cycleDockingLayer)) window.loadCycleDockingLayer();
+            if (window.map && window.map.hasLayer(window.tflStatusLayer)) window.loadTfLStatusLayer();
+        }, 60000);
+
         if (!window.map.getPane('stations')) {
             let pane = window.map.createPane('stations');
             pane.style.zIndex = 600;
@@ -19756,6 +21622,15 @@ window.initMap = async function() {
             }
         };
         window.loadRailNetwork();
+
+        // Load overlay layers after a short delay to allow map to settle
+        setTimeout(function() {
+            window.loadAccessibilityLayer();
+            window.loadParkingLayer();
+            window.loadCycleDockingLayer();
+            window.loadTfLStatusLayer();
+            console.log('Overlay layers: accessibility, parking, cycle, TfL status loaded');
+        }, 2000);
 
         // ============================================================
         // GPU ACCELERATION & INTERACTION STATE
@@ -22996,6 +24871,12 @@ window.__consoleDupCount = 0;
             let mut cost_loading = use_signal::<bool>(|| false);
             let mut is_keyboard_help_open = use_signal::<bool>(|| false);
             let mut crt_overlay_enabled = use_signal::<bool>(|| true);
+            let mut overlay_accessibility = use_signal::<bool>(|| false);
+            let mut overlay_parking = use_signal::<bool>(|| false);
+            let mut overlay_cycle_docking = use_signal::<bool>(|| false);
+            let mut overlay_tfl_status = use_signal::<bool>(|| false);
+            let mut overlay_history = use_signal::<bool>(|| false);
+            let mut show_data_explorer = use_signal::<bool>(|| false);
 
             // Cmd+K Omnibox state
             let mut show_omnibox = use_signal::<bool>(|| false);
@@ -25609,7 +27490,41 @@ window.__consoleDupCount = 0;
                     }
                 }
 
-                // G. Keyboard Shortcuts Help Modal Overlay
+                // G1. Data Explorer Floating Panel (new panels integration)
+                div {
+                    id: "data-explorer-panel",
+                    role: "dialog",
+                    "aria-label": "Data Explorer",
+                    style: format!("position: fixed; top: 0; right: {}; width: 380px; height: 100vh; background: rgba(8,10,14,.97); color: #f0f4f8; z-index: 12000; transition: right .3s cubic-bezier(.19,1,.22,1); display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,.12); box-shadow: -8px 0 40px rgba(0,0,0,.6); font-family: Inter,sans-serif; overflow-y: auto; pointer-events: auto;",
+                        if *show_data_explorer.read() { "0" } else { "-400px" }
+                    ),
+                    div {
+                        style: "padding: 20px 20px 12px; border-bottom: 1px solid rgba(255,255,255,.08); flex-shrink: 0;",
+                        div {
+                            style: "display: flex; justify-content: space-between; align-items: center;",
+                            div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #6950A1;", "\\u{1f4ca} Data Explorer" }
+                            button {
+                                "aria-label": "Close Data Explorer",
+                                style: "background: none; border: none; color: #888; cursor: pointer; font-size: 18px; padding: 4px;",
+                                onclick: move |_| { show_data_explorer.set(false); },
+                                "\\u{2715}"
+                            }
+                        }
+                        div { style: "font-size: 10px; color: #666; margin-top: 4px;", "Network analytics, eco-routing, accessibility, TfL status, history, parking" }
+                    }
+                    div {
+                        style: "padding: 12px 16px; flex: 1; overflow-y: auto;",
+                        AnalyticsPanel {}
+                        EcoPanel {}
+                        AccessibilityPanel {}
+                        DelayPredictionsPanel {}
+                        TfLStatusPanel {}
+                        HistoryPanel {}
+                        ParkingPanel {}
+                    }
+                }
+
+                // G2. Keyboard Shortcuts Help Modal Overlay
                 {
                     if *is_keyboard_help_open.read() {
                         Some(rsx! {
@@ -25766,6 +27681,46 @@ window.__consoleDupCount = 0;
                             eval(&call_window_js("exportGeoJSON"));
                         },
                         "­ƒÆ¥"
+                    }
+                    button {
+                        title: "Accessibility overlay",
+                        "aria-label": "Toggle accessibility overlay (step-free)",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #4caf50; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_accessibility.toggle();
+                            eval(&format!("window.toggleAccessibilityLayer({});", cur));
+                        },
+                        "ÔÖ¿"
+                    }
+                    button {
+                        title: "Parking overlay",
+                        "aria-label": "Toggle parking facilities overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ff9800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_parking.toggle();
+                            eval(&format!("window.toggleParkingLayer({}, null);", cur));
+                        },
+                        "­ƒ°¯"
+                    }
+                    button {
+                        title: "Cycle docking overlay",
+                        "aria-label": "Toggle Santander cycle docking overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00bcd4; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_cycle_docking.toggle();
+                            eval(&format!("window.toggleCycleDockingLayer({});", cur));
+                        },
+                        "­ƒÜ²"
+                    }
+                    button {
+                        title: "TfL Status overlay",
+                        "aria-label": "Toggle TfL line status overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #e32017; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_tfl_status.toggle();
+                            eval(&format!("window.toggleTfLStatusLayer({});", cur));
+                        },
+                        "­ƒÜ"
                     }
                     button {
                         title: "Keyboard Shortcuts (?)",
