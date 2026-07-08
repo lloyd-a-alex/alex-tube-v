@@ -12839,6 +12839,67 @@ mod server {
             let projects = crate::construction_tracker_enh::get_projects();
             Json(ApiResponse::success(projects))
         }
+
+        pub(crate) async fn get_crowd_prediction_handler(
+            State(state): State<Arc<AppState>>,
+        ) -> Json<ApiResponse<Vec<crate::crowd_prediction::CrowdPrediction>>> {
+            let _ = state;
+            let preds = crate::crowd_prediction::get_all();
+            Json(ApiResponse::success(preds))
+        }
+
+        pub(crate) async fn get_crowd_prediction_station_handler(
+            Path(station_id): Path<String>,
+        ) -> Json<ApiResponse<Vec<crate::crowd_prediction::CrowdPrediction>>> {
+            let preds = crate::crowd_prediction::get_for_station(&station_id);
+            Json(ApiResponse::success(preds))
+        }
+
+        pub(crate) async fn get_accessibility_audit_enh_handler(
+            State(state): State<Arc<AppState>>,
+        ) -> Json<ApiResponse<Vec<crate::accessibility_audit_enh::AccessibilityAuditEnhanced>>> {
+            let _ = state;
+            let audits = crate::accessibility_audit_enh::get_all();
+            Json(ApiResponse::success(audits))
+        }
+
+        pub(crate) async fn get_accessibility_audit_enh_station_handler(
+            Path(station_id): Path<String>,
+        ) -> Json<ApiResponse<Option<crate::accessibility_audit_enh::AccessibilityAuditEnhanced>>> {
+            let audit = crate::accessibility_audit_enh::get_for_station(&station_id);
+            Json(ApiResponse::success(audit))
+        }
+
+        pub(crate) async fn get_energy_optimization_handler(
+            State(state): State<Arc<AppState>>,
+        ) -> Json<ApiResponse<crate::energy_optimization::EnergyOptimization>> {
+            let _ = state;
+            let opt = crate::energy_optimization::get_optimization();
+            Json(ApiResponse::success(opt))
+        }
+
+        pub(crate) async fn get_signal_priority_handler(
+            State(state): State<Arc<AppState>>,
+        ) -> Json<ApiResponse<Vec<crate::signal_priority::PrioritySignal>>> {
+            let _ = state;
+            let signals = crate::signal_priority::get_all();
+            Json(ApiResponse::success(signals))
+        }
+
+        pub(crate) async fn get_capacity_forecast_handler(
+            State(state): State<Arc<AppState>>,
+        ) -> Json<ApiResponse<Vec<crate::capacity_forecast::CapacityForecast>>> {
+            let _ = state;
+            let forecasts = crate::capacity_forecast::get_all();
+            Json(ApiResponse::success(forecasts))
+        }
+
+        pub(crate) async fn get_capacity_forecast_station_handler(
+            Path(station_id): Path<String>,
+        ) -> Json<ApiResponse<Option<crate::capacity_forecast::CapacityForecast>>> {
+            let forecast = crate::capacity_forecast::get_for_station(&station_id);
+            Json(ApiResponse::success(forecast))
+        }
     }
     mod router {
         use super::handlers::*;
@@ -13101,6 +13162,14 @@ mod server {
                     .route("/api/night-tube-enh", get(get_night_tube_enh_handler))
                     // Construction enhanced
                     .route("/api/construction-enh", get(get_construction_enh_handler))
+                    .route("/api/crowd-prediction", get(get_crowd_prediction_handler))
+                    .route("/api/crowd-prediction/:station_id", get(get_crowd_prediction_station_handler))
+                    .route("/api/accessibility-audit-enh", get(get_accessibility_audit_enh_handler))
+                    .route("/api/accessibility-audit-enh/:station_id", get(get_accessibility_audit_enh_station_handler))
+                    .route("/api/energy-optimization", get(get_energy_optimization_handler))
+                    .route("/api/signal-priority", get(get_signal_priority_handler))
+                    .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
+                    .route("/api/capacity-forecast/:station_id", get(get_capacity_forecast_station_handler))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -14493,6 +14562,42 @@ fn main() {
     });
     log_info("RIVER ENGINE: Spawned");
 
+    // --- Departure board: tick every 30 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            crate::departure_board::tick_departures();
+        }
+    });
+    log_info("DEPARTURE BOARD ENGINE: Spawned");
+
+    // --- Service alerts: tick every 60 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            crate::service_alerts::tick_alerts();
+        }
+    });
+    log_info("SERVICE ALERTS ENGINE: Spawned");
+
+    // --- Night tube enhanced: tick every 60 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            crate::night_tube_enhanced::tick_night();
+        }
+    });
+    log_info("NIGHT TUBE ENH ENGINE: Spawned");
+
+    // --- Construction enhanced: tick every 120 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            crate::construction_tracker_enh::tick_construction();
+        }
+    });
+    log_info("CONSTRUCTION ENH ENGINE: Spawned");
+
     // --- Initialize parking and docking data ---
     {
         let stations = state.stations.load().as_ref().clone();
@@ -14518,6 +14623,17 @@ fn main() {
         crate::station_photos::initialize_photos(&stations);
         crate::night_tube::initialize_night_services(&lines);
         crate::construction_tracker::initialize_projects(&lines);
+        crate::photo_gallery::initialize_gallery(&stations);
+        crate::departure_board::initialize_departures(&stations, &lines);
+        crate::service_alerts::initialize_alerts(&lines);
+        crate::wifi_speed::initialize_wifi_speeds(&stations);
+        crate::night_tube_enhanced::initialize_night_services_enh(&lines);
+        crate::construction_tracker_enh::initialize_projects_enh(&lines);
+        crate::crowd_prediction::initialize_predictions(&stations);
+        crate::accessibility_audit_enh::initialize_audits_enh(&stations);
+        crate::energy_optimization::initialize_optimization();
+        crate::signal_priority::initialize_priority(&lines, &stations);
+        crate::capacity_forecast::initialize_forecasts(&stations);
         log_info("PARKING & DOCKING & SERVICES: Initialized");
     }
 
@@ -14810,6 +14926,17 @@ async fn shuttle_main(
         crate::station_photos::initialize_photos(&stations);
         crate::night_tube::initialize_night_services(&lines);
         crate::construction_tracker::initialize_projects(&lines);
+        crate::photo_gallery::initialize_gallery(&stations);
+        crate::departure_board::initialize_departures(&stations, &lines);
+        crate::service_alerts::initialize_alerts(&lines);
+        crate::wifi_speed::initialize_wifi_speeds(&stations);
+        crate::night_tube_enhanced::initialize_night_services_enh(&lines);
+        crate::construction_tracker_enh::initialize_projects_enh(&lines);
+        crate::crowd_prediction::initialize_predictions(&stations);
+        crate::accessibility_audit_enh::initialize_audits_enh(&stations);
+        crate::energy_optimization::initialize_optimization();
+        crate::signal_priority::initialize_priority(&lines, &stations);
+        crate::capacity_forecast::initialize_forecasts(&stations);
         log_info("shuttle_main - parking and cycle network initialized");
     }
     log_info("shuttle_main - state and engines initialized, building Axum router");
@@ -15046,6 +15173,14 @@ async fn shuttle_main(
         .route("/api/night-tube-enh", get(get_night_tube_enh_handler))
         // Construction enhanced
         .route("/api/construction-enh", get(get_construction_enh_handler))
+        .route("/api/crowd-prediction", get(get_crowd_prediction_handler))
+        .route("/api/crowd-prediction/:station_id", get(get_crowd_prediction_station_handler))
+        .route("/api/accessibility-audit-enh", get(get_accessibility_audit_enh_handler))
+        .route("/api/accessibility-audit-enh/:station_id", get(get_accessibility_audit_enh_station_handler))
+        .route("/api/energy-optimization", get(get_energy_optimization_handler))
+        .route("/api/signal-priority", get(get_signal_priority_handler))
+        .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
+        .route("/api/capacity-forecast/:station_id", get(get_capacity_forecast_station_handler))
         .with_state(state.clone())
         .layer(
             CorsLayer::new()
@@ -21061,6 +21196,322 @@ mod construction_tracker_enh {
     }
 }
 
+// ============================================================================
+// STATION CROWD PREDICTION - ML-style time-series forecast
+// ============================================================================
+mod crowd_prediction {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct CrowdPrediction {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) hour: u32,
+        pub(crate) predicted_density: f64,
+        pub(crate) confidence: f64,
+        pub(crate) trend: String,
+    }
+
+    pub(crate) static PREDICTIONS: once_cell::sync::Lazy<std::sync::Mutex<Vec<CrowdPrediction>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_predictions(stations: &[Station]) {
+        let mut db = PREDICTIONS.lock().unwrap();
+        db.clear();
+        let now_hour = chrono::Utc::now().format("%H").parse::<u32>().unwrap_or(12);
+        for station in stations.iter().filter(|s| s.is_open).take(80) {
+            for h in 0..24 {
+                let base = if h >= 7 && h <= 9 { 0.8 } else if h >= 17 && h <= 19 { 0.85 } else if h >= 11 && h <= 14 { 0.5 } else { 0.2 };
+                let noise = fastrand::f64() * 0.2 - 0.1;
+                let density = (base + noise).clamp(0.0, 1.0);
+                let trend = if h > now_hour { "upcoming".into() } else { "past".into() };
+                db.push(CrowdPrediction {
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    hour: h,
+                    predicted_density: (density * 100.0).round() / 100.0,
+                    confidence: (0.7 + fastrand::f64() * 0.25).round(),
+                    trend,
+                });
+            }
+        }
+        log_info(&format!("crowd_prediction: initialized {} predictions", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<CrowdPrediction> {
+        let db = PREDICTIONS.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<CrowdPrediction> {
+        let db = PREDICTIONS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// ACCESSIBILITY AUDIT ENHANCED - With detailed breakdown
+// ============================================================================
+mod accessibility_audit_enh {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct AccessibilityAuditEnhanced {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) step_free_access: bool,
+        pub(crate) lift_count: u32,
+        pub(crate) escalator_count: u32,
+        pub(crate) ramp_available: bool,
+        pub(crate) accessible_toilets: bool,
+        pub(crate) audio_announcements: bool,
+        pub(crate) tactile_paving: bool,
+        pub(crate) staff_help: bool,
+        pub(crate) score: f64,
+        pub(crate) grade: String,
+        pub(crate) recommendations: Vec<String>,
+    }
+
+    pub(crate) static AUDITS_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<AccessibilityAuditEnhanced>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_audits_enh(stations: &[Station]) {
+        let mut db = AUDITS_ENH.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open) {
+            let step_free = fastrand::f64() < 0.6;
+            let lift_count = if step_free { fastrand::u32(1..=4) } else { 0 };
+            let escalator_count = if step_free { fastrand::u32(0..=6) } else { 0 };
+            let ramp = step_free && fastrand::f64() < 0.5;
+            let toilets = fastrand::f64() < 0.7;
+            let audio = fastrand::f64() < 0.8;
+            let tactile = fastrand::f64() < 0.9;
+            let staff = fastrand::f64() < 0.85;
+            let mut score = 0.0;
+            if step_free { score += 35.0; }
+            score += lift_count as f64 * 8.0;
+            score += escalator_count as f64 * 3.0;
+            if ramp { score += 8.0; }
+            if toilets { score += 7.0; }
+            if audio { score += 6.0; }
+            if tactile { score += 6.0; }
+            if staff { score += 10.0; }
+            score = score.min(100.0);
+            let grade = if score >= 80.0 { "A".into() } else if score >= 60.0 { "B".into() } else if score >= 40.0 { "C".into() } else { "D".into() };
+
+            let mut recs = Vec::new();
+            if !step_free { recs.push("Install step-free access".into()); }
+            if lift_count == 0 && step_free { recs.push("Add more lifts".into()); }
+            if !toilets { recs.push("Add accessible toilets".into()); }
+            if !staff { recs.push("Provide staff assistance".into()); }
+            if !audio { recs.push("Install audio announcements".into()); }
+
+            db.push(AccessibilityAuditEnhanced {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                step_free_access: step_free,
+                lift_count,
+                escalator_count,
+                ramp_available: ramp,
+                accessible_toilets: toilets,
+                audio_announcements: audio,
+                tactile_paving: tactile,
+                staff_help: staff,
+                score: (score * 10.0).round() / 10.0,
+                grade,
+                recommendations: recs,
+            });
+        }
+        log_info(&format!("accessibility_audit_enh: initialized {} audits", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Option<AccessibilityAuditEnhanced> {
+        let db = AUDITS_ENH.lock().unwrap();
+        db.iter().find(|a| a.station_id == station_id).cloned()
+    }
+
+    pub(crate) fn get_all() -> Vec<AccessibilityAuditEnhanced> {
+        let db = AUDITS_ENH.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// ENERGY OPTIMIZATION - Renewable energy recommendations
+// ============================================================================
+mod energy_optimization {
+    use crate::logger::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct EnergyOptimization {
+        pub(crate) current_renewable_pct: f64,
+        pub(crate) target_renewable_pct: f64,
+        pub(crate) potential_savings_gbp_per_year: f64,
+        pub(crate) co2_reduction_kg_per_year: f64,
+        pub(crate) recommendations: Vec<String>,
+        pub(crate) solar_panels_needed: u32,
+        pub(crate) battery_storage_mwh: f64,
+    }
+
+    pub(crate) static OPTIMIZATION: once_cell::sync::Lazy<std::sync::Mutex<EnergyOptimization>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(EnergyOptimization {
+            current_renewable_pct: 42.0,
+            target_renewable_pct: 100.0,
+            potential_savings_gbp_per_year: 0.0,
+            co2_reduction_kg_per_year: 0.0,
+            recommendations: vec![],
+            solar_panels_needed: 0,
+            battery_storage_mwh: 0.0,
+        }));
+
+    pub(crate) fn initialize_optimization() {
+        let mut o = OPTIMIZATION.lock().unwrap();
+        o.current_renewable_pct = 42.0;
+        o.target_renewable_pct = 100.0;
+        o.potential_savings_gbp_per_year = 12_500_000.0;
+        o.co2_reduction_kg_per_year = 45_000_000.0;
+        o.solar_panels_needed = 250_000;
+        o.battery_storage_mwh = 500.0;
+        o.recommendations = vec![
+            "Install solar panels on all station roofs".into(),
+            "Deploy grid-scale battery storage at major interchanges".into(),
+            "Recover braking energy from trains".into(),
+            "Switch to LED lighting network-wide".into(),
+            "Use regenerative braking on all new trains".into(),
+        ];
+        log_info("energy_optimization: initialized with 100% renewable target");
+    }
+
+    pub(crate) fn get_optimization() -> EnergyOptimization {
+        let o = OPTIMIZATION.lock().unwrap();
+        o.clone()
+    }
+}
+
+// ============================================================================
+// SIGNAL PRIORITY - Emergency vehicle preemption
+// ============================================================================
+mod signal_priority {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct PrioritySignal {
+        pub(crate) id: String,
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) priority_active: bool,
+        pub(crate) emergency_type: String, // "medical", "fire", "police", "none"
+        pub(crate) estimated_clear_sec: u32,
+    }
+
+    pub(crate) static PRIORITY_SIGNALS: once_cell::sync::Lazy<std::sync::Mutex<Vec<PrioritySignal>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_priority(lines: &[Line], stations: &[Station]) {
+        let mut db = PRIORITY_SIGNALS.lock().unwrap();
+        db.clear();
+        for line in lines.iter().take(10) {
+            if let Some(station) = line.stations.first() {
+                db.push(PrioritySignal {
+                    id: format!("pri_{}", line.id),
+                    line_id: line.id.clone(),
+                    line_name: line.name.clone(),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    priority_active: false,
+                    emergency_type: "none".into(),
+                    estimated_clear_sec: 0,
+                });
+            }
+        }
+        log_info(&format!("signal_priority: initialized {} priority signals", db.len()));
+    }
+
+    pub(crate) fn get_all() -> Vec<PrioritySignal> {
+        let db = PRIORITY_SIGNALS.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn trigger_emergency(line_id: &str, emergency_type: &str) {
+        let mut db = PRIORITY_SIGNALS.lock().unwrap();
+        if let Some(sig) = db.iter_mut().find(|s| s.line_id == line_id) {
+            sig.priority_active = true;
+            sig.emergency_type = emergency_type.into();
+            sig.estimated_clear_sec = fastrand::u32(30..=300);
+            log_info(&format!("signal_priority: emergency {} triggered on {}", emergency_type, line_id));
+        }
+    }
+}
+
+// ============================================================================
+// STATION CAPACITY FORECAST - Predict future capacity needs
+// ============================================================================
+mod capacity_forecast {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct CapacityForecast {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) current_capacity: u32,
+        pub(crate) projected_2030: u32,
+        pub(crate) projected_2040: u32,
+        pub(crate) needs_expansion: bool,
+        pub(crate) recommended_action: String,
+    }
+
+    pub(crate) static FORECASTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<CapacityForecast>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_forecasts(stations: &[Station]) {
+        let mut db = FORECASTS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(100) {
+            let current = if station.is_interchange { fastrand::u32(15000..=30000) } else { fastrand::u32(5000..=15000) };
+            let growth = if station.is_interchange { 1.5 } else { 1.3 };
+            let proj_2030 = (current as f64 * growth) as u32;
+            let proj_2040 = (proj_2030 as f64 * growth) as u32;
+            let needs_exp = proj_2040 > current * 2;
+            let action = if needs_exp {
+                "Expand station capacity - add platforms or entrances".into()
+            } else {
+                "Monitor growth - current capacity sufficient".into()
+            };
+            db.push(CapacityForecast {
+                station_id: station.id.clone(),
+                station_name: station.name.clone(),
+                current_capacity: current,
+                projected_2030: proj_2030,
+                projected_2040: proj_2040,
+                needs_expansion: needs_exp,
+                recommended_action: action,
+            });
+        }
+        log_info(&format!("capacity_forecast: initialized {} forecasts", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Option<CapacityForecast> {
+        let db = FORECASTS.lock().unwrap();
+        db.iter().find(|f| f.station_id == station_id).cloned()
+    }
+
+    pub(crate) fn get_all() -> Vec<CapacityForecast> {
+        let db = FORECASTS.lock().unwrap();
+        db.clone()
+    }
+}
+
 mod ui {
 
     // pub(crate) use styles::*; unused
@@ -22722,6 +23173,267 @@ window.initMap = async function() {
             else { if (window.map.hasLayer(window.constructionLayer)) window.map.removeLayer(window.constructionLayer); }
         };
 
+        // === NEW OVERLAY LAYERS ===
+        window.galleryLayer = L.layerGroup().addTo(window.map);
+        window.departureLayer = L.layerGroup().addTo(window.map);
+        window.alertLayer = L.layerGroup().addTo(window.map);
+        window.wifiSpeedLayer = L.layerGroup().addTo(window.map);
+        window.amenityV2Layer = L.layerGroup().addTo(window.map);
+        window.nightTubeV2Layer = L.layerGroup().addTo(window.map);
+        window.constructionV2Layer = L.layerGroup().addTo(window.map);
+
+        // === GALLERY OVERLAY ===
+        window.loadGalleryLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/gallery');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.galleryLayer.clearLayers();
+                data.forEach(function(p) {
+                    let marker = L.circleMarker([0, 0], { radius: 4, color: '#ff9800', fillColor: '#ff9800', fillOpacity: 0.5 });
+                    marker.bindTooltip('📷 ' + p.station_name + ': ' + p.caption + ' (' + p.year + ')', { direction: 'top' });
+                    window.galleryLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load gallery layer:', e); }
+        };
+
+        // === DEPARTURE OVERLAY ===
+        window.loadDepartureLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/departure-board');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.departureLayer.clearLayers();
+                data.forEach(function(d) {
+                    if (d.status === 'cancelled') return;
+                    let color = d.status === 'on time' ? '#4caf50' : '#ff9800';
+                    let marker = L.circleMarker([0, 0], { radius: 5, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🚉 ' + d.station_name + ': ' + d.line_name + ' to ' + d.destination + ' (' + d.minutes + ' min)', { direction: 'top' });
+                    window.departureLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load departure layer:', e); }
+        };
+
+        // === ALERT OVERLAY ===
+        window.loadAlertLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/service-alerts');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.alertLayer.clearLayers();
+                data.forEach(function(a) {
+                    let color = a.severity === 'severe' ? '#f44336' : a.severity === 'moderate' ? '#ff9800' : '#ffeb3b';
+                    let marker = L.circleMarker([51.5074, -0.1278], { radius: 8, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('⚠️ ' + a.line_name + ': ' + a.title, { direction: 'top' });
+                    window.alertLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load alert layer:', e); }
+        };
+
+        // === WIFI SPEED OVERLAY ===
+        window.loadWifiSpeedLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/wifi-speed');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.wifiSpeedLayer.clearLayers();
+                data.forEach(function(w) {
+                    let color = w.download_mbps > 50 ? '#4caf50' : w.download_mbps > 20 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([0, 0], { radius: 5, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('📶 ' + w.station_name + ': ' + w.download_mbps + ' Mbps down', { direction: 'top' });
+                    window.wifiSpeedLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load wifi speed layer:', e); }
+        };
+
+        // === AMENITY V2 OVERLAY ===
+        window.loadAmenityV2Layer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/amenities');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.amenityV2Layer.clearLayers();
+                data.forEach(function(a) {
+                    if (!a) return;
+                    let color = a.amenity_score > 70 ? '#4caf50' : a.amenity_score > 40 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([0, 0], { radius: 6, color: color, fillColor: color, fillOpacity: 0.5 });
+                    marker.bindTooltip('🏢 ' + (a.station_name || 'Unknown') + ': ' + (a.amenity_score || 0) + '/100', { direction: 'top' });
+                    window.amenityV2Layer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load amenity v2 layer:', e); }
+        };
+
+        // === NIGHT TUBE V2 OVERLAY ===
+        window.loadNightTubeV2Layer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/night-tube-enh');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.nightTubeV2Layer.clearLayers();
+                data.forEach(function(n) {
+                    if (!n.operates_nights) return;
+                    let color = n.is_running_now ? '#9c27b0' : '#666';
+                    let marker = L.circleMarker([51.5074, -0.1278], { radius: 6, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🌙 ' + n.line_name + (n.is_running_now ? ': RUNNING NOW' : ': Not running'), { direction: 'top' });
+                    window.nightTubeV2Layer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load night tube v2 layer:', e); }
+        };
+
+        // === CONSTRUCTION V2 OVERLAY ===
+        window.loadConstructionV2Layer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/construction-enh');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.constructionV2Layer.clearLayers();
+                data.forEach(function(c) {
+                    let color = c.progress_pct > 70 ? '#4caf50' : c.progress_pct > 30 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([51.5074, -0.1278], { radius: 7, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🚧 ' + c.title + ' on ' + c.line_name + ': ' + c.progress_pct.toFixed(0) + '%', { direction: 'top' });
+                    window.constructionV2Layer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load construction v2 layer:', e); }
+        };
+
+        // === TOGGLE FUNCTIONS ===
+        window.toggleGalleryLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.galleryLayer)) window.map.addLayer(window.galleryLayer); window.loadGalleryLayer(); }
+            else { if (window.map.hasLayer(window.galleryLayer)) window.map.removeLayer(window.galleryLayer); }
+        };
+        window.toggleDepartureLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.departureLayer)) window.map.addLayer(window.departureLayer); window.loadDepartureLayer(); }
+            else { if (window.map.hasLayer(window.departureLayer)) window.map.removeLayer(window.departureLayer); }
+        };
+        window.toggleAlertLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.alertLayer)) window.map.addLayer(window.alertLayer); window.loadAlertLayer(); }
+            else { if (window.map.hasLayer(window.alertLayer)) window.map.removeLayer(window.alertLayer); }
+        };
+        window.toggleWifiSpeedLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.wifiSpeedLayer)) window.map.addLayer(window.wifiSpeedLayer); window.loadWifiSpeedLayer(); }
+            else { if (window.map.hasLayer(window.wifiSpeedLayer)) window.map.removeLayer(window.wifiSpeedLayer); }
+        };
+        window.toggleAmenityV2Layer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.amenityV2Layer)) window.map.addLayer(window.amenityV2Layer); window.loadAmenityV2Layer(); }
+            else { if (window.map.hasLayer(window.amenityV2Layer)) window.map.removeLayer(window.amenityV2Layer); }
+        };
+        window.toggleNightTubeV2Layer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.nightTubeV2Layer)) window.map.addLayer(window.nightTubeV2Layer); window.loadNightTubeV2Layer(); }
+            else { if (window.map.hasLayer(window.nightTubeV2Layer)) window.map.removeLayer(window.nightTubeV2Layer); }
+        };
+        window.toggleConstructionV2Layer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.constructionV2Layer)) window.map.addLayer(window.constructionV2Layer); window.loadConstructionV2Layer(); }
+            else { if (window.map.hasLayer(window.constructionV2Layer)) window.map.removeLayer(window.constructionV2Layer); }
+        };
+
+        // Crowd Prediction Layer
+        window.crowdPredictionLayer = L.layerGroup();
+        window.loadCrowdPredictionLayer = function() {
+            if (!window.crowdPredictionLayer) return;
+            window.crowdPredictionLayer.clearLayers();
+            fetch(apiBase + '/api/crowd-prediction').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                const now = new Date().getHours();
+                d.data.filter(p => p.hour === now).slice(0, 60).forEach(p => {
+                    const st = window.stationIndex[p.station_id];
+                    if (!st) return;
+                    const color = p.predicted_density > 0.7 ? '#f44336' : p.predicted_density > 0.4 ? '#ff9800' : '#4caf50';
+                    L.circleMarker([st.lat, st.lon], { radius: 6, color: color, fillColor: color, fillOpacity: 0.7, weight: 1 })
+                        .bindPopup(`<b>${p.station_name}</b><br>Predicted density: ${(p.predicted_density*100).toFixed(0)}%<br>Confidence: ${(p.confidence*100).toFixed(0)}%`)
+                        .addTo(window.crowdPredictionLayer);
+                });
+            }).catch(e => console.error('crowd prediction load error', e));
+        };
+        window.toggleCrowdPredictionLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.crowdPredictionLayer)) window.map.addLayer(window.crowdPredictionLayer); window.loadCrowdPredictionLayer(); }
+            else { if (window.map.hasLayer(window.crowdPredictionLayer)) window.map.removeLayer(window.crowdPredictionLayer); }
+        };
+
+        // Accessibility Audit Enhanced Layer
+        window.accessibilityAuditEnhLayer = L.layerGroup();
+        window.loadAccessibilityAuditEnhLayer = function() {
+            if (!window.accessibilityAuditEnhLayer) return;
+            window.accessibilityAuditEnhLayer.clearLayers();
+            fetch(apiBase + '/api/accessibility-audit-enh').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                d.data.slice(0, 80).forEach(a => {
+                    const st = window.stationIndex[a.station_id];
+                    if (!st) return;
+                    const color = a.grade === 'A' ? '#4caf50' : a.grade === 'B' ? '#8bc34a' : a.grade === 'C' ? '#ff9800' : '#f44336';
+                    L.circleMarker([st.lat, st.lon], { radius: 5, color: color, fillColor: color, fillOpacity: 0.6, weight: 1 })
+                        .bindPopup(`<b>${a.station_name}</b><br>Grade: ${a.grade} (${a.score}/100)<br>Step-free: ${a.step_free_access ? 'Yes' : 'No'}<br>Lifts: ${a.lift_count}, Escalators: ${a.escalator_count}`)
+                        .addTo(window.accessibilityAuditEnhLayer);
+                });
+            }).catch(e => console.error('accessibility audit enh load error', e));
+        };
+        window.toggleAccessibilityAuditEnhLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.accessibilityAuditEnhLayer)) window.map.addLayer(window.accessibilityAuditEnhLayer); window.loadAccessibilityAuditEnhLayer(); }
+            else { if (window.map.hasLayer(window.accessibilityAuditEnhLayer)) window.map.removeLayer(window.accessibilityAuditEnhLayer); }
+        };
+
+        // Energy Optimization Layer (solar potential heatmap)
+        window.energyOptimizationLayer = L.layerGroup();
+        window.loadEnergyOptimizationLayer = function() {
+            if (!window.energyOptimizationLayer) return;
+            window.energyOptimizationLayer.clearLayers();
+            fetch(apiBase + '/api/energy-optimization').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                // Show major interchanges as solar potential
+                Object.values(window.stationIndex).filter(s => s.interchange).slice(0, 40).forEach(st => {
+                    L.circleMarker([st.lat, st.lon], { radius: 8, color: '#00c853', fillColor: '#00c853', fillOpacity: 0.4, weight: 1 })
+                        .bindPopup(`<b>${st.name}</b><br>Solar potential: High<br>Est. annual generation: ${(fastrand()*500+200).toFixed(0)} MWh`)
+                        .addTo(window.energyOptimizationLayer);
+                });
+            }).catch(e => console.error('energy optimization load error', e));
+        };
+        window.toggleEnergyOptimizationLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.energyOptimizationLayer)) window.map.addLayer(window.energyOptimizationLayer); window.loadEnergyOptimizationLayer(); }
+            else { if (window.map.hasLayer(window.energyOptimizationLayer)) window.map.removeLayer(window.energyOptimizationLayer); }
+        };
+
+        // Signal Priority Layer
+        window.signalPriorityLayer = L.layerGroup();
+        window.loadSignalPriorityLayer = function() {
+            if (!window.signalPriorityLayer) return;
+            window.signalPriorityLayer.clearLayers();
+            fetch(apiBase + '/api/signal-priority').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                d.data.forEach(s => {
+                    const st = window.stationIndex[s.station_id];
+                    if (!st) return;
+                    const color = s.priority_active ? '#f44336' : '#ffc107';
+                    L.circleMarker([st.lat, st.lon], { radius: 6, color: color, fillColor: color, fillOpacity: 0.7, weight: 2 })
+                        .bindPopup(`<b>${s.line_name}</b><br>Priority: ${s.priority_active ? 'ACTIVE (' + s.emergency_type + ')' : 'Standby'}<br>Clear in: ${s.estimated_clear_sec}s`)
+                        .addTo(window.signalPriorityLayer);
+                });
+            }).catch(e => console.error('signal priority load error', e));
+        };
+        window.toggleSignalPriorityLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.signalPriorityLayer)) window.map.addLayer(window.signalPriorityLayer); window.loadSignalPriorityLayer(); }
+            else { if (window.map.hasLayer(window.signalPriorityLayer)) window.map.removeLayer(window.signalPriorityLayer); }
+        };
+
+        // Capacity Forecast Layer
+        window.capacityForecastLayer = L.layerGroup();
+        window.loadCapacityForecastLayer = function() {
+            if (!window.capacityForecastLayer) return;
+            window.capacityForecastLayer.clearLayers();
+            fetch(apiBase + '/api/capacity-forecast').then(r => r.json()).then(d => {
+                if (!d.success) return;
+                d.data.filter(f => f.needs_expansion).slice(0, 60).forEach(f => {
+                    const st = window.stationIndex[f.station_id];
+                    if (!st) return;
+                    L.circleMarker([st.lat, st.lon], { radius: 7, color: '#2196f3', fillColor: '#2196f3', fillOpacity: 0.5, weight: 1 })
+                        .bindPopup(`<b>${f.station_name}</b><br>Current: ${f.current_capacity.toLocaleString()}<br>2030: ${f.projected_2030.toLocaleString()}<br>2040: ${f.projected_2040.toLocaleString()}<br>Action: ${f.recommended_action}`)
+                        .addTo(window.capacityForecastLayer);
+                });
+            }).catch(e => console.error('capacity forecast load error', e));
+        };
+        window.toggleCapacityForecastLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.capacityForecastLayer)) window.map.addLayer(window.capacityForecastLayer); window.loadCapacityForecastLayer(); }
+            else { if (window.map.hasLayer(window.capacityForecastLayer)) window.map.removeLayer(window.capacityForecastLayer); }
+        };
+
         if (!window.map.getPane('stations')) {
             let pane = window.map.createPane('stations');
             pane.style.zIndex = 600;
@@ -22860,7 +23572,16 @@ window.initMap = async function() {
             window.loadWifiLayer();
             window.loadEmergencyLayer();
             window.loadRiverLayer();
-            console.log('Overlay layers: accessibility, parking, cycle, TfL status, air, noise, crowd, maas, wifi, emergency, river loaded');
+            window.loadDepartureLayer();
+            window.loadAlertLayer();
+            window.loadGalleryLayer();
+            window.loadWifiSpeedLayer();
+            window.loadCrowdPredictionLayer();
+            window.loadAccessibilityAuditEnhLayer();
+            window.loadEnergyOptimizationLayer();
+            window.loadSignalPriorityLayer();
+            window.loadCapacityForecastLayer();
+            console.log('Overlay layers: accessibility, parking, cycle, TfL status, air, noise, crowd, maas, wifi, emergency, river, departures, alerts, gallery, wifi-speed, crowd-pred, accessibility-enh, energy, signal-priority, capacity loaded');
         }, 2000);
 
         // ============================================================
@@ -25752,6 +26473,311 @@ window.__consoleDupCount = 0;
             }
         }
 
+        /// Departure board panel
+        #[cfg(feature = "desktop")]
+        pub fn DepartureBoardPanel() -> Element {
+            let departures = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_departures = move |_| {
+                let mut d = departures;
+                spawn(async move {
+                    let url = format!("{}/api/departure-board", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #00bcd4; cursor: pointer;", "🚉 Live Departures" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_departures,
+                            style: "background: #00bcd4; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{departures}" }
+                    }
+                }
+            }
+        }
+
+        /// Service alerts panel
+        #[cfg(feature = "desktop")]
+        pub fn ServiceAlertsPanel() -> Element {
+            let alerts = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_alerts = move |_| {
+                let mut a = alerts;
+                spawn(async move {
+                    let url = format!("{}/api/service-alerts", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            a.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #f44336; cursor: pointer;", "⚠️ Service Alerts" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_alerts,
+                            style: "background: #f44336; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{alerts}" }
+                    }
+                }
+            }
+        }
+
+        /// Photo gallery panel
+        #[cfg(feature = "desktop")]
+        pub fn PhotoGalleryPanel() -> Element {
+            let photos = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_photos = move |_| {
+                let mut p = photos;
+                spawn(async move {
+                    let url = format!("{}/api/gallery", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            p.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff9800; cursor: pointer;", "📷 Photo Gallery" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_photos,
+                            style: "background: #ff9800; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{photos}" }
+                    }
+                }
+            }
+        }
+
+        /// WiFi speed panel
+        #[cfg(feature = "desktop")]
+        pub fn WifiSpeedPanel() -> Element {
+            let speeds = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_speeds = move |_| {
+                let mut s = speeds;
+                spawn(async move {
+                    let url = format!("{}/api/wifi-speed", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            s.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #4caf50; cursor: pointer;", "📶 WiFi Speed Test" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_speeds,
+                            style: "background: #4caf50; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{speeds}" }
+                    }
+                }
+            }
+        }
+
+        pub fn CrowdPredictionPanel() -> Element {
+            let data = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_data = move |_| {
+                let mut d = data;
+                spawn(async move {
+                    let url = format!("{}/api/crowd-prediction", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff5722; cursor: pointer;", "👥 Crowd Prediction" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_data,
+                            style: "background: #ff5722; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{data}" }
+                    }
+                }
+            }
+        }
+
+        pub fn AccessibilityAuditEnhPanel() -> Element {
+            let data = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_data = move |_| {
+                let mut d = data;
+                spawn(async move {
+                    let url = format!("{}/api/accessibility-audit-enh", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #6950A1; cursor: pointer;", "♿ Accessibility Audit (Enhanced)" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_data,
+                            style: "background: #6950A1; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{data}" }
+                    }
+                }
+            }
+        }
+
+        pub fn EnergyOptimizationPanel() -> Element {
+            let data = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_data = move |_| {
+                let mut d = data;
+                spawn(async move {
+                    let url = format!("{}/api/energy-optimization", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #00c853; cursor: pointer;", "⚡ Energy Optimization" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_data,
+                            style: "background: #00c853; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{data}" }
+                    }
+                }
+            }
+        }
+
+        pub fn SignalPriorityPanel() -> Element {
+            let data = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_data = move |_| {
+                let mut d = data;
+                spawn(async move {
+                    let url = format!("{}/api/signal-priority", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ffc107; cursor: pointer;", "🚦 Signal Priority" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_data,
+                            style: "background: #ffc107; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{data}" }
+                    }
+                }
+            }
+        }
+
+        pub fn CapacityForecastPanel() -> Element {
+            let data = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_data = move |_| {
+                let mut d = data;
+                spawn(async move {
+                    let url = format!("{}/api/capacity-forecast", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            d.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #2196f3; cursor: pointer;", "📈 Capacity Forecast" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_data,
+                            style: "background: #2196f3; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{data}" }
+                    }
+                }
+            }
+        }
+
         /// Build the full standalone HTML page for the web application.
         /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
@@ -26359,6 +27385,15 @@ window.__consoleDupCount = 0;
             let mut overlay_wifi = use_signal::<bool>(|| false);
             let mut overlay_emergency = use_signal::<bool>(|| false);
             let mut overlay_river = use_signal::<bool>(|| false);
+            let mut overlay_departure = use_signal::<bool>(|| false);
+            let mut overlay_alert = use_signal::<bool>(|| false);
+            let mut overlay_gallery = use_signal::<bool>(|| false);
+            let mut overlay_wifi_speed = use_signal::<bool>(|| false);
+            let mut overlay_crowd_pred = use_signal::<bool>(|| false);
+            let mut overlay_accessibility_enh = use_signal::<bool>(|| false);
+            let mut overlay_energy_opt = use_signal::<bool>(|| false);
+            let mut overlay_signal_priority = use_signal::<bool>(|| false);
+            let mut overlay_capacity_fc = use_signal::<bool>(|| false);
             let mut show_data_explorer = use_signal::<bool>(|| false);
 
             // Cmd+K Omnibox state
@@ -29011,6 +30046,15 @@ window.__consoleDupCount = 0;
                         EnergyPanel {}
                         NightTubePanel {}
                         ConstructionPanel {}
+                        DepartureBoardPanel {}
+                        ServiceAlertsPanel {}
+                        PhotoGalleryPanel {}
+                        WifiSpeedPanel {}
+                        CrowdPredictionPanel {}
+                        AccessibilityAuditEnhPanel {}
+                        EnergyOptimizationPanel {}
+                        SignalPriorityPanel {}
+                        CapacityForecastPanel {}
                     }
                 }
 
@@ -29281,6 +30325,96 @@ window.__consoleDupCount = 0;
                             eval(&format!("window.toggleRiverLayer({});", cur));
                         },
                         "⛴️"
+                    }
+                    button {
+                        title: "Live Departures overlay",
+                        "aria-label": "Toggle live departures overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00bcd4; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_departure.toggle();
+                            eval(&format!("window.toggleDepartureLayer({});", cur));
+                        },
+                        "🚉"
+                    }
+                    button {
+                        title: "Service Alerts overlay",
+                        "aria-label": "Toggle service alerts overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #f44336; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_alert.toggle();
+                            eval(&format!("window.toggleAlertLayer({});", cur));
+                        },
+                        "⚠️"
+                    }
+                    button {
+                        title: "Photo Gallery overlay",
+                        "aria-label": "Toggle photo gallery overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ff9800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_gallery.toggle();
+                            eval(&format!("window.toggleGalleryLayer({});", cur));
+                        },
+                        "📷"
+                    }
+                    button {
+                        title: "WiFi Speed overlay",
+                        "aria-label": "Toggle WiFi speed overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #4caf50; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_wifi_speed.toggle();
+                            eval(&format!("window.toggleWifiSpeedLayer({});", cur));
+                        },
+                        "📶"
+                    }
+                    button {
+                        title: "Crowd Prediction overlay",
+                        "aria-label": "Toggle crowd prediction overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ff5722; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_crowd_pred.toggle();
+                            eval(&format!("window.toggleCrowdPredictionLayer({});", cur));
+                        },
+                        "👥"
+                    }
+                    button {
+                        title: "Accessibility Audit (Enhanced) overlay",
+                        "aria-label": "Toggle accessibility audit enhanced overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #6950A1; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_accessibility_enh.toggle();
+                            eval(&format!("window.toggleAccessibilityAuditEnhLayer({});", cur));
+                        },
+                        "♿"
+                    }
+                    button {
+                        title: "Energy Optimization overlay",
+                        "aria-label": "Toggle energy optimization overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00c853; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_energy_opt.toggle();
+                            eval(&format!("window.toggleEnergyOptimizationLayer({});", cur));
+                        },
+                        "⚡"
+                    }
+                    button {
+                        title: "Signal Priority overlay",
+                        "aria-label": "Toggle signal priority overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ffc107; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_signal_priority.toggle();
+                            eval(&format!("window.toggleSignalPriorityLayer({});", cur));
+                        },
+                        "🚦"
+                    }
+                    button {
+                        title: "Capacity Forecast overlay",
+                        "aria-label": "Toggle capacity forecast overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #2196f3; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_capacity_fc.toggle();
+                            eval(&format!("window.toggleCapacityForecastLayer({});", cur));
+                        },
+                        "📈"
                     }
                     button {
                         title: "Keyboard Shortcuts (?)",
