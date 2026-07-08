@@ -3296,7 +3296,7 @@ mod routing {
                     .par_iter()
                     .filter(|res_coord| {
                         let merc = res_coord.to_mercator();
-                        match station_tree.nearest_neighbor(&[merc.0, merc.1]) {
+                        match station_tree.nearest_neighbor([merc.0, merc.1]) {
                             Some(nearest) => res_coord.distance_to(&nearest.coord) > threshold,
                             None => true,
                         }
@@ -3791,7 +3791,7 @@ mod routing {
                 if newly == 0 {
                     // No improvement possible from this region — force mark nearest
                     if let Some(sp) = tree
-                        .nearest_neighbor(&[r_m.0, r_m.1])
+                        .nearest_neighbor([r_m.0, r_m.1])
                         .filter(|sp| !covered[sp.index])
                     {
                         covered[sp.index] = true;
@@ -6193,7 +6193,7 @@ out body;"#,
                     let mut prev_idx: Option<usize> = None;
                     for (point_idx, coord) in track.geometry.iter().enumerate() {
                         let (p_x, p_y) = coord.to_mercator();
-                        let curr_idx = if let Some(nearest) = tree.nearest_neighbor(&[p_x, p_y]) {
+                        let curr_idx = if let Some(nearest) = tree.nearest_neighbor([p_x, p_y]) {
                             let nearest_pt: &SpatialPoint = nearest;
                             if nearest_pt.coord.distance_to(coord) < 10.0 {
                                 log_trace(&format!(
