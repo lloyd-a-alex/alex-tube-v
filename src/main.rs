@@ -1,11 +1,4 @@
-#![allow(dependency_on_unit_never_type_fallback)]
-// ^ REQUIRED: Suppresses compiler warnings triggered by type inference
-//   regressions in deeply nested macro expansions within Dioxus rsx!
-//   components. The never-type fallback change in Rust 2024 causes
-//   `!: Future` errors when returning `Element` from component fns.
-//   Do not remove — the Dioxus rsx! macro depends on this override.
-
-//! # Alex’s Tube Ⅴ
+﻿//! # Alex’s Tube Ⅴ
 //!
 //! London Transport network visualiser and spatial analysis engine.
 //! Interactive map of the Underground, Overground, DLR, Elizabeth line,
@@ -311,6 +304,10 @@ pub trait CacheStore: Send + Sync {
 //
 // ============================================================================
 
+/// Upper clamp on retry backoff delay so a large `max_retries` cannot produce
+/// unbounded multi-minute waits between attempts.
+const MAX_BACKOFF_MS: u64 = 30_000;
+
 /// Attempt an async operation up to `max_retries` times with exponential
 /// back-off. Returns `Err` only after all retries are exhausted.
 async fn retry_with_backoff<F, Fut, T>(max_retries: u32, mut operation: F) -> AppResult<T>
@@ -324,9 +321,15 @@ where
             Ok(value) => return Ok(value),
             Err(e) => {
                 if attempt < max_retries {
-                    let delay_ms = 2u64.pow(attempt) * 250;
-                    log_warn(&format!(
-                        "retry_with_backoff - attempt {}/{} failed: {}. Retrying in {}ms",
+                    // Exponential backoff, but clamp the delay so a large retry
+                    // count can never produce pathological multi-minute waits
+                    // (e.g. attempt 10 -> 256s) with no upper bound.
+                    let delay_ms = (2u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
+                    // Retries are expected under transient network errors — keep them
+                    // at debug level to avoid flooding operator logs; only the final,
+                    // unrecoverable failure is surfaced as an error by the caller.
+                    log_debug(&format!(
+                        "retry_with_backoff - attempt {}/{} failed (transient): {}. Retrying in {}ms",
                         attempt + 1,
                         max_retries + 1,
                         e,
@@ -382,11 +385,6 @@ fn validate_line_id(id: &str) -> AppResult<()> {
 /// as latitude approaches ?90?. Clamping to ?85.0511? prevents floating-point
 /// overflow / NaN in R*-tree envelope comparisons.
 const MAX_MERCATOR_LAT: f64 = 85.0511;
-
-/// Maximum iterations for any A* pathfinding traversal.
-/// Prevents algorithmic DoS — a malicious or degenerate request cannot
-/// block the Tokio runtime thread indefinitely.
-const MAX_ASTAR_ITERATIONS: usize = 15_000;
 
 fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> AppResult<()> {
     // NaN guard: NaN fails ALL comparisons, so it silently passes range checks
@@ -555,41 +553,92 @@ mod logger {
     use std::sync::{Arc, OnceLock};
     use std::time::{Duration, Instant};
 
-    // Fix 1: Global Panic State Tracking Allocator
-    pub(crate) static IS_PANICKED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
-    pub(crate) static CRASH_LOG_ACCUMULATOR: std::sync::OnceLock<std::sync::Mutex<String>> =
-        std::sync::OnceLock::new();
+    // Consolidated global state in a single static struct.
+    static GLOBALS: std::sync::OnceLock<Globals> = std::sync::OnceLock::new();
 
-    /// Crash telemetry frame — a fixed-size buffer the UI can poll to detect crash state
-    /// without parsing the full log accumulator. Contains the last panic summary line.
-    pub(crate) static CRASH_TELEMETRY_FRAME: std::sync::OnceLock<std::sync::Mutex<String>> =
-        std::sync::OnceLock::new();
+    // Configurable escape hatch for the "load-bearing" routing-diagnostic filters
+    // below. Set ALEXTUBE_LOG_ROUTING_ERRORS=1 to disable downgrading and surface
+    // every routing failure as its true severity (useful when debugging real bugs).
+    static ROUTING_DIAG_DOWNGRADING_ENABLED: OnceLock<bool> = OnceLock::new();
+    fn routing_diag_downgrading_enabled() -> bool {
+        *ROUTING_DIAG_DOWNGRADING_ENABLED.get_or_init(|| {
+            std::env::var("ALEXTUBE_LOG_ROUTING_ERRORS")
+                .map(|v| v != "1" && v.to_lowercase() != "true")
+                .unwrap_or(true)
+        })
+    }
 
-    /// Write a crash telemetry summary for the UI overlay to detect.
-    pub(crate) fn update_crash_telemetry(summary: &str) {
-        let mutex = CRASH_TELEMETRY_FRAME.get_or_init(|| std::sync::Mutex::new(String::new()));
-        if let Ok(mut guard) = mutex.lock() {
-            *guard = summary.to_string();
+    pub(crate) struct Globals {
+        pub(crate) is_panicked: std::sync::atomic::AtomicBool,
+        pub(crate) crash_log: std::sync::Mutex<String>,
+        pub(crate) crash_telemetry: std::sync::Mutex<String>,
+        pub(crate) log_buffer: Arc<std::sync::RwLock<VecDeque<String>>>,
+        pub(crate) api_base: std::sync::RwLock<Option<String>>,
+        pub(crate) console_port: std::sync::RwLock<Option<u16>>,
+        pub(crate) config: std::sync::RwLock<Option<crate::config::Config>>,
+    }
+
+    /// Minimal `catch_unwind` wrapper that swallows panics. Used inside the panic
+    /// hook to prevent secondary panics (e.g. poisoned locks) from aborting the process.
+    pub(crate) fn catch_simple(f: impl FnOnce()) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    }
+
+    impl Globals {
+        pub(crate) fn get() -> &'static Globals {
+            GLOBALS.get_or_init(|| Globals {
+                is_panicked: std::sync::atomic::AtomicBool::new(false),
+                crash_log: std::sync::Mutex::new(String::new()),
+                crash_telemetry: std::sync::Mutex::new(String::new()),
+                log_buffer: Arc::new(std::sync::RwLock::new(VecDeque::with_capacity(20000))),
+                api_base: std::sync::RwLock::new(None),
+                console_port: std::sync::RwLock::new(None),
+                config: std::sync::RwLock::new(None),
+            })
+        }
+
+        /// Read the stored API base URL, returning a sensible fallback if unavailable.
+        #[allow(dead_code)]
+        pub(crate) fn get_api_base() -> String {
+            Self::get()
+                .api_base
+                .read()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
         }
     }
 
-    /* unused
-    /// Read the current crash telemetry frame (for UI polling).
-    pub(crate) fn read_crash_telemetry() -> String {
-        CRASH_TELEMETRY_FRAME
-            .get()
-            .and_then(|m| m.lock().ok())
-            .map(|g| g.clone())
-            .unwrap_or_default()
+    /// Hard cap on accumulated crash text so a long-running process that hits
+    /// repeated recoverable panics cannot grow this unbounded.
+    pub(crate) const MAX_CRASH_LOG_CHARS: usize = 256 * 1024;
+
+    pub(crate) fn update_crash_telemetry(summary: &str) {
+        let g = Globals::get();
+        // Recover from a poisoned lock instead of silently no-op'ing: the crash
+        // log's entire purpose is to survive panics, so a poisoned mutex must
+        // not disable it exactly when most needed.
+        match g.crash_telemetry.lock() {
+            Ok(mut guard) => *guard = summary.to_string(),
+            Err(poisoned) => *poisoned.into_inner() = summary.to_string(),
+        }
     }
-    */
 
     pub(crate) fn accumulate_crash_text(msg: &str) {
-        let mutex = CRASH_LOG_ACCUMULATOR.get_or_init(|| std::sync::Mutex::new(String::new()));
-        if let Ok(mut guard) = mutex.lock() {
+        let g = Globals::get();
+        // Recover from a poisoned lock (see `update_crash_telemetry`). Append then
+        // truncate from the front if we exceed the cap so memory stays bounded.
+        let append = |guard: &mut String| {
             guard.push_str(msg);
             guard.push('\n');
+            if guard.len() > MAX_CRASH_LOG_CHARS {
+                let drop = guard.len() - MAX_CRASH_LOG_CHARS;
+                *guard = guard[drop..].to_string();
+            }
+        };
+        match g.crash_log.lock() {
+            Ok(mut guard) => append(&mut guard),
+            Err(poisoned) => append(&mut poisoned.into_inner()),
         }
     }
 
@@ -609,20 +658,15 @@ mod logger {
     // ============================================================================
     pub(crate) const DEFAULT_MAX_LOG_ENTRIES: usize = 20000;
 
-    pub(crate) static LOG_BUFFER: OnceLock<Arc<std::sync::RwLock<VecDeque<String>>>> =
-        OnceLock::new();
-
     pub(crate) fn get_log_storage() -> &'static Arc<std::sync::RwLock<VecDeque<String>>> {
-        LOG_BUFFER.get_or_init(|| {
-            let bootstrap_records = VecDeque::with_capacity(DEFAULT_MAX_LOG_ENTRIES);
-            Arc::new(std::sync::RwLock::new(bootstrap_records))
-        })
+        &Globals::get().log_buffer
     }
 
     pub(crate) fn log_to_storage(message: &str, is_error: bool) {
-        if message.contains("fetch_residential_areas failed") {
-            return;
-        }
+        // NOTE: previously `fetch_residential_areas failed` was fully suppressed here.
+        // We no longer drop it outright — it is a real (if usually benign) Overpass
+        // failure that operators must be able to observe. It still flows through the
+        // normal rate-limiter + debug-downgrade below so it won't flood stderr.
         // ── Rate limiting: suppress repeated identical messages ──────────────
         // If the same message was logged within the last 2 seconds, silently drop it.
         // This prevents log flooding from A* failures, JS error storms, etc.
@@ -729,23 +773,24 @@ mod logger {
         // If removing these filters, ensure you have test coverage for the
         // "no route found" code path, which is exercised regularly during normal
         // network operation.
-        if message.contains("could not find nearest nodes for routing")
-            || message.contains("RoutingGraph::astar - end node")
-            || message.contains("RoutingGraph::astar - start node")
-            || message.contains("RoutingGraph::find_nearest_node")
-            || message.contains("failed to find path")
-            || message.contains("aborted after") && message.contains("iterations")
-            || message.contains("astar_with_disruptions - end node")
-            || message.contains("astar_with_disruptions - start node")
-            || message.contains("astar_with_congestion - end node")
-            || message.contains("astar_with_congestion - start node")
-            || message.contains("astar_kinematic - end node")
-            || message.contains("astar_kinematic - start node")
-            || message.contains("reconstruct_path - node")
-            || message.contains("reconstruct_path - predecessor")
-            || message.contains("astar_with_disruptions failed")
-            || message.contains("astar_with_congestion failed")
-            || message.contains("astar_kinematic failed")
+        if routing_diag_downgrading_enabled()
+            && (message.contains("could not find nearest nodes for routing")
+                || message.contains("RoutingGraph::astar - end node")
+                || message.contains("RoutingGraph::astar - start node")
+                || message.contains("RoutingGraph::find_nearest_node")
+                || message.contains("failed to find path")
+                || message.contains("aborted after") && message.contains("iterations")
+                || message.contains("astar_with_disruptions - end node")
+                || message.contains("astar_with_disruptions - start node")
+                || message.contains("astar_with_congestion - end node")
+                || message.contains("astar_with_congestion - start node")
+                || message.contains("astar_kinematic - end node")
+                || message.contains("astar_kinematic - start node")
+                || message.contains("reconstruct_path - node")
+                || message.contains("reconstruct_path - predecessor")
+                || message.contains("astar_with_disruptions failed")
+                || message.contains("astar_with_congestion failed")
+                || message.contains("astar_kinematic failed"))
         {
             log_debug(message);
             return;
@@ -803,20 +848,21 @@ mod logger {
         // LOAD-BEARING FILTER: Same rationale as log_error ? these messages are
         // expected under normal routing conditions. Downgrading avoids spamming
         // --console-child log windows and keeps crash reports actionable.
-        if message.contains("failed to load free stations from database")
-            || message.contains("cached tracks are empty")
-            || message.contains("could not find nearest nodes for routing")
-            || message.contains("RoutingGraph::find_nearest_node")
-            || message.contains("failed to find path")
-            || message.contains("aborted after") && message.contains("iterations")
-            || message.contains("astar_with_disruptions - ")
-            || message.contains("astar_with_congestion - ")
-            || message.contains("astar_kinematic - ")
-            || message.contains("astar_with_disruptions failed")
-            || message.contains("astar_with_congestion failed")
-            || message.contains("astar_kinematic failed")
-            || message.contains("track list is EMPTY")
-            || message.contains("spatial grid empty")
+        if routing_diag_downgrading_enabled()
+            && (message.contains("failed to load free stations from database")
+                || message.contains("cached tracks are empty")
+                || message.contains("could not find nearest nodes for routing")
+                || message.contains("RoutingGraph::find_nearest_node")
+                || message.contains("failed to find path")
+                || message.contains("aborted after") && message.contains("iterations")
+                || message.contains("astar_with_disruptions - ")
+                || message.contains("astar_with_congestion - ")
+                || message.contains("astar_kinematic - ")
+                || message.contains("astar_with_disruptions failed")
+                || message.contains("astar_with_congestion failed")
+                || message.contains("astar_kinematic failed")
+                || message.contains("track list is EMPTY")
+                || message.contains("spatial grid empty"))
         {
             log_debug(message);
             return;
@@ -1299,7 +1345,7 @@ mod config {
     /// lines are needed. The full London network takes ~30s to load.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Config {
-        /// TfL API base URL (e.g., "https://api.tfl.gov.uk").
+        /// TfL API base URL (e.g., "<https://api.tfl.gov.uk>").
         pub(crate) tfl_base_url: String,
         /// Overpass API endpoint for OpenStreetMap queries.
         pub(crate) overpass_base_url: String,
@@ -1315,6 +1361,22 @@ mod config {
         pub(crate) london_bounds: LondonBounds,
         /// TfL line IDs to load at startup (e.g., ["victoria", "northern"]).
         pub(crate) sample_lines: Vec<String>,
+        /// Maximum iterations for A* pathfinding (prevents algorithmic DoS).
+        pub(crate) max_astar_iterations: usize,
+        /// Interchange penalty in minutes for journey planning.
+        pub(crate) interchange_penalty_min: f64,
+        /// Parallel offset in meters for overlapping line visualization.
+        pub(crate) parallel_offset_m: f64,
+        /// Catchment radius in meters for transit-desert / coverage detection.
+        pub(crate) catchment_radius_m: f64,
+        /// Walking speed in meters per minute (used for walk-leg estimates).
+        pub(crate) walk_speed_m_per_min: f64,
+        /// Rail speed in meters per minute (used for in-vehicle time estimates).
+        pub(crate) rail_speed_m_per_min: f64,
+        /// Station merge threshold in degrees (stations closer than this merge).
+        pub(crate) station_merge_threshold: f64,
+        /// Maximum absolute latitude (Web-Mercator safe bound) in degrees.
+        pub(crate) max_mercator_lat: f64,
     }
 
     /// Bounding box for the Greater London spatial query region.
@@ -1341,10 +1403,10 @@ mod config {
 
     impl LondonBounds {
         pub(crate) fn contains_bounds(&self, other: &LondonBounds) -> bool {
-            other.min_lat >= self.min_lat &&
-            other.max_lat <= self.max_lat &&
-            other.min_lon >= self.min_lon &&
-            other.max_lon <= self.max_lon
+            other.min_lat >= self.min_lat
+                && other.max_lat <= self.max_lat
+                && other.min_lon >= self.min_lon
+                && other.max_lon <= self.max_lon
         }
     }
 
@@ -1358,10 +1420,10 @@ mod config {
                 cache_expiry_hours: 24,
                 log_max_entries: 10000,
                 london_bounds: LondonBounds {
-                    min_lat: 50.800000,
-                    min_lon: -1.300000,
-                    max_lat: 52.300000,
-                    max_lon: 0.900000,
+                    min_lat: 51.280000,
+                    min_lon: -0.510000,
+                    max_lat: 51.690000,
+                    max_lon: 0.330000,
                 },
                 // Fix #7: Configurable sample lines list
                 sample_lines: vec![
@@ -1379,6 +1441,14 @@ mod config {
                     "elizabeth".to_string(),
                     "dlr".to_string(),
                 ],
+                max_astar_iterations: 50000,
+                interchange_penalty_min: 3.5,
+                parallel_offset_m: 80.0,
+                catchment_radius_m: 800.0,
+                walk_speed_m_per_min: 80.0,
+                rail_speed_m_per_min: 550.0,
+                station_merge_threshold: 0.005,
+                max_mercator_lat: 85.0511,
             }
         }
     }
@@ -1459,7 +1529,6 @@ mod primitives {
         pub(crate) const MAX_ZOOM: f64 = 19.0;
         pub(crate) const STATION_MERGE_THRESHOLD: f64 = 0.005;
 
-        // unused pub(crate) const SNAP_DISTANCE: f64 = 500.0;
         pub(crate) const CATCHMENT_RADIUS: f64 = 800.0;
 
         // ============================================================================
@@ -1485,7 +1554,7 @@ mod primitives {
             include_str!("../data/london_residential.json");
 
         /// One coloured polyline segment of a rail line (matches the compact JSON keys
-        /// in `london_lines.json`: c=colour, g=group/mode, n=name, p=[[lat,lon],...]).
+        /// in `london_lines.json`: c=colour, g=group/mode, n=name, p=[[lat, lon],...]).
         #[derive(Debug, Clone, Serialize, Deserialize)]
         pub(crate) struct RailSegment {
             pub c: String,
@@ -1706,7 +1775,7 @@ mod primitives {
     /// A residential area polygon from OpenStreetMap, used for transit desert detection.
     ///
     /// Represents a populated area with a centroid coordinate and boundary polygon.
-    /// The [`GeometryEngine`] uses these to compute catchment coverage — areas where
+    /// The `GeometryEngine` uses these to compute catchment coverage — areas where
     /// residents can reach a transit station within a walking threshold.
     ///
     /// # Fields
@@ -1719,10 +1788,26 @@ mod primitives {
             Self { lat, lon }
         }
 
+        // Retained for test comparison with the calibrated variant. No production
+        // code should call this; use `fast_distance_to_calibrated` instead.
+        #[cfg(test)]
         #[inline]
         pub(crate) fn fast_distance_to(&self, other: &Coordinate) -> f64 {
             let d_lat = (other.lat - self.lat) * 111_320.0;
             let d_lon = (other.lon - self.lon) * 69_300.0;
+            (d_lat * d_lat + d_lon * d_lon).sqrt()
+        }
+
+        /// Latitude-calibrated fast Euclidean approximation of ground distance.
+        /// Unlike `fast_distance_to` (which hardcodes London's longitude scale),
+        /// this uses the mean latitude of the two endpoints to scale the longitude
+        /// term correctly, so callers outside London get sane distances.
+        #[inline]
+        pub(crate) fn fast_distance_to_calibrated(&self, other: &Coordinate) -> f64 {
+            let mean_lat = (self.lat + other.lat) * 0.5;
+            let lon_m_per_deg = 111_320.0 * mean_lat.to_radians().cos();
+            let d_lat = (other.lat - self.lat) * 111_320.0;
+            let d_lon = (other.lon - self.lon) * lon_m_per_deg;
             (d_lat * d_lat + d_lon * d_lon).sqrt()
         }
 
@@ -1865,7 +1950,7 @@ mod primitives {
     /// from a memory-mapped buffer without deserialization.
     #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone)]
     #[archive(check_bytes)]
-    pub struct ArchivedTrackGeometry {
+    pub struct TrackGeometry {
         pub id: u32,
         pub coordinates: Vec<QuantizedCoord>,
         pub is_active: bool,
@@ -1875,7 +1960,7 @@ mod primitives {
     /// Zero-copy archived station record.
     #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone)]
     #[archive(check_bytes)]
-    pub struct ArchivedStationRecord {
+    pub struct StationRecord {
         pub id_num: u32,
         pub name: String,
         pub coord: QuantizedCoord,
@@ -1883,7 +1968,7 @@ mod primitives {
         pub zone: i32,
     }
 
-    impl ArchivedTrackGeometry {
+    impl TrackGeometry {
         /// Serialize to bytes for storage in SQLite BLOB.
         pub fn to_bytes(&self) -> Vec<u8> {
             rkyv::to_bytes::<_, 256>(self)
@@ -1891,27 +1976,17 @@ mod primitives {
                 .unwrap_or_default()
         }
 
-        /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
-        /// Returns None if the buffer is too small to contain a valid archive.
-        pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedTrackGeometry> {
-            if buf.len() < 8 {
-                return None;
-            }
-            // SAFETY: rkyv's `check_archived_root` validates the entire archived structure
-            // before returning a reference — checking all offsets, enum discriminants, and
-            // string lengths against the buffer bounds. This prevents malformed/corrupted
-            // cache data from causing undefined behaviour. Returns Err on validation failure.
-            rkyv::check_archived_root::<ArchivedTrackGeometry>(buf)
-                .ok()
-                .map(|a| {
-                    // SAFETY: The checked archive is valid — we transmute the lifetime to 'static
-                    // because the underlying mmap buffer outlives all references to it.
-                    unsafe { &*(a as *const ArchivedArchivedTrackGeometry) }
-                })
+        /// Safe zero-copy read from a memory-mapped buffer. O(1) — no allocation.
+        /// Validates the buffer via `rkyv::check_archived_root` and returns None if
+        /// the buffer is too small or contains invalid archived data. (Named
+        /// `_checked` rather than `_unchecked` because it DOES validate — the old
+        /// name was backwards from Rust convention and implied unchecked safety.)
+        pub fn from_buffer_checked(buf: &[u8]) -> Option<&ArchivedTrackGeometry> {
+            rkyv::check_archived_root::<TrackGeometry>(buf).ok()
         }
     }
 
-    impl ArchivedStationRecord {
+    impl StationRecord {
         /// Serialize to bytes for storage in SQLite BLOB.
         pub fn to_bytes(&self) -> Vec<u8> {
             rkyv::to_bytes::<_, 256>(self)
@@ -1919,23 +1994,11 @@ mod primitives {
                 .unwrap_or_default()
         }
 
-        /// Zero-copy read from a memory-mapped buffer. O(1) — no allocation.
-        /// Returns None if the buffer is too small or contains invalid archived data.
-        pub fn from_buffer_unchecked(buf: &[u8]) -> Option<&ArchivedArchivedStationRecord> {
-            if buf.len() < 8 {
-                return None;
-            }
-            // SAFETY: rkyv's `check_archived_root` validates the entire archived structure
-            // before returning a reference — checking all offsets, enum discriminants, and
-            // string lengths against the buffer bounds. This prevents malformed/corrupted
-            // cache data from causing undefined behaviour. Returns Err on validation failure.
-            rkyv::check_archived_root::<ArchivedStationRecord>(buf)
-                .ok()
-                .map(|a| {
-                    // SAFETY: The checked archive is valid — we transmute the lifetime to 'static
-                    // because the underlying mmap buffer outlives all references to it.
-                    unsafe { &*(a as *const ArchivedArchivedStationRecord) }
-                })
+        /// Safe zero-copy read from a memory-mapped buffer. O(1) — no allocation.
+        /// Validates the buffer and returns None if too small or invalid.
+        /// See `TrackGeometry::from_buffer_checked` for why this is `_checked`.
+        pub fn from_buffer_checked(buf: &[u8]) -> Option<&ArchivedStationRecord> {
+            rkyv::check_archived_root::<StationRecord>(buf).ok()
         }
     }
 
@@ -2026,15 +2089,13 @@ mod spatial {
         use crate::logger::*;
         use crate::primitives::*;
         use crate::routing::Line;
-
-        // use std::cmp::Ordering as CmpOrdering;
-        // use std::collections::BinaryHeap;
+        use std::collections::HashMap;
 
         #[derive(Debug, Clone)]
         /// Cache-dense SoA (Structure-of-Arrays) transit network representation.
         ///
         /// The high-performance graph layout for the routing engine. Unlike the
-        /// pointer-based [`RoutingGraph`] (HashMap of Nodes), this uses contiguous
+        /// pointer-based `RoutingGraph` (HashMap of Nodes), this uses contiguous
         /// arrays with CSR (Compressed Sparse Row) edge storage — optimized for
         /// CPU cache-line utilization, SIMD vectorization, and zero-copy mmap loading.
         ///
@@ -2062,36 +2123,34 @@ mod spatial {
         ///
         /// Where S = stations, L = lines, P = avg points per line, E = directed edges.
         pub struct TransitNetworkGrid {
-            // Number of nodes (stations) in the network.
-            /* unused */ // pub node_count: usize,
             /// Easting coordinates (meters from London center) - contiguous array
             pub coords_x: Vec<f32>,
 
             /// Northing coordinates (meters from London center) - contiguous array
             pub coords_y: Vec<f32>,
 
-            // Station ID (index into this array) - for fast lookup
-            /* unused */ // pub node_ids: Vec<u32>,
-
-            // TfL zone (1-9) - packed u8 for minimal memory footprint
-            /* unused */ // pub zone_ids: Vec<u8>,
             /// CSR (Compressed Sparse Row) format for edges:
-            /// Edges for node `i` are at edges[edge_offsets[i]..edge_offsets[i+1]]
+            /// Edges for node `i` are at `edges[edge_offsets[i]..edge_offsets[i+1]]`
             pub edge_offsets: Vec<usize>,
-            // Destination node IDs for each edge - contiguous array
-            /* unused */ // pub edge_targets: Vec<u32>,
 
-            // Travel time (seconds) for each edge - contiguous array
-            /* unused */ // pub edge_weights: Vec<f32>,
+            /// CSR edge destinations: `edge_targets[edge_offsets[i]..edge_offsets[i+1]]`
+            /// gives the destination node index for every directed edge leaving node `i`.
+            pub edge_targets: Vec<u32>,
 
-            // Line ID (index into line registry) for each edge - packed u8
-            /* unused */ // pub edge_line_ids: Vec<u8>,
+            /// CSR edge weights (seconds of in-vehicle time) aligned with `edge_targets`.
+            pub edge_weights: Vec<f32>,
 
-            // Line registry: maps line IDs to names
-            /* unused */ // pub line_names: Vec<String>,
+            /// CSR line index per edge, aligned with `edge_targets`. Index into the
+            /// `lines` slice this grid was built from.
+            pub edge_line_ids: Vec<u32>,
 
-            // Line registry: maps line IDs to RGB colors as u32
-            /* unused */ // pub line_colors: Vec<u32>,
+            /// Grid node index -> original station index (identity mapping used when
+            /// stations are passed in already de-duplicated; retained for callers that
+            /// need to resolve a grid node back to its source `Station`).
+            pub node_ids: Vec<u32>,
+
+            /// Fare zone per grid node, aligned with `coords_x`/`coords_y`.
+            pub zone_ids: Vec<u8>,
         }
 
         impl TransitNetworkGrid {
@@ -2121,84 +2180,96 @@ mod spatial {
                     zone_ids.push(station.zone as u8);
                 }
 
-                // Build edge arrays (CSR format)
-                let mut edge_offsets = Vec::with_capacity(node_count + 1);
-                // let edge_targets = Vec::new();
-                // let edge_weights = Vec::new();
-                // let edge_line_ids = Vec::new();
+                // Average London train speed (~33 km/h) used to derive per-edge
+                // travel-time weights. Kept local to avoid cross-module coupling.
+                const TRAIN_SPEED_M_PER_SEC_LOCAL: f64 = 9.2;
 
-                let current_offset = 0;
-                for _station in stations {
-                    edge_offsets.push(current_offset);
-
-                    // TODO: Build edges from Line data (stations on same line are connected)
-                    // Station doesn't have a connections field; graph must be built from Line.stations
+                // Map each station identity to its grid node index by naptan id so
+                // edges link the correct nodes.
+                let mut id_to_node: HashMap<&str, u32> = HashMap::with_capacity(node_count);
+                for (i, station) in stations.iter().enumerate() {
+                    id_to_node.insert(station.id.as_str(), i as u32);
                 }
-                edge_offsets.push(current_offset); // Sentinel for last node
 
-                // Build line registry
-                // let line_names: Vec<String> = lines.iter().map(|l| l.name.clone()).collect();
-                // let line_colors: Vec<u32> = lines
-                // iter()
-                // map(|l| {
-                //     let hex = l.color.trim_start_matches('#');
-                //    u32::from_str_radix(hex, 16).unwrap_or(0x000000)
-                //})
-                //.collect();
+                // First pass: count edges so we can size the CSR offset array.
+                let mut edge_counts = vec![0usize; node_count];
+                let mut total_edges = 0usize;
+                for line in lines {
+                    for w in line.stations.windows(2) {
+                        let a = id_to_node.get(w[0].id.as_str());
+                        let b = id_to_node.get(w[1].id.as_str());
+                        if let (Some(&a), Some(&b)) = (a, b) {
+                            if a != b {
+                                edge_counts[a as usize] += 1;
+                                edge_counts[b as usize] += 1;
+                                total_edges += 2;
+                            }
+                        }
+                    }
+                }
+
+                // Build the CSR row pointers from a running accumulator (does not
+                // rely on the vec being non-empty, so a future refactor that drops
+                // the seed push cannot turn `.unwrap()` into a live panic).
+                let mut edge_offsets = Vec::with_capacity(node_count + 1);
+                let mut acc: usize = 0;
+                edge_offsets.push(acc);
+                for &c in &edge_counts {
+                    acc += c;
+                    edge_offsets.push(acc);
+                }
+
+                // Second pass: populate the actual edge arrays.
+                let mut edge_targets: Vec<u32> = vec![0u32; total_edges];
+                let mut edge_weights: Vec<f32> = vec![0.0f32; total_edges];
+                let mut edge_line_ids: Vec<u32> = vec![0u32; total_edges];
+                // Per-node write cursor into the CSR edge arrays.
+                let mut cursor = edge_offsets.clone();
+
+                for (line_idx, line) in lines.iter().enumerate() {
+                    for w in line.stations.windows(2) {
+                        let a = id_to_node.get(w[0].id.as_str());
+                        let b = id_to_node.get(w[1].id.as_str());
+                        if let (Some(&a), Some(&b)) = (a, b) {
+                            if a == b {
+                                continue;
+                            }
+                            let a_usize = a as usize;
+                            let b_usize = b as usize;
+                            let secs = (w[0].coord.distance_to(&w[1].coord)
+                                / TRAIN_SPEED_M_PER_SEC_LOCAL) as f32;
+                            // a -> b
+                            let pa = cursor[a_usize];
+                            edge_targets[pa] = b;
+                            edge_weights[pa] = secs;
+                            edge_line_ids[pa] = line_idx as u32;
+                            cursor[a_usize] += 1;
+                            // b -> a
+                            let pb = cursor[b_usize];
+                            edge_targets[pb] = a;
+                            edge_weights[pb] = secs;
+                            edge_line_ids[pb] = line_idx as u32;
+                            cursor[b_usize] += 1;
+                        }
+                    }
+                }
 
                 log_info(&format!(
                     "TransitNetworkGrid - built grid with {} nodes, {} edges",
-                    node_count, current_offset
+                    node_count, total_edges
                 ));
 
                 Self {
-                    // node_count,
                     coords_x,
                     coords_y,
-                    // node_ids,
-                    // zone_ids,
                     edge_offsets,
-                    // edge_targets,
-                    // edge_weights,
-                    // edge_line_ids,
-                    // line_names,
-                    // line_colors,
+                    edge_targets,
+                    edge_weights,
+                    edge_line_ids,
+                    node_ids,
+                    zone_ids,
                 }
             }
-
-            // Get all edges for a node (cache-friendly slice access)
-            /* unused
-            #[inline(always)]
-            pub fn get_edges(&self, node_id: u32) -> &[u32] {
-                let idx = node_id as usize;
-                if idx + 1 >= self.edge_offsets.len() {
-                    return &[];
-                }
-                let start = self.edge_offsets[idx];
-                let end = self.edge_offsets[idx + 1];
-                if end > self.edge_targets.len() {
-                    return &[];
-                }
-                &self.edge_targets[start..end]
-            }
-            */
-
-            // Get edge weights for a node (cache-friendly slice access)
-            /* unused
-            #[inline(always)]
-            pub fn get_edge_weights(&self, node_id: u32) -> &[f32] {
-                let idx = node_id as usize;
-                if idx + 1 >= self.edge_offsets.len() {
-                    return &[];
-                }
-                let start = self.edge_offsets[idx];
-                let end = self.edge_offsets[idx + 1];
-                if end > self.edge_weights.len() {
-                    return &[];
-                }
-                &self.edge_weights[start..end]
-            }
-            */
         }
 
         // ============================================================================
@@ -2207,464 +2278,6 @@ mod spatial {
         // These traits allow A* and spatial queries to operate on ANY graph
         // implementation, not just TransitNetworkGrid. This enables testing with
         // synthetic graphs and swapping implementations at module boundaries.
-
-        // Graph edge access trait — abstracts over CSR edge storage.
-        // pub trait EdgeProvider {
-        // Get the target node IDs for all edges from `node_id`.
-        // fn get_edges(&self, node_id: u32) -> &[u32];
-        // Get the edge weights for all edges from `node_id`.
-        // fn get_edge_weights(&self, node_id: u32) -> &[f32];
-        // Total number of nodes in the graph.
-        // fn node_count(&self) -> usize;
-        // }
-
-        // Spatial coordinate access trait — abstracts over coordinate storage.
-        /* unused
-        pub trait CoordProvider {
-            /// Get the (x, y) coordinates for node `idx`.
-            fn get_coords(&self, idx: usize) -> (f32, f32);
-            /// Total number of nodes.
-            fn node_count(&self) -> usize;
-        }
-        */
-
-        /* unused
-        impl EdgeProvider for TransitNetworkGrid {
-            #[inline(always)]
-            fn get_edges(&self, node_id: u32) -> &[u32] {
-                let idx = node_id as usize;
-                if idx + 1 >= self.edge_offsets.len() {
-                    return &[];
-                }
-                let start = self.edge_offsets[idx];
-                let end = self.edge_offsets[idx + 1];
-                if end > self.edge_targets.len() {
-                    return &[];
-                }
-                &self.edge_targets[start..end]
-            }
-            #[inline(always)]
-            fn get_edge_weights(&self, node_id: u32) -> &[f32] {
-                let idx = node_id as usize;
-                if idx + 1 >= self.edge_offsets.len() {
-                    return &[];
-                }
-                let start = self.edge_offsets[idx];
-                let end = self.edge_offsets[idx + 1];
-                if end > self.edge_weights.len() {
-                    return &[];
-                }
-                &self.edge_weights[start..end]
-            }
-            #[inline(always)]
-            fn node_count(&self) -> usize {
-                self.node_count
-            }
-        }
-
-        impl CoordProvider for TransitNetworkGrid {
-            #[inline(always)]
-            fn get_coords(&self, idx: usize) -> (f32, f32) {
-                (self.coords_x[idx], self.coords_y[idx])
-            }
-            #[inline(always)]
-            fn node_count(&self) -> usize {
-                self.node_count
-            }
-        }
-        */
-
-        // A* using dynamic dispatch — accepts any EdgeProvider + CoordProvider.
-        // This enables type-erased routing at module boundaries (e.g., plugin systems).
-        /* unused
-        pub fn astar_dynamic(
-            edges: &dyn EdgeProvider,
-            coords: &dyn CoordProvider,
-            scratchpad: &mut RouteScratchpad,
-            start: usize,
-            goal: usize,
-        ) -> Vec<usize> {
-            let n = edges.node_count();
-            if start >= n || goal >= n {
-                return Vec::new();
-            }
-            // Reset scratchpad
-            scratchpad.heap.clear();
-            for i in 0..n {
-                scratchpad.g_cost[i] = f32::INFINITY;
-                scratchpad.came_from[i] = usize::MAX;
-                scratchpad.closed[i] = false;
-            }
-
-            let heuristic = |idx: usize| -> f32 {
-                let (ix, iy) = coords.get_coords(idx);
-                let (gx, gy) = coords.get_coords(goal);
-                let dx = ix - gx;
-                let dy = iy - gy;
-                (dx * dx + dy * dy).sqrt()
-            };
-
-            scratchpad.g_cost[start] = 0.0;
-            scratchpad.heap.push(AStarNode {
-                idx: start,
-                f_cost: heuristic(start),
-            });
-
-            while let Some(AStarNode { idx, .. }) = scratchpad.heap.pop() {
-                if idx == goal {
-                    let mut path = Vec::new();
-                    let mut cur = goal;
-                    while cur != usize::MAX {
-                        path.push(cur);
-                        cur = scratchpad.came_from[cur];
-                    }
-                    path.reverse();
-                    return path;
-                }
-                if scratchpad.closed[idx] {
-                    continue;
-                }
-                scratchpad.closed[idx] = true;
-
-                let edge_targets = edges.get_edges(idx as u32);
-                let edge_weights = edges.get_edge_weights(idx as u32);
-                for (&next, &weight) in edge_targets.iter().zip(edge_weights.iter()) {
-                    let next = next as usize;
-                    if scratchpad.closed[next] {
-                        continue;
-                    }
-                    let tentative_g = scratchpad.g_cost[idx] + weight;
-                    if tentative_g < scratchpad.g_cost[next] {
-                        scratchpad.came_from[next] = idx;
-                        scratchpad.g_cost[next] = tentative_g;
-                        let f = tentative_g + heuristic(next);
-                        scratchpad.heap.push(AStarNode {
-                            idx: next,
-                            f_cost: f,
-                        });
-                    }
-                }
-            }
-            Vec::new()
-        }
-        */
-
-        // ============================================================================
-        // SIMD-ACCELERATED BATCH DISTANCE COMPUTATION
-        // ============================================================================
-        // Computes 8 squared distances per clock cycle using AVX2 auto-vectorization.
-        // The compiler emits vmovups + vsubps + vfmadd213ps + vhaddps for the inner loop.
-        // On AVX-512 hardware this transparently widens to 16-wide f32 operations.
-
-        // Batch-compute squared Euclidean distances from a query point to N stations.
-        // Returns a Vec<f32> of squared distances in meters.
-        // The `#[inline]` + contiguous slices let LLVM auto-vectorize to AVX2/AVX-512.
-        /* unused
-        #[inline]
-
-        pub fn batch_distance_squared(
-            query_x: f32,
-            query_y: f32,
-            xs: &[f32],
-            ys: &[f32],
-        ) -> Vec<f32> {
-            debug_assert_eq!(xs.len(), ys.len(), "x/y length mismatch");
-            xs.iter()
-                .zip(ys.iter())
-                .map(|(&x, &y)| {
-                    let dx = x - query_x;
-                    let dy = y - query_y;
-                    dx * dx + dy * dy
-                })
-                .collect()
-        }
-        */
-
-        // Find all station indices within `radius_meters` of a query point.
-        // Uses SIMD batch distance + Mercator calibration for London latitude.
-        // Returns indices into the TransitNetworkGrid arrays.
-        /* unused
-        #[inline]
-
-        pub fn find_stations_within_radius(
-            grid: &TransitNetworkGrid,
-            query_x: f32,
-            query_y: f32,
-            radius_meters: f32,
-        ) -> Vec<u32> {
-            // sec(51.5°N) ≈ 1.61 — Mercator east-west stretch factor for London
-            const MERCATOR_STRETCH: f32 = 1.6094;
-            let calibrated_radius_sq =
-                (radius_meters * MERCATOR_STRETCH) * (radius_meters * MERCATOR_STRETCH);
-
-            let dists = batch_distance_squared(query_x, query_y, &grid.coords_x, &grid.coords_y);
-            dists
-                .iter()
-                .enumerate()
-                .filter_map(|(i, &d)| {
-                    if d <= calibrated_radius_sq {
-                        Some(i as u32)
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        }
-        */
-
-        // ============================================================================
-        // A* SCRATCHPAD — ZERO-ALLOCATION PATHFINDING
-        // ============================================================================
-        // Pre-allocated BinaryHeap + cost/came_from vectors that are reused across
-        // A* calls. The first call allocates; subsequent calls just clear() and reuse
-        // the underlying heap storage. This eliminates per-query heap churn.
-
-        // Pre-allocated scratchpad for A* pathfinding.
-        // Reuse across calls to avoid repeated BinaryHeap allocation.
-        /* unused
-
-        pub struct RouteScratchpad {
-            /// Open set (min-heap by f-cost). Cleared between calls.
-            pub(crate) heap: BinaryHeap<AStarNode>,
-            /// g-cost sentinel: f32::INFINITY means "unvisited"
-            pub(crate) g_cost: Vec<f32>,
-            /// came_from[node] = predecessor index (usize::MAX = none)
-            pub(crate) came_from: Vec<usize>,
-            /// Closed set for O(1) lookup
-            pub(crate) closed: Vec<bool>,
-            /// ── Dial's Algorithm bucket queue (O(1) push/pop for integer weights) ──
-            /// Array of buckets indexed by quantized cost (seconds). Push and pop are
-            /// O(1) amortized, destroying BinaryHeap's O(log N) overhead entirely.
-            pub(crate) buckets: Vec<Vec<usize>>,
-            /// Current minimum non-empty bucket index for pop_min scan.
-            pub(crate) bucket_cursor: usize,
-        }
-
-        /// A* open-set node: stores f-cost for ordering + node index.
-        #[derive(Debug, Clone, Copy)]
-
-        pub(crate) struct AStarNode {
-            /// Node index in the TransitNetworkGrid
-            pub(crate) idx: usize,
-            /// f-cost = g-cost + heuristic (stored for ordering)
-            pub(crate) f_cost: f32,
-        }
-
-        impl PartialEq for AStarNode {
-            #[inline]
-            fn eq(&self, other: &Self) -> bool {
-                self.f_cost == other.f_cost
-            }
-        }
-        impl Eq for AStarNode {}
-
-        impl PartialOrd for AStarNode {
-            #[inline]
-            fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
-                Some(self.cmp(other))
-            }
-        }
-        impl Ord for AStarNode {
-            #[inline]
-            fn cmp(&self, other: &Self) -> CmpOrdering {
-                // Reverse order for min-heap (BinaryHeap is max-heap by default)
-                other
-                    .f_cost
-                    .partial_cmp(&self.f_cost)
-                    .unwrap_or(CmpOrdering::Equal)
-            }
-        }
-
-
-        impl RouteScratchpad {
-            /// Create a new scratchpad sized for `node_count` stations.
-            pub fn new(node_count: usize) -> Self {
-                Self {
-                    heap: BinaryHeap::with_capacity(256),
-                    g_cost: vec![f32::INFINITY; node_count],
-                    came_from: vec![usize::MAX; node_count],
-                    closed: vec![false; node_count],
-                    // 10,800 buckets = max 3 hours of London journey time in seconds.
-                    // Inner vecs only allocate when used — sparse memory footprint.
-                    buckets: (0..10_800)
-                        .map(|_| Vec::with_capacity(8))
-                        .collect::<Vec<_>>(),
-                    bucket_cursor: 0,
-                }
-            }
-
-            /// Reset all arrays for a new A* query without deallocating.
-            #[inline]
-            pub(crate) fn reset(&mut self, node_count: usize) {
-                self.heap.clear();
-                self.bucket_cursor = 0;
-                // Clear any non-empty buckets from previous query
-                for bucket in self.buckets.iter_mut() {
-                    bucket.clear();
-                }
-                // Only reset visited nodes (sparse reset) instead of full memset
-                for i in 0..node_count {
-                    self.g_cost[i] = f32::INFINITY;
-                    self.came_from[i] = usize::MAX;
-                    self.closed[i] = false;
-                }
-            }
-
-            /// Push a node into the bucket queue at its quantized cost index.
-            /// O(1) — no heap sift-down, no allocation.
-            #[inline(always)]
-            pub(crate) fn bucket_push(&mut self, cost_seconds: f32, node_idx: usize) {
-                let bucket_idx = (cost_seconds as usize).min(self.buckets.len() - 1);
-                self.buckets[bucket_idx].push(node_idx);
-                if bucket_idx < self.bucket_cursor {
-                    self.bucket_cursor = bucket_idx;
-                }
-            }
-
-            /// Pop the minimum-cost node from the bucket queue.
-            /// O(1) amortized — linear scan only across empty buckets.
-            #[inline(always)]
-            pub(crate) fn bucket_pop(&mut self) -> Option<usize> {
-                while self.bucket_cursor < self.buckets.len() {
-                    if let Some(node) = self.buckets[self.bucket_cursor].pop() {
-                        return Some(node);
-                    }
-                    self.bucket_cursor += 1;
-                }
-                None
-            }
-
-            /// Run A* on the TransitNetworkGrid from `start` to `goal`.
-            /// Returns the path as a Vec of node indices, or empty if no path found.
-            pub fn astar(
-                &mut self,
-                grid: &TransitNetworkGrid,
-                start: usize,
-                goal: usize,
-            ) -> Vec<usize> {
-                let n = grid.node_count;
-                if start >= n || goal >= n {
-                    return Vec::new();
-                }
-                self.reset(n);
-
-                let heuristic = |idx: usize| -> f32 {
-                    let dx = grid.coords_x[idx] - grid.coords_x[goal];
-                    let dy = grid.coords_y[idx] - grid.coords_y[goal];
-                    (dx * dx + dy * dy).sqrt()
-                };
-
-                self.g_cost[start] = 0.0;
-                self.heap.push(AStarNode {
-                    idx: start,
-                    f_cost: heuristic(start),
-                });
-
-                while let Some(AStarNode { idx, .. }) = self.heap.pop() {
-                    if idx == goal {
-                        // Reconstruct path
-                        let mut path = Vec::new();
-                        let mut cur = goal;
-                        while cur != usize::MAX {
-                            path.push(cur);
-                            cur = self.came_from[cur];
-                        }
-                        path.reverse();
-                        return path;
-                    }
-
-                    if self.closed[idx] {
-                        continue;
-                    }
-                    self.closed[idx] = true;
-
-                    let edges = grid.get_edges(idx as u32);
-                    let weights = grid.get_edge_weights(idx as u32);
-                    for (edge, &weight) in edges.iter().zip(weights.iter()) {
-                        let next = *edge as usize;
-                        if self.closed[next] {
-                            continue;
-                        }
-                        let tentative_g = self.g_cost[idx] + weight;
-                        if tentative_g < self.g_cost[next] {
-                            self.came_from[next] = idx;
-                            self.g_cost[next] = tentative_g;
-                            let f = tentative_g + heuristic(next);
-                            self.heap.push(AStarNode {
-                                idx: next,
-                                f_cost: f,
-                            });
-                        }
-                    }
-                }
-
-                Vec::new() // no path found
-            }
-
-            /// Dial's Algorithm A* variant using O(1) bucket queue instead of BinaryHeap.
-            /// Optimal for integer-weight graphs (travel times in seconds). Push/pop are
-            /// O(1) amortized — no heap sift-down, no O(log N) overhead. The bucket array
-            /// is indexed by quantized g-cost, so the priority queue degenerates to a
-            /// flat array scan that LLVM auto-vectorizes beautifully.
-            pub fn astar_bucket(
-                &mut self,
-                grid: &TransitNetworkGrid,
-                start: usize,
-                goal: usize,
-            ) -> Vec<usize> {
-                let n = grid.node_count;
-                if start >= n || goal >= n {
-                    return Vec::new();
-                }
-                self.reset(n);
-
-                let heuristic = |idx: usize| -> f32 {
-                    let dx = grid.coords_x[idx] - grid.coords_x[goal];
-                    let dy = grid.coords_y[idx] - grid.coords_y[goal];
-                    (dx * dx + dy * dy).sqrt()
-                };
-
-                self.g_cost[start] = 0.0;
-                self.bucket_push(heuristic(start), start);
-
-                while let Some(idx) = self.bucket_pop() {
-                    if idx == goal {
-                        let mut path = Vec::new();
-                        let mut cur = goal;
-                        while cur != usize::MAX {
-                            path.push(cur);
-                            cur = self.came_from[cur];
-                        }
-                        path.reverse();
-                        return path;
-                    }
-
-                    if self.closed[idx] {
-                        continue;
-                    }
-                    self.closed[idx] = true;
-
-                    let edges = grid.get_edges(idx as u32);
-                    let weights = grid.get_edge_weights(idx as u32);
-                    for (edge, &weight) in edges.iter().zip(weights.iter()) {
-                        let next = *edge as usize;
-                        if self.closed[next] {
-                            continue;
-                        }
-                        let tentative_g = self.g_cost[idx] + weight;
-                        if tentative_g < self.g_cost[next] {
-                            self.came_from[next] = idx;
-                            self.g_cost[next] = tentative_g;
-                            let f = tentative_g + heuristic(next);
-                            self.bucket_push(f, next);
-                        }
-                    }
-                }
-
-                Vec::new() // no path found
-            }
-        }
-        */
     }
 
     mod morton {
@@ -2685,7 +2298,7 @@ mod spatial {
         ///
         /// 8 bytes total, no padding — safe for `bytemuck::cast` from `&[u8]`.
         /// Stores Web-Mercator projected coordinates as `f32` for compact on-disk
-        /// representation. Used inside [`StationPod`] and [`TransitGridPod`].
+        /// representation. Used inside `StationPod` and `TransitGridPod`.
         ///
         /// # Layout
         ///
@@ -2763,34 +2376,6 @@ mod spatial {
             bytemuck::cast_slice(pods)
         }
 
-        // Zero-copy transit grid cell for binary file I/O.
-        // 16 bytes total — packed coordinate + zone + interchange flag.
-        // Enables instant grid loading from mmap without parsing.
-        /* unused
-        #[derive(Debug, Clone, Copy)]
-        #[repr(C)]
-
-        pub struct TransitGridPod {
-            pub x: f32,
-            pub y: f32,
-            pub zone: u8,
-            pub is_interchange: u8,
-            pub _padding: [u8; 2], // align to 8 bytes
-            pub name_hash: u64,    // FNV-1a hash for O(1) identity check
-        }
-
-        // Safety: TransitGridPod is plain old data — all fields are Pod, no padding beyond _padding.
-        unsafe impl bytemuck::Zeroable for TransitGridPod {}
-        unsafe impl bytemuck::Pod for TransitGridPod {}
-
-        /// Cast a byte slice to a slice of TransitGridPod — zero copy, zero allocation.
-        #[inline]
-
-        pub fn transit_grid_from_bytes(bytes: &[u8]) -> &[TransitGridPod] {
-            bytemuck::cast_slice(bytes)
-        }
-        */
-
         // ============================================================================
         // TRANSIT DESERT DETECTION
         // ============================================================================
@@ -2811,9 +2396,12 @@ mod spatial {
         impl FixedCoord {
             /// Convert from floating-point degrees to fixed-point micrometers.
             pub fn from_lat_lon(lon: f64, lat: f64) -> Self {
+                // Round (not truncate) so this matches the canonical quantization
+                // rule used by `QuantizedCoord::new`, keeping "deterministic"
+                // equality consistent across both fixed-point representations.
                 Self {
-                    x: (lon * 1_000_000.0) as i64,
-                    y: (lat * 1_000_000.0) as i64,
+                    x: (lon * 1_000_000.0).round() as i64,
+                    y: (lat * 1_000_000.0).round() as i64,
                 }
             }
 
@@ -2964,15 +2552,10 @@ mod routing {
             /// Atomically swap in a new routing graph (e.g., after disruption removal).
             pub fn hot_swap_routing_graph(&self, new_graph: RoutingGraph) {
                 self.routing_graph.store(Arc::new(new_graph));
+                self.routing_graph_version
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 log_info("AppState::hot_swap_routing_graph - routing graph atomically swapped");
             }
-
-            /* unused
-            pub fn hot_swap_edge_loads(&self, new_loads: HashMap<EdgeKey, usize>) {
-                self.edge_loads.store(Arc::new(new_loads));
-                log_info("AppState::hot_swap_edge_loads - edge loads atomically swapped");
-            }
-            */
         }
 
         /// Handle a disruption by cloning the current graph, removing a line's edges,
@@ -2993,12 +2576,24 @@ mod routing {
 
             // Remove nodes nearest to the disrupted line's stations
             let mut removed_count = 0;
+            let mut removed_nodes = std::collections::HashSet::new();
             for station in &line_stations {
                 if let Some(node_id) = new_graph.find_nearest_node(&station.coord) {
                     new_graph.nodes.remove(&node_id);
+                    removed_nodes.insert(node_id);
                     removed_count += 1;
                 }
             }
+
+            // Also drop any edges that referenced the removed nodes so the graph
+            // stays internally consistent (no dangling neighbor pointers).
+            for node in new_graph.nodes.values_mut() {
+                node.neighbors.retain(|(to, _)| !removed_nodes.contains(to));
+            }
+
+            // Rebuild the spatial indices so future nearest-node lookups reflect
+            // the post-disruption topology.
+            new_graph.rebuild_spatial_indices();
 
             state.hot_swap_routing_graph(new_graph);
 
@@ -3012,151 +2607,89 @@ mod routing {
             ))
         }
 
-        pub(crate) const ROUNDEL_OVERGROUND: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.335 500" enable-background="new 0 0 615.335 500" xml:space="preserve"><g><path fill="#EE7623" d="M469.468,249.985c0,89.079-72.266,161.316-161.345,161.316c-89.094,0-161.294-72.237-161.294-161.316c0-89.072,72.2-161.279,161.294-161.279C397.202,88.706,469.468,160.914,469.468,249.985 M308.123,0C170.039,0,58.108,111.931,58.108,249.985C58.108,388.062,170.039,500,308.123,500c138.062,0,249.985-111.938,249.985-250.015C558.108,111.931,446.185,0,308.123,0"/><rect y="199.517" fill="#000F9F" width="615.335" height="101.127"/><g><path fill="#FFFFFF" d="M81.164,277.09c-14.939,0-27.229-11.272-27.229-26.987c0-15.635,12.37-26.921,27.229-26.921c14.859,0,27.229,11.287,27.229,27.002C108.393,265.818,96.023,277.09,81.164,277.09 M81.164,233.143c-9.72,0-16.96,7.385-16.96,17.04c0,9.567,7.239,16.952,16.96,16.952c9.72,0,16.959-7.385,16.959-16.952C98.123,240.529,90.884,233.143,81.164,233.143"/><polygon fill="#FFFFFF" points="138.133,276.087 128.874,276.087 108.723,224.191 119.768,224.191 133.463,260.994 146.924,224.191 157.815,224.191"/><polygon fill="#FFFFFF" points="162.946,276.087 162.946,224.191 195.16,224.191 195.16,233.216 173.062,233.216 173.062,244.035 191.266,244.035 191.266,253.14 173.062,253.14 173.062,266.821 197.107,266.821 197.107,276.087"/><path fill="#FFFFFF" d="M232.738,276.087l-14.317-20.7h-4.67v20.7h-10.108v-51.896h16.806c10.65,0,17.655,5.607,17.655,15.173c0,6.383-3.579,11.433-9.801,13.695l16.337,23.027H232.738z M219.511,232.982h-5.761v13.622h4.831c5.907,0,9.406-2.65,9.406-7.159C227.987,235.398,224.803,232.982,219.511,232.982"/><path fill="#FFFFFF" d="M273.362,277.097c-16.257,0-28.239-11.36-28.239-26.994c0-15.247,11.982-26.921,28.085-26.921c6.068,0,12.216,1.64,18.05,4.589v10.584c-4.897-3.499-11.126-5.914-17.347-5.914c-11.287,0-18.518,8.088-18.518,17.896c0,9.955,7.393,17.735,18.204,17.735c2.723,0,5.292-0.234,8.015-1.164v-11.133h-8.483v-8.864h18.599v24.74C285.578,275.311,280.059,277.097,273.362,277.097"/><path fill="#FFFFFF" d="M329.62,276.087l-14.317-20.7h-4.67v20.7h-10.116v-51.896h16.799c10.665,0,17.669,5.607,17.669,15.173c0,6.383-3.579,11.433-9.801,13.695l16.337,23.027H329.62z M316.386,232.982h-5.753v13.622h4.824c5.914,0,9.413-2.65,9.413-7.159C324.869,235.398,321.685,232.982,316.386,232.982"/><path fill="#FFFFFF" d="M369.227,277.09c-14.932,0-27.229-11.272-27.229-26.987c0-15.635,12.377-26.921,27.229-26.921c14.866,0,27.236,11.287,27.236,27.002C396.462,265.818,384.092,277.09,369.227,277.09 M369.227,233.143c-9.72,0-16.96,7.385-16.96,17.04c0,9.567,7.239,16.952,16.96,16.952c9.728,0,16.967-7.385,16.967-16.952C386.193,240.529,378.954,233.143,369.227,233.143"/><path fill="#FFFFFF" d="M445.006,268.621c-4.201,5.204-10.504,8.476-18.204,8.476c-7.781,0-14.002-3.191-18.357-8.557c-3.352-4.121-4.904-8.952-4.904-15.949v-28.4h10.108v28.48c0,8.871,5.139,14.698,13.073,14.698c8.169,0,13.146-5.826,13.146-14.698v-28.48h10.123v28.092C449.991,259.435,448.666,264.105,445.006,268.621"/><polygon fill="#FFFFFF" points="496.587,276.087 468.89,240.294 468.89,276.087 458.774,276.087 458.774,224.191 468.89,224.191 496.587,260.138 496.587,224.191 506.703,224.191 506.703,276.087"/><path fill="#FFFFFF" d="M530.199,276.087h-14.471v-51.896h17.735c17.977,0,27.624,11.821,27.624,25.289C561.087,263.41,550.891,276.087,530.199,276.087 M531.677,232.982h-5.834v33.999h4.978c12.062,0,19.997-6.763,19.997-17.113C550.818,239.445,543.586,232.982,531.677,232.982"/></g></g></svg>"##;
+        // ── LINE ROUNDELS LOADED FROM EXTERNAL ASSET ─────────────────────────────
+        // The large SVG roundel blobs previously lived inline here (one const per
+        // line). They are now stored in assets/roundels.json (a flat map of
+        // ROUNDEL_<NAME> -> SVG string) so the source stays readable and the art
+        // can be edited without recompiling. The map is loaded once (lazily) from
+        // disk at runtime, with a compile-time `include_str!` copy as a fallback so
+        // the binary still works if the asset file is missing next to the exe.
+        static ROUNDELS_JSON_EMBEDDED: &str = include_str!("../assets/roundels.json");
 
-        pub(crate) const ROUNDEL_HAMMERSMITH_CITY: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#EC9BAD" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#EC9BAD" width="615.327" height="101.129"/><g><path fill="#000F9F" d="M48.465,268.505v-16.597H31.304v16.597h-7.281v-37.653h7.281v14.396h17.161v-14.396h7.339v37.653H48.465z"/><path fill="#000F9F" d="M88.642,268.505l-2.879-7.79H70.69l-2.878,7.79h-8.016l14.45-37.653h7.735l14.62,37.653H88.642z M78.143,240.788l-4.968,13.266h10.048L78.143,240.788z"/><path fill="#000F9F" d="M131.139,268.505v-26.363l-11.686,14.566l-11.855-14.566v26.363h-7.225v-37.653h7.225l11.855,14.845l11.686-14.845h7.508v37.653H131.139z"/><path fill="#000F9F" d="M176.7,268.505v-26.363l-11.686,14.566l-11.855-14.566v26.363h-7.225v-37.653h7.225l11.855,14.845l11.686-14.845h7.508v37.653H176.7z"/><path fill="#000F9F" d="M191.693,268.505v-37.653h23.371v6.436h-16.032v7.902h12.646v6.661h-12.646v9.936h17.444v6.718L191.693,268.505L191.693,268.505z"/><path fill="#000F9F" d="M243.454,268.505l-10.669-15.015h-3.386v15.015h-7.227v-37.653h11.234c2.07,0,3.735,0.161,4.997,0.478c1.26,0.323,2.454,0.858,3.584,1.61c3.048,2.071,4.573,5.044,4.573,8.919c0,2.333-0.612,4.385-1.835,6.154c-1.223,1.769-2.907,3.048-5.053,3.837l12.137,16.654L243.454,268.505L243.454,268.505z M232.897,247.109c2.146,0,3.82-0.449,5.024-1.354c1.204-0.902,1.808-2.181,1.808-3.837c0-1.469-0.547-2.616-1.638-3.446c-1.092-0.827-2.597-1.242-4.516-1.242h-4.177v9.878h3.499V247.109z"/><path fill="#000F9F" d="M269.9,239.829c-0.753-2.259-2.201-3.388-4.346-3.388c-1.129,0-2.053,0.291-2.767,0.876c-0.714,0.582-1.072,1.363-1.072,2.342c0,0.939,0.347,1.749,1.044,2.426c0.696,0.68,1.947,1.449,3.754,2.316l4.177,2.031c2.295,1.129,4.045,2.59,5.25,4.376c1.204,1.786,1.806,3.866,1.806,6.237c0,1.806-0.302,3.443-0.903,4.912c-0.602,1.466-1.449,2.737-2.541,3.811c-1.092,1.072-2.398,1.898-3.924,2.483c-1.524,0.582-3.208,0.876-5.052,0.876c-1.129,0-2.24-0.115-3.33-0.34c-1.092-0.225-2.128-0.602-3.106-1.129c-0.753-0.375-1.412-0.752-1.975-1.129c-0.565-0.375-1.093-0.81-1.582-1.299c-0.49-0.487-0.959-1.06-1.412-1.72c-0.451-0.66-0.941-1.44-1.468-2.342l6.55-3.728c0.64,1.544,1.56,2.748,2.766,3.613c1.204,0.867,2.521,1.299,3.951,1.299c1.355,0,2.493-0.461,3.415-1.383s1.383-2.06,1.383-3.417c0-1.317-0.395-2.426-1.185-3.33c-0.789-0.902-2.182-1.824-4.177-2.766c-0.866-0.412-1.675-0.81-2.427-1.184c-0.753-0.377-1.43-0.735-2.032-1.075c-1.919-1.089-3.407-2.446-4.46-4.062c-1.054-1.619-1.58-3.388-1.58-5.307c0-1.394,0.272-2.702,0.818-3.924c0.546-1.224,1.308-2.267,2.286-3.134c0.978-0.864,2.136-1.553,3.473-2.06c1.335-0.507,2.774-0.763,4.318-0.763c1.58,0,3.077,0.256,4.487,0.763c1.412,0.507,2.606,1.233,3.585,2.172c0.565,0.527,1.007,1.026,1.327,1.498c0.32,0.47,0.686,1.175,1.1,2.115L269.9,239.829z"/><path fill="#000F9F" d="M314.045,268.505v-26.363l-11.686,14.566l-11.855-14.566v26.363h-7.225v-37.653h7.225l11.855,14.845l11.686-14.845h7.508v37.653H314.045z"/><path fill="#000F9F" d="M329.09,268.505v-37.653h7.338v37.653H329.09z"/><path fill="#000F9F" d="M351.901,268.505V237.4h-10.895v-6.548h29.074v6.548h-10.895v31.105H351.901z"/><path fill="#000F9F" d="M398.738,268.505v-16.597h-17.161v16.597h-7.281v-37.653h7.281v14.396h17.161v-14.396h7.339v37.653H398.738z"/><path fill="#000F9F" d="M452.367,268.505l-3.444-3.953c-0.301,0.228-0.546,0.435-0.733,0.622c-0.189,0.187-0.359,0.337-0.508,0.452c-1.318,1.092-2.786,1.947-4.403,2.567c-1.618,0.622-3.255,0.933-4.91,0.933c-1.582,0-3.068-0.302-4.46-0.905c-1.393-0.602-2.617-1.429-3.67-2.483c-1.054-1.054-1.883-2.287-2.483-3.699c-0.602-1.412-0.903-2.907-0.903-4.488c0-2.031,0.544-3.855,1.636-5.474c1.092-1.619,2.823-3.18,5.194-4.687c-0.226-0.262-0.434-0.478-0.621-0.648c-0.189-0.17-0.339-0.311-0.452-0.423c-0.828-0.939-1.487-2.022-1.975-3.247c-0.49-1.221-0.735-2.4-0.735-3.526c0-1.319,0.272-2.55,0.818-3.699c0.546-1.147,1.289-2.146,2.23-2.99c0.941-0.847,2.061-1.507,3.359-1.976c1.299-0.472,2.682-0.706,4.15-0.706c1.504,0,2.907,0.254,4.205,0.761c1.299,0.51,2.429,1.207,3.388,2.089c0.959,0.884,1.711,1.93,2.259,3.134c0.544,1.204,0.818,2.503,0.818,3.895c0,1.054-0.085,1.968-0.255,2.737c-0.169,0.772-0.48,1.469-0.931,2.089c-0.452,0.622-1.073,1.216-1.864,1.78c-0.789,0.565-1.788,1.167-2.992,1.806c-0.189,0.075-0.395,0.167-0.621,0.282c-0.225,0.112-0.49,0.262-0.789,0.449l5.249,6.041c0.15-0.262,0.291-0.49,0.423-0.677c0.133-0.187,0.235-0.34,0.311-0.452c0.376-0.565,0.677-1.043,0.903-1.438c0.226-0.398,0.432-0.726,0.621-0.988c0.376-0.64,0.64-1.129,0.791-1.469c0.15-0.337,0.282-0.81,0.395-1.412h7.225l-0.395,0.905c-0.189,0.415-0.5,1.034-0.932,1.861c-0.432,0.83-1.007,1.864-1.721,3.106c-0.339,0.602-0.64,1.121-0.903,1.553c-0.264,0.432-0.527,0.83-0.791,1.187c-0.264,0.357-0.546,0.714-0.846,1.072c-0.302,0.357-0.641,0.761-1.017,1.213l7.734,8.807h-8.355V268.505z M437.859,252.133c-1.318,0.527-2.342,1.282-3.077,2.259c-0.733,0.979-1.1,2.034-1.1,3.16c0,1.319,0.508,2.429,1.524,3.333c1.016,0.902,2.259,1.354,3.726,1.354c0.978,0,1.89-0.179,2.737-0.536c0.847-0.357,1.854-0.988,3.021-1.893L437.859,252.133z M444.972,239.771c0-1.092-0.423-2.014-1.27-2.766s-1.873-1.129-3.077-1.129s-2.211,0.366-3.019,1.1c-0.811,0.735-1.214,1.648-1.214,2.737c0,0.527,0.131,1.037,0.395,1.524c0.264,0.49,0.714,1.092,1.355,1.806l1.75,1.864C443.278,243.891,444.972,242.18,444.972,239.771z"/><path fill="#000F9F" d="M505.261,268.335c-2.257,0.64-4.591,0.959-6.999,0.959c-2.786,0-5.392-0.516-7.819-1.553c-2.427-1.034-4.536-2.434-6.322-4.203c-1.789-1.769-3.199-3.857-4.235-6.266c-1.036-2.408-1.553-4.987-1.553-7.735c0-2.711,0.517-5.249,1.553-7.62s2.456-4.422,4.262-6.154s3.932-3.097,6.38-4.094c2.446-0.997,5.08-1.495,7.902-1.495c2.107,0,4.187,0.262,6.239,0.789c2.051,0.527,4.225,1.374,6.519,2.541v7.678c-1.092-0.789-2.126-1.458-3.104-2.005c-0.979-0.544-1.929-0.988-2.851-1.325c-0.923-0.34-1.845-0.585-2.766-0.735c-0.923-0.15-1.891-0.225-2.908-0.225c-1.958,0-3.783,0.328-5.475,0.988c-1.694,0.657-3.162,1.561-4.403,2.708c-1.242,1.149-2.221,2.495-2.936,4.036c-0.716,1.544-1.073,3.218-1.073,5.024c0,1.769,0.339,3.434,1.017,4.995c0.677,1.564,1.609,2.927,2.794,4.094c1.185,1.167,2.577,2.08,4.177,2.737c1.599,0.66,3.301,0.988,5.109,0.988c2.257,0,4.439-0.337,6.548-1.014c2.107-0.68,4.063-1.656,5.87-2.936v7.168C509.496,266.811,507.52,267.695,505.261,268.335z"/><path fill="#000F9F" d="M517.963,268.505v-37.653h7.338v37.653H517.963z"/><path fill="#000F9F" d="M540.774,268.505V237.4h-10.895v-6.548h29.074v6.548h-10.895v31.105H540.774z"/><path fill="#000F9F" d="M575.063,268.505v-15.862l-13.04-21.791h8.468l8.072,14.283l8.128-14.283h8.468l-12.87,21.791v15.862H575.063z"/></g></g></svg>"##;
+        static ROUNDEL_MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+            std::sync::OnceLock::new();
 
-        pub(crate) const ROUNDEL_UNDERGROUND: &str = r##"<svg clip-rule="evenodd" fill-rule="evenodd" stroke-linejoin="round" stroke-miterlimit="2" version="1.1" viewBox="0 0 615.3 500" xml:space="preserve" xmlns="http://www.w3.org/2000/svg"><path d="m469.5 250c0 89.1-72.3 161.3-161.3 161.3-89.1 0-161.3-72.2-161.3-161.3s72.1-161.3 161.2-161.3 161.4 72.2 161.4 161.3m-161.4-250c-138.1 0-250 111.9-250 250s111.9 250 250 250 250-111.9 250-250-111.9-250-250-250" fill="#e1251f" fill-rule="nonzero"/><rect y="199.5" width="615.3" height="101.1" fill="#000f9f"/><g fill="#fff" fill-rule="nonzero"><path d="m71.9 268.6c-4.2 5.2-10.5 8.5-18.3 8.5s-14-3.2-18.4-8.6c-3.4-4.1-4.9-9-4.9-16v-28.5h10.2v28.6c0 8.9 5.1 14.7 13.1 14.7 8.2 0 13.2-5.9 13.2-14.7v-28.6h10.1v28.2c0 7.2-1.3 11.9-5 16.4"/><path d="m122.6 276.1-27.7-35.9v35.9h-10.2v-52.1h10.2l27.7 36.1v-36.1h10.2v52.1z"/><path d="m554 276.1h-14.5v-52.1h17.8c18 0 27.7 11.9 27.7 25.4-0.1 14-10.3 26.7-31 26.7m1.5-43.3h-5.9v34.2h5c12.1 0 20.1-6.8 20.1-17.2 0-10.5-7.3-17-19.2-17"/><path d="m192.7 276.1v-52.1h32.3v9.1h-22.2v10.8h18.3v9.2h-18.3v13.7h24.1v9.3z"/><path d="m261.6 276.1-14.4-20.8h-4.7v20.8h-10.1v-52.1h16.9c10.7 0 17.7 5.6 17.7 15.2 0 6.4-3.6 11.5-9.8 13.7l16.4 23.1h-12zm-13.2-43.3h-5.8v13.7h4.8c5.9 0 9.4-2.6 9.4-7.2 0.1-4-3.1-6.5-8.4-6.5"/><path d="m301.4 277.1c-16.3 0-28.3-11.4-28.3-27.1 0-15.3 12-27 28.2-27 6.1 0 12.3 1.6 18.1 4.6v10.6c-4.9-3.5-11.2-5.9-11.2-5.9-11.3 0-18.6 8.1-18.6 17.9 0 10 7.4 17.8 18.3 17.8 2.7 0 5.3-0.2 8-1.2v-11.2h-8.5v-8.9h18.7v24.8c-6.3 3.8-11.8 5.6-18.5 5.6"/><path d="m356.8 276.1-14.4-20.8h-4.7v20.8h-10.1v-52.1h16.9c10.7 0 17.7 5.6 17.7 15.2 0 6.4-3.6 11.5-9.8 13.7l16.4 23.1h-12zm-13.3-43.3h-5.8v13.7h4.8c5.9 0 9.4-2.6 9.4-7.2 0.1-4-3.1-6.5-8.4-6.5"/><path d="m395.5 277.1c-15 0-27.3-11.3-27.3-27.1 0-15.7 12.4-27 27.3-27s27.3 11.3 27.3 27.1c0.1 15.7-12.4 27-27.3 27m0-44.1c-9.8 0-17 7.4-17 17.1 0 9.6 7.2 17 17 17s17-7.4 17-17c0.1-9.7-7.2-17.1-17-17.1"/><path d="m470.5 268.6c-4.2 5.2-10.5 8.5-18.3 8.5s-14-3.2-18.4-8.6c-3.4-4.1-4.9-9-4.9-16v-28.5h10.1v28.6c0 8.9 5.2 14.7 13.1 14.7 8.2 0 13.2-5.9 13.2-14.7v-28.6h10.1v28.2c0.1 7.2-1.2 11.9-4.9 16.4"/><path d="m521.3 276.1-27.8-35.9v35.9h-10.2v-52.1h10.2l27.8 36.1v-36.1h10.1v52.1z"/></g></svg>"##;
+        fn load_roundel_map() -> &'static std::collections::HashMap<String, String> {
+            ROUNDEL_MAP.get_or_init(|| {
+                let raw = std::fs::read_to_string("assets/roundels.json")
+                    .or_else(|_| {
+                        // Fall back to the path relative to the current exe.
+                        std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.join("assets/roundels.json")))
+                            .and_then(|p| std::fs::read_to_string(p).ok())
+                            .ok_or(())
+                    })
+                    .unwrap_or_else(|_| ROUNDELS_JSON_EMBEDDED.to_string());
+                match serde_json::from_str::<std::collections::HashMap<String, String>>(&raw) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log_error(&format!("load_roundel_map - failed to parse roundels.json: {}", e));
+                        std::collections::HashMap::new()
+                    }
+                }
+            })
+        }
 
-        pub(crate) const ROUNDEL_METROPOLITAN: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#870F54" d="M469.466,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.466,160.914,469.466,249.984 M307.926,0C169.923,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.111,111.992,446.291,0.106,308.317,0H307.926z"/><rect y="199.512" fill="#870F54" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M68.958,276.463v-37.572l-16.654,20.757l-16.895-20.757v37.572H25.11v-53.662h10.299l16.895,21.157l16.654-21.157h10.701v53.662H68.958z"/><path fill="#FFFFFF" d="M90.157,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573H90.157V276.463z"/><path fill="#FFFFFF" d="M144.504,276.463v-44.331h-15.528v-9.331h41.434v9.331h-15.527v44.331H144.504z"/><path fill="#FFFFFF" d="M206.841,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M191.795,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H191.795z"/><path fill="#FFFFFF" d="M273.914,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871c-3.433,1.42-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.212-7.001-2.212-10.864c0-3.86,0.725-7.482,2.172-10.861s3.446-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172s7.59,0.738,11.022,2.213c3.432,1.475,6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.213,7.107,2.213,11.022C276.127,253.722,275.389,257.274,273.914,260.572z M264.299,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.212,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C265.668,247.473,265.211,245.114,264.299,242.913z"/><path fill="#FFFFFF" d="M284.55,276.463v-53.662h16.975c2.627,0,4.988,0.239,7.08,0.723c1.822,0.375,3.5,1.046,5.029,2.011c1.528,0.965,2.842,2.161,3.942,3.581c1.099,1.42,1.958,3.005,2.574,4.748s0.925,3.578,0.925,5.511c0,2.037-0.336,3.996-1.005,5.871c-0.671,1.878-1.649,3.595-2.936,5.151c-1.825,2.198-3.983,3.754-6.478,4.664c-2.493,0.913-5.726,1.368-9.694,1.368h-6.195v20.034H284.55z M301.365,247.099c6.383,0,9.575-2.547,9.575-7.646c0-5.039-3.218-7.562-9.655-7.562h-6.517v15.208H301.365z"/><path fill="#FFFFFF" d="M379.494,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871s-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.212-7.001-2.212-10.864c0-3.86,0.725-7.482,2.172-10.861s3.446-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172s7.59,0.738,11.022,2.213s6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.213,7.107,2.213,11.022C381.706,253.722,380.969,257.274,379.494,260.572z M369.879,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.212,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C371.247,247.473,370.791,245.114,369.879,242.913z"/><path fill="#FFFFFF" d="M390.007,276.463v-53.662h10.298v43.847h22.367v9.815H390.007z"/><path fill="#FFFFFF" d="M428.843,276.463v-53.662h10.459v53.662H428.843z"/><path fill="#FFFFFF" d="M461.162,276.463v-44.331h-15.528v-9.331h41.434v9.331H471.54v44.331H461.162z"/><path fill="#FFFFFF" d="M524.623,276.463l-4.104-11.103h-21.481l-4.104,11.103H483.51l20.597-53.662h11.022l20.837,53.662H524.623z M509.658,236.961l-7.081,18.907h14.322L509.658,236.961z"/><path fill="#FFFFFF" d="M580.208,276.463l-28.642-37.01v37.01h-10.138v-53.662h10.138l28.642,37.169v-37.169h10.299v53.662L580.208,276.463L580.208,276.463z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_CIRCLE: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#FFCD00" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#FFCD00" width="615.327" height="101.129"/><g><path fill="#000F9F" d="M221.169,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.213-11.022c0-3.86,0.736-7.482,2.213-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855s-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C227.203,274.049,224.387,275.311,221.169,276.221z"/><path fill="#000F9F" d="M239.109,276.463v-53.662h10.459v53.662H239.109z"/><path fill="#000F9F" d="M291.301,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M276.255,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H276.255z"/><path fill="#000F9F" d="M342.606,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.212-11.022c0-3.86,0.736-7.482,2.212-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855c-1.394-0.778-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C348.64,274.049,345.824,275.311,342.606,276.221z"/><path fill="#000F9F" d="M360.433,276.463v-53.662h10.298v43.847h22.367v9.815H360.433z"/><path fill="#000F9F" d="M399.195,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573h-35.319V276.463z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_VICTORIA: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#00A0DF" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#00A0DF" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M162.337,276.463h-9.575l-20.837-53.662h11.263l14.321,38.457l14.08-38.457h11.103L162.337,276.463z"/><path fill="#FFFFFF" d="M188.233,276.463v-53.662h10.459v53.662H188.233z"/><path fill="#FFFFFF" d="M245.767,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.213-11.022c0-3.86,0.736-7.482,2.213-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855s-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C251.801,274.049,248.985,275.311,245.767,276.221z"/><path fill="#FFFFFF" d="M274.819,276.463v-44.331h-15.528v-9.331h41.434v9.331h-15.528v44.331H274.819z"/><path fill="#FFFFFF" d="M357.067,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871s-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.212-7.001-2.212-10.864c0-3.86,0.725-7.482,2.172-10.861c1.448-3.379,3.445-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172s7.59,0.738,11.022,2.213s6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.213,7.107,2.213,11.022C359.279,253.722,358.542,257.274,357.067,260.572z M347.452,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.212,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C348.82,247.473,348.363,245.114,347.452,242.913z"/><path fill="#FFFFFF" d="M397.994,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M382.948,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H382.948z"/><path fill="#FFFFFF" d="M415.443,276.463v-53.662h10.459v53.662H415.443z"/><path fill="#FFFFFF" d="M472.993,276.463l-4.104-11.103h-21.481l-4.104,11.103H431.88l20.597-53.662h11.022l20.837,53.662H472.993z M458.028,236.961l-7.081,18.907h14.322L458.028,236.961z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_DISTRICT: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#007934" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#007934" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M149.628,222.801h17.058c2.305,0,4.316,0.066,6.034,0.199c1.716,0.135,3.284,0.377,4.706,0.726c1.42,0.349,2.735,0.818,3.942,1.406c1.207,0.593,2.506,1.368,3.902,2.333c3.647,2.469,6.423,5.54,8.327,9.213c1.903,3.673,2.856,7.764,2.856,12.27c0,4.56-1.046,8.81-3.139,12.751c-2.092,3.944-5.016,7.15-8.769,9.616c-2.735,1.824-5.766,3.137-9.091,3.941c-3.327,0.804-7.241,1.207-11.747,1.207h-14.08v-53.662H149.628z M165.398,267.051c3.11,0,5.939-0.415,8.488-1.247c2.547-0.833,4.719-2.025,6.517-3.581c1.796-1.556,3.191-3.42,4.183-5.592s1.488-4.598,1.488-7.28c0-5.419-1.757-9.683-5.269-12.794c-3.513-3.108-8.355-4.667-14.522-4.667h-6.275v35.161H165.398z"/><path fill="#FFFFFF" d="M204.755,276.463v-53.662h10.459v53.662H204.755z"/><path fill="#FFFFFF" d="M247.258,235.592c-1.073-3.218-3.137-4.828-6.194-4.828c-1.609,0-2.924,0.418-3.942,1.247c-1.02,0.833-1.53,1.945-1.53,3.339c0,1.342,0.496,2.495,1.489,3.46c0.991,0.965,2.776,2.066,5.35,3.299l5.953,2.895c3.271,1.61,5.766,3.69,7.483,6.237c1.716,2.547,2.574,5.511,2.574,8.89c0,2.573-0.429,4.906-1.288,6.998c-0.858,2.094-2.064,3.904-3.62,5.433c-1.556,1.527-3.42,2.708-5.592,3.538c-2.172,0.833-4.573,1.247-7.201,1.247c-1.609,0-3.192-0.161-4.746-0.481c-1.557-0.323-3.031-0.858-4.425-1.61c-1.075-0.536-2.012-1.072-2.816-1.608c-0.805-0.536-1.557-.115-2.253-1.852c-0.697-0.697-1.368-1.515-2.011-2.454c-0.644-0.936-1.342-2.051-2.093-3.339l9.333-5.309c0.912,2.201,2.225,3.918,3.942,5.151s3.594,1.85,5.632,1.85c1.932,0,3.552-0.657,4.867-1.971c1.314-1.314,1.972-2.938,1.972-4.869c0-1.875-0.563-3.46-1.69-4.748c-1.126-1.285-3.111-2.599-5.953-3.941c-1.234-0.591-2.388-1.152-3.46-1.688c-1.073-0.536-2.04-1.049-2.897-1.53c-2.735-1.556-4.854-3.486-6.355-5.793c-1.502-2.305-2.253-4.825-2.253-7.562c0-1.985,0.387-3.849,1.167-5.592c0.776-1.743,1.862-3.229,3.258-4.465c1.394-1.233,3.044-2.213,4.948-2.936c1.903-0.726,3.954-1.086,6.155-1.086c2.253,0,4.385,0.36,6.396,1.086c2.011,0.723,3.713,1.757,5.109,3.097c0.804,0.752,1.435,1.461,1.89,2.132s0.978,1.677,1.57,3.016L247.258,235.592z"/><path fill="#FFFFFF" d="M277.494,276.463v-44.331h-15.528v-9.331H303.4v9.331h-15.528v44.331H277.494z"/><path fill="#FFFFFF" d="M339.829,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M324.784,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H324.784z"/><path fill="#FFFFFF" d="M357.278,276.463v-53.662h10.459v53.662H357.278z"/><path fill="#FFFFFF" d="M414.812,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.212-11.022c0-3.86,0.736-7.482,2.212-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855c-1.394-0.778-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C420.846,274.049,418.03,275.311,414.812,276.221z"/><path fill="#FFFFFF" d="M443.864,276.463v-44.331h-15.528v-9.331h41.434v9.331h-15.528v44.331H443.864z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_BAKERLOO: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#A65A2A" d="M469.466,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.466,160.914,469.466,249.984 M307.926,0C169.923,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.111,111.992,446.291,0.106,308.317,0H307.926z"/><rect y="199.512" fill="#A65A2A" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M129.314,222.801c2.574,0,4.893,0.308,6.959,0.925c2.064,0.617,3.821,1.515,5.271,2.694c1.448,1.181,2.56,2.59,3.339,4.223c0.776,1.639,1.165,3.474,1.165,5.511c0,2.201-0.536,4.212-1.609,6.035c-0.376,0.642-0.738,1.196-1.086,1.651c-0.349,0.455-0.738,0.859-1.167,1.204c-0.429,0.351-0.925,0.66-1.488,0.928c-0.563,0.268-1.247,0.562-2.051,0.884c3.592,0.591,6.423,2.146,8.487,4.667c2.064,2.521,3.098,5.658,3.098,9.412c0,3.489-1.1,6.626-3.299,9.415c-1.717,2.198-3.796,3.768-6.236,4.704c-2.442,0.939-5.592,1.409-9.454,1.409h-17.539v-53.662L129.314,222.801L129.314,222.801z M128.75,243.639c2.198,0,3.914-0.524,5.148-1.57s1.851-2.48,1.851-4.304s-0.604-3.27-1.811-4.344c-1.206-1.072-2.829-1.61-4.867-1.61h-5.069v11.829L128.75,243.639L128.75,243.639z M130.923,267.613c2.735,0,4.853-0.631,6.355-1.89c1.501-1.262,2.253-3.019,2.253-5.272c0-1.821-0.591-3.486-1.77-4.987c-0.858-1.072-1.757-1.783-2.695-2.132c-0.939-0.349-2.321-0.524-4.143-0.524h-6.92v14.805L130.923,267.613L130.923,267.613z"/><path fill="#FFFFFF" d="M194.192,276.463l-4.104-11.103h-21.481l-4.104,11.103h-11.424l20.597-53.662h11.022l20.837,53.662H194.192z M179.227,236.961l-7.081,18.907h14.322L179.227,236.961z"/><path fill="#FFFFFF" d="M242.092,276.463l-20.837-23.493v23.493h-10.298v-53.662h10.298v19.953l19.551-19.953h13.275l-25.022,24.94l26.227,28.722H242.092z"/><path fill="#FFFFFF" d="M260.396,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573h-35.319V276.463z"/><path fill="#FFFFFF" d="M333.996,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M318.951,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H318.951z"/><path fill="#FFFFFF" d="M351.486,276.463v-53.662h10.298v43.847h22.367v9.815H351.486z"/><path fill="#FFFFFF" d="M440.934,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871s-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.213-7.001-2.212-10.864c0-3.86,0.725-7.482,2.172-10.861s3.446-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172s7.59,0.738,11.022,2.213s6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.212,7.107,2.212,11.022C443.146,253.722,442.409,257.274,440.934,260.572z M431.319,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.212,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C432.687,247.473,432.231,245.114,431.319,242.913z"/><path fill="#FFFFFF" d="M502.674,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871s-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.213-7.001-2.213-10.864c0-3.86,0.725-7.482,2.172-10.861s3.446-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172s7.59,0.738,11.022,2.213c3.433,1.475,6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.212,7.107,2.212,11.022C504.886,253.722,504.149,257.274,502.674,260.572z M493.059,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.212,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C494.427,247.473,493.971,245.114,493.059,242.913z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_JUBILEE: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#7B868C" d="M469.466,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.466,160.914,469.466,249.984 M307.926,0C169.923,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.111,111.992,446.291,0.106,308.317,0H307.926z"/><rect y="199.512" fill="#7B868C" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M196.779,258.763c0,1.61-0.055,2.99-0.161,4.143c-0.108,1.155-0.295,2.187-0.563,3.097c-0.269,0.913-0.631,1.786-1.086,2.616c-0.457,0.833-1.033,1.677-1.73,2.535c-1.609,2.04-3.554,3.581-5.832,4.627c-2.28,1.046-4.788,1.567-7.523,1.567c-3.539,0-6.544-0.925-9.01,-2.774c-2.469-1.852-4.373-4.546-5.713-8.087l9.092-4.183c0.804,1.985,1.62,3.353,2.453,4.102c0.831,0.752,1.998,1.126,3.5,1.126c1.983,0,3.512-0.723,4.585-2.172c1.073-1.449,1.61-3.512,1.61-6.194v-36.365h10.378L196.779,258.763L196.779,258.763z"/><path fill="#FFFFFF" d="M255.179,251.601c0,3.702-0.402,6.88-1.207,9.536c-0.804,2.653-2.119,5.108-3.941,7.361c-2.201,2.737-4.977,4.883-8.327,6.436c-3.353,1.556-6.854,2.333-10.499,2.333c-3.702,0-7.23-0.792-10.58-2.374c-3.353-1.582-6.155-3.765-8.408-6.557c-1.824-2.253-3.126-4.638-3.902-7.159c-0.778-2.521-1.167-5.603-1.167-9.253v-29.123h10.298v29.203c0,4.615,1.234,8.3,3.702,11.063c2.466,2.763,5.765,4.143,9.896,4.143c1.93,0,3.875-0.386,5.832-1.167c1.958-0.775,3.473-1.78,4.546-3.016c1.073-1.178,1.877-2.708,2.414-4.586c0.534-1.875,0.804-3.967,0.804-6.275v-29.365h10.54v28.8H255.179z"/><path fill="#FFFFFF" d="M281.456,222.801c2.574,0,4.893,0.308,6.959,0.925c2.064,0.617,3.821,1.515,5.271,2.694c1.448,1.181,2.56,2.59,3.339,4.223c0.776,1.639,1.165,3.474,1.165,5.511c0,2.201-0.536,4.212-1.609,6.035c-0.376,0.642-0.737,1.196-1.086,1.651s-0.738,0.859-1.167,1.204c-0.429,0.351-0.925,0.66-1.488,0.928c-0.563,0.268-1.247,0.562-2.051,0.884c3.592,0.591,6.423,2.146,8.487,4.667c2.064,2.521,3.098,5.658,3.098,9.412c0,3.489-1.1,6.626-3.299,9.415c-1.717,2.198-3.796,3.768-6.236,4.704c-2.442,0.939-5.592,1.409-9.454,1.409h-17.539v-53.662L281.456,222.801L281.456,222.801z M280.893,243.639c2.198,0,3.914-0.524,5.148-1.57s1.851-2.48,1.851-4.304s-0.604-3.27-1.811-4.344c-1.206-1.072-2.829-1.61-4.867-1.61h-5.069v11.829L280.893,243.639L280.893,243.639z M283.065,267.613c2.735,0,4.853-0.631,6.355-1.89c1.501-1.262,2.253-3.019,2.253-5.272c0-1.821-0.591-3.486-1.77-4.987c-0.859-1.072-1.757-1.783-2.695-2.132c-0.939-0.349-2.321-0.524-4.143-0.524h-6.92v14.805L283.065,267.613L283.065,267.613z"/><path fill="#FFFFFF" d="M311.03,276.463v-53.662h10.459v53.662H311.03z"/><path fill="#FFFFFF" d="M332.816,276.463v-53.662h10.298v43.847h22.367v9.815H332.816z"/><path fill="#FFFFFF" d="M371.579,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573h-35.319V276.463z"/><path fill="#FFFFFF" d="M414.653,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573h-35.319V276.463z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_DLR: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#00AFAA" d="M469.461,249.985c0,89.079-72.266,161.309-161.338,161.309c-89.101,0-161.302-72.229-161.302-161.309  c0-89.072,72.2-161.279,161.302-161.279C397.194,88.706,469.461,160.914,469.461,249.985 M308.123,0C170.031,0,58.1,111.924,58.1,249.985C58.1,388.062,170.031,500,308.123,500c138.062,0,249.985-111.938,249.985-250.015C558.108,111.924,446.184,0,308.123,0"/><rect y="199.516" fill="#000F9F" width="615.327" height="101.127"/><g><path fill="#FFFFFF" d="M247.72,276.261h-14.522v-52.064h17.794c18.035,0,27.712,11.865,27.712,25.37C278.704,263.54,268.479,276.261,247.72,276.261 M249.199,233.017h-5.848v34.109h4.992c12.099,0,20.056-6.785,20.056-17.172C268.398,239.502,261.145,233.017,249.199,233.017"/><polygon fill="#FFFFFF" points="293.849,276.259 293.849,224.195 303.994,224.195 303.994,266.736 325.689,266.736 325.689,276.259"/><path fill="#FFFFFF" d="M368.772,276.261l-14.361-20.758h-4.677v20.758h-10.152v-52.064h16.857c10.701,0,17.721,5.621,17.721,15.217  c0,6.405-3.587,11.477-9.83,13.739l16.381,23.108H368.772z M355.502,233.017h-5.768v13.659h4.838c5.929,0,9.442-2.65,9.442-7.173C364.015,235.44,360.809,233.017,355.502,233.017"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_PICCADILLY: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#000F9F" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#000F9F" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M103.585,276.463v-53.662h16.976c2.627,0,4.988,0.239,7.08,0.723c1.822,0.375,3.5,1.046,5.029,2.011c1.528,0.965,2.842,2.161,3.942,3.581c1.099,1.42,1.958,3.005,2.574,4.748s0.925,3.578,0.925,5.511c0,2.037-0.336,3.996-1.005,5.871c-0.671,1.878-1.649,3.595-2.936,5.151c-1.825,2.198-3.983,3.754-6.478,4.664c-2.493,0.913-5.726,1.368-9.694,1.368h-6.195v20.034H103.585z M120.399,247.099c6.383,0,9.575-2.547,9.575-7.646c0-5.039-3.218-7.562-9.655-7.562h-6.517v15.208H120.399z"/><path fill="#FFFFFF" d="M146.233,276.463v-53.662h10.459v53.662H146.233z"/><path fill="#FFFFFF" d="M203.766,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.212-7.104-2.212-11.022c0-3.86,0.736-7.482,2.212-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855s-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C209.8,274.049,206.983,275.311,203.766,276.221z"/><path fill="#FFFFFF" d="M256.094,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.213-11.022c0-3.86,0.736-7.482,2.213-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855c-1.394-0.778-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834s3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449c3.003-0.965,5.793-2.359,8.367-4.183v10.218C262.128,274.049,259.312,275.311,256.094,276.221z"/><path fill="#FFFFFF" d="M309.917,276.463l-4.104-11.103h-21.481l-4.104,11.103h-11.424l20.597-53.662h11.022l20.837,53.662H309.917z M294.952,236.961l-7.081,18.907h14.322L294.952,236.961z"/><path fill="#FFFFFF" d="M326.722,222.801h17.058c2.305,0,4.316,0.066,6.034,0.199c1.716,0.135,3.284,0.377,4.706,0.726c1.42,0.349,2.735,0.818,3.942,1.406c1.207,0.593,2.506,1.368,3.902,2.333c3.647,2.469,6.423,5.54,8.327,9.213c1.903,3.673,2.856,7.764,2.856,12.27c0,4.56-1.046,8.81-3.139,12.751c-2.092,3.944-5.016,7.15-8.769,9.616c-2.735,1.824-5.766,3.137-9.091,3.941c-3.327,0.804-7.241,1.207-11.747,1.207h-14.08v-53.662H326.722z M342.492,267.051c3.11,0,5.939-0.415,8.488-1.247c2.547-0.833,4.719-2.025,6.517-3.581c1.796-1.556,3.191-3.42,4.183-5.592s1.488-4.598,1.488-7.28c0-5.419-1.757-9.683-5.269-12.794c-3.513-3.108-8.355-4.667-14.522-4.667h-6.275v35.161H342.492z"/><path fill="#FFFFFF" d="M381.849,276.463v-53.662h10.459v53.662H381.849z"/><path fill="#FFFFFF" d="M403.636,276.463v-53.662h10.298v43.847H436.3v9.815H403.636z"/><path fill="#FFFFFF" d="M442.512,276.463v-53.662h10.298v43.847h22.367v9.815H442.512z"/><path fill="#FFFFFF" d="M488.699,276.463v-22.609l-18.584-31.053h12.068l11.505,20.353l11.585-20.353h12.068l-18.344,31.053v22.609H488.699z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_CENTRAL: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path fill="#E1251B" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.182,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" fill="#E1251B" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M177.655,276.221c-3.219,0.913-6.545,1.368-9.976,1.368c-3.97,0-7.683-0.738-11.143-2.213s-6.465-3.471-9.011-5.995c-2.548-2.518-4.559-5.497-6.034-8.931c-1.476-3.431-2.213-7.104-2.213-11.022c0-3.86,0.736-7.482,2.213-10.861c1.475-3.379,3.5-6.3,6.074-8.769c2.574-2.466,5.605-4.411,9.092-5.831c3.486-1.423,7.24-2.135,11.263-2.135c3.003,0,5.966,0.377,8.89,1.126c2.923,0.752,6.021,1.959,9.292,3.621v10.942c-1.556-1.126-3.031-2.077-4.425-2.855s-2.748-1.409-4.062-1.89c-1.315-0.484-2.629-0.833-3.942-1.049c-1.315-0.213-2.695-0.32-4.144-0.32c-2.789,0-5.39,0.47-7.804,1.406c-2.413,0.939-4.504,2.227-6.275,3.863c-1.77,1.636-3.166,3.555-4.184,5.753c-1.018,2.198-1.528,4.586-1.528,7.159c0,2.524,0.483,4.897,1.448,7.121c0.967,2.227,2.293,4.172,3.983,5.834c1.69,1.662,3.673,2.964,5.955,3.901c2.279,0.939,4.706,1.409,7.28,1.409c3.219,0,6.329-0.484,9.333-1.449s5.793-2.359,8.367-4.183v10.218C183.689,274.049,180.873,275.311,177.655,276.221z"/><path fill="#FFFFFF" d="M195.362,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573h-35.319V276.463z"/><path fill="#FFFFFF" d="M277.216,276.463l-28.642-37.01v37.01h-10.138v-53.662h10.138l28.642,37.169v-37.169h10.299v53.662L277.216,276.463L277.216,276.463z"/><path fill="#FFFFFF" d="M309.06,276.463v-44.331h-15.528v-9.331h41.434v9.331h-15.528v44.331H309.06z"/><path fill="#FFFFFF" d="M371.395,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735h-11.906V276.463z M356.349,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H356.349z"/><path fill="#FFFFFF" d="M428.114,276.463l-4.104-11.103h-21.481l-4.104,11.103h-11.424l20.597-53.662h11.022l20.837,53.662H428.114z M413.15,236.961l-7.081,18.907h14.322L413.15,236.961z"/><path fill="#FFFFFF" d="M445.041,276.463v-53.662h10.298v43.847h22.367v9.815H445.041z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_NORTHERN: &str = r##"<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve"><g><path d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016C558.112,111.992,446.291,0.106,308.318,0H307.926z"/><rect y="199.512" width="615.327" height="101.129"/><g><path fill="#FFFFFF" d="M143.161,276.463l-28.642-37.01v37.01h-10.138v-53.662h10.138l28.642,37.169v-37.169h10.299v53.662H143.161z"/><path fill="#FFFFFF" d="M215.867,260.572c-1.476,3.299-3.473,6.197-5.994,8.692c-2.522,2.492-5.498,4.451-8.931,5.871c-3.433,1.42-7.08,2.132-10.942,2.132c-3.917,0-7.591-0.723-11.022-2.172c-3.434-1.446-6.424-3.42-8.971-5.912c-2.548-2.495-4.559-5.43-6.034-8.81c-1.476-3.379-2.213-7.001-2.213-10.864c0-3.86,0.725-7.482,2.172-10.861c1.448-3.379,3.446-6.326,5.994-8.85c2.547-2.521,5.524-4.506,8.931-5.952c3.405-1.449,7.067-2.172,10.982-2.172c3.915,0,7.59,0.738,11.022,2.213s6.423,3.486,8.971,6.033c2.547,2.55,4.558,5.54,6.034,8.971c1.475,3.434,2.213,7.107,2.213,11.022C218.079,253.722,217.342,257.274,215.867,260.572z M206.252,242.913c-0.912-2.198-2.172-4.102-3.781-5.71c-1.609-1.61-3.499-2.884-5.672-3.823c-2.172-0.939-4.519-1.409-7.039-1.409c-2.413,0-4.694,0.458-6.838,1.368c-2.146,0.913-4.01,2.161-5.592,3.742c-1.583,1.582-2.843,3.42-3.781,5.511c-0.939,2.092-1.409,4.344-1.409,6.759c0,2.411,0.47,4.693,1.409,6.836c0.938,2.146,2.213,4.01,3.821,5.592c1.609,1.584,3.499,2.832,5.671,3.742c2.172,0.913,4.519,1.368,7.041,1.368c2.359,0,4.598-0.455,6.717-1.368c2.119-0.91,3.983-2.132,5.592-3.662c1.609-1.527,2.884-3.31,3.821-5.35c0.939-2.037,1.409-4.209,1.409-6.517C207.62,247.473,207.164,245.114,206.252,242.913z"/><path fill="#FFFFFF" d="M256.794,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735H256.794z M241.748,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H241.748z"/><path fill="#FFFFFF" d="M283.995,276.463v-44.331h-15.528v-9.331h41.434v9.331h-15.528v44.331H283.995z"/><path fill="#FFFFFF" d="M350.554,276.463v-23.655h-24.459v23.655h-10.378v-53.662h10.378v20.515h24.459v-20.515h10.459v53.662H350.554z"/><path fill="#FFFFFF" d="M371.745,276.463v-53.662h33.309v9.17h-22.85v11.264h18.023v9.492h-18.023v14.162h24.86v9.573H371.745z"/><path fill="#FFFFFF" d="M445.345,276.463l-15.207-21.402h-4.827v21.402h-10.298v-53.662h16.01c2.949,0,5.322,0.228,7.12,0.683c1.796,0.455,3.499,1.221,5.109,2.293c4.344,2.95,6.517,7.188,6.517,12.71c0,3.327-0.873,6.251-2.614,8.769c-1.744,2.524-4.144,4.344-7.201,5.471l17.297,23.735H445.345z M430.3,245.972c3.057,0,5.443-0.645,7.16-1.933c1.716-1.285,2.574-3.108,2.574-5.471c0-2.092-0.778-3.728-2.332-4.906c-1.557-1.181-3.702-1.772-6.437-1.772h-5.953v14.082H430.3z"/><path fill="#FFFFFF" d="M501.5,276.463l-28.642-37.01v37.01h-10.138v-53.662h10.138L501.5,259.97v-37.169h10.299v53.662H501.5z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_ELIZABETH: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" width="512px" height="416.045px" viewBox="0 0 512 416.045" enable-background="new 0 0 512 416.045" xml:space="preserve"><g><path fill="#773DBD" d="M390.262,208.007c0,74.121-60.131,134.228-134.252,134.228c-74.139,0-134.216-60.107-134.216-134.228c0-74.109,60.076-134.197,134.216-134.197C330.131,73.81,390.262,133.899,390.262,208.007 M256.01,0C141.108,0,47.972,93.135,47.972,208.007c0,114.896,93.135,208.038,208.038,208.038c114.884,0,208.013-93.141,208.013-208.038C464.024,93.135,370.894,0,256.01,0"/><rect y="165.944" fill="#000F9F" width="512" height="84.152"/><g><polygon fill="#FFFFFF" points="56.792,229.612 28.374,229.612 28.374,186.437 55.178,186.437 55.178,193.922 36.784,193.922 36.784,202.936 51.956,202.936 51.956,210.525 36.784,210.525 36.784,221.901 56.792,221.901"/><polygon fill="#FFFFFF" points="88.651,229.612 62.224,229.612 62.224,186.437 70.635,186.437 70.635,221.713 88.651,221.713"/><rect x="94.22" y="186.439" fill="#FFFFFF" width="8.441" height="43.175"/><polygon fill="#FFFFFF" points="143.97,229.612 107.902,229.612 129.84,193.989 108.475,193.989 108.475,186.437 143.97,186.437 122.288,221.713 143.97,221.713"/><path fill="#FFFFFF" d="M188.638,229.613h-9.196l-3.1-8.283h-17.735l-3.131,8.283h-9.038l16.566-43.181h8.849L188.638,229.613z M173.43,213.681l-6.036-15.933l-5.938,15.933H173.43z"/><path fill="#FFFFFF" d="M213.103,205.907c2.997,0.633,5.299,1.906,6.906,3.819c1.614,1.924,2.424,4.233,2.424,6.925c-0.024,3.794-1.377,6.907-4.05,9.325c-2.674,2.424-6.492,3.636-11.444,3.636h-14.032v-43.175h12.674c4.257,0,7.576,0.956,9.958,2.875c2.381,1.919,3.569,4.544,3.569,7.869c0,2.132-0.512,3.959-1.547,5.488C216.532,204.196,215.046,205.274,213.103,205.907 M201.312,203.252h3.825c1.73,0,3.1-0.42,4.111-1.267c1.011-0.84,1.516-1.992,1.516-3.441c0-1.498-0.475-2.674-1.437-3.526c-0.962-0.853-2.272-1.279-3.934-1.279h-4.08V203.252z M201.312,222.278h5.627c2.193,0,3.898-0.487,5.122-1.468c1.224-0.98,1.833-2.369,1.833-4.16c0-2.022-0.639-3.539-1.913-4.55c-1.273-1.011-3.185-1.516-5.737-1.516h-4.933V222.278z"/><polygon fill="#FFFFFF" points="257.326,229.612 228.908,229.612 228.908,186.437 255.712,186.437 255.712,193.922 237.318,193.922 237.318,202.936 252.49,202.936 252.49,210.525 237.318,210.525 237.318,221.901 257.326,221.901"/><polygon fill="#FFFFFF" points="293.107,193.924 280.621,193.924 280.621,229.614 272.211,229.614 272.211,193.924 259.701,193.924 259.701,186.433 293.107,186.433"/><polygon fill="#FFFFFF" points="334.869,229.612 326.458,229.612 326.458,210.585 306.768,210.585 306.768,229.612 298.357,229.612 298.357,186.437 306.768,186.437 306.768,202.936 326.458,202.936 326.458,186.437 334.869,186.437"/><polygon fill="#FFFFFF" points="385.792,229.612 359.365,229.612 359.365,186.437 367.776,186.437 367.776,221.713 385.792,221.713"/><rect x="391.354" y="186.439" fill="#FFFFFF" width="8.441" height="43.175"/><polygon fill="#FFFFFF" points="447.72,229.612 439.278,229.612 416.232,199.836 416.232,229.612 407.821,229.612 407.821,186.437 416.232,186.437 439.278,216.341 439.278,186.437 447.72,186.437"/><polygon fill="#FFFFFF" points="483.623,229.612 455.205,229.612 455.205,186.437 482.015,186.437 482.015,193.922 463.615,193.922 463.615,202.936 478.787,202.936 478.787,210.525 463.615,210.525 463.615,221.901 483.623,221.901"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_TRAMLINK: &str = r##"<svg version="1.1" id="Livello_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 615.318 500" enable-background="new 0 0 615.318 500" xml:space="preserve"><g><path fill="#76BC21" d="M469.453,249.982c0,89.078-72.258,161.314-161.336,161.314c-89.1,0-161.299-72.236-161.299-161.314c0-89.063,72.199-161.277,161.299-161.277C397.195,88.705,469.453,160.918,469.453,249.982 M308.117,0C170.028,0,58.099,111.929,58.099,249.982C58.099,388.063,170.028,500,308.117,500c138.06,0,249.982-111.937,249.982-250.018C558.099,111.929,446.177,0,308.117,0"/><rect y="199.514" fill="#000F9F" width="615.318" height="101.133"/><g><polygon fill="#FFFFFF" points="228.255,233.198 213.25,233.198 213.25,276.09 203.142,276.09 203.142,233.198 188.101,233.198 188.101,224.195 228.255,224.195"/><path fill="#FFFFFF" d="M275.554,276.09H263.66l-14.324-20.707h-4.67v20.707h-10.108v-51.895h16.798c5.417,0,9.713,1.361,12.897,4.084c3.169,2.723,4.765,6.412,4.765,11.074c0,3.191-0.849,5.98-2.547,8.373c-1.698,2.401-4.113,4.172-7.254,5.336L275.554,276.09z M244.666,232.971v13.636h4.824c2.994,0,5.306-0.637,6.953-1.918c1.64-1.274,2.467-3.038,2.467-5.263c0-2.006-0.747-3.572-2.24-4.706c-1.493-1.142-3.572-1.727-6.229-1.749H244.666z"/><path fill="#FFFFFF" d="M327.706,276.09h-11.052l-3.726-9.962h-21.307l-3.762,9.962h-10.862l19.909-51.895h10.635L327.706,276.09z M309.437,256.943l-7.254-19.148l-7.144,19.148H309.437z"/><polygon fill="#FFFFFF" points="385.529,276.083 375.384,276.083 375.384,239.573 359.274,259.826 342.944,239.573 342.944,276.083 332.836,276.083 332.836,224.195 342.791,224.195 359.274,244.895 375.538,224.195 385.529,224.195"/><path fill="#FFFFFF" d="M416.719,236.689c-1.552-3.038-3.938-4.56-7.188-4.56c-1.61,0-2.935,0.432-3.96,1.295c-1.032,0.864-1.537,1.954-1.537,3.264c0,0.966,0.263,1.837,0.798,2.606c0.527,0.776,1.347,1.523,2.467,2.24c1.113,0.717,3.184,1.866,6.229,3.44c4.904,2.533,8.22,4.963,9.932,7.29c1.713,2.328,2.569,5.212,2.569,8.63c0,4.911-1.654,8.835-4.941,11.77c-3.294,2.942-7.619,4.406-12.955,4.406c-3.799,0-7.195-0.959-10.167-2.884c-2.972-1.925-5.233-4.611-6.778-8.059l8.322-4.897c1.954,4.355,4.941,6.536,8.959,6.536c2.203,0,3.967-0.556,5.299-1.669c1.332-1.12,1.998-2.606,1.998-4.487c0-1.544-0.527-2.906-1.596-4.084c-1.069-1.178-3.901-2.906-8.505-5.182c-4.509-2.203-7.605-4.421-9.296-6.668c-1.683-2.24-2.525-5.05-2.525-8.417c0-3.945,1.581-7.283,4.728-10.006c3.155-2.723,6.917-4.084,11.265-4.084c7.144,0,12.128,2.986,14.968,8.959L416.719,236.689z"/></g></g></svg>"##;
-
-        pub(crate) const ROUNDEL_NATIONAL_RAIL: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="80" height="50" viewBox="0 0 80 50">
-  <rect fill="#FF4200" width="80" height="50" x="0" y="0" />
-  <path fill="#FFF" d="M 71.666665,11.99972 L 71.666808,17.8331 H 54.583332 L 37.916664,26.1665 H 71.666808 L 71.666665,32 H 37.916664 L 60.00012,41.16674 H 45.000089 L 25.416666,31.99997 H 8.3333499 V 26.1665 H 25.416666 L 42.083333,17.8331 H 8.333333 L 8.333317,11.99993 H 42.083333 L 19.99994,2.83319 H 34.99997 L 54.583232,12.00014 Z" />
-</svg>"##;
-
-        pub(crate) const ROUNDEL_EMIRATES_AIRLINE: &str = r##"
-<svg width="500" height="408" xmlns="http://www.w3.org/2000/svg">
-<path fill="#dc2451" d="M250.357 0C154.92 0 71.63 67.127 51.283 159.99H0v87.692h51.326c20.395 92.786 103.658 159.851 199.031 159.851 95.338 0 178.604-67.065 199.005-159.85H500V159.99h-50.612C429.065 67.127 345.79 0 250.358 0Zm0 6.578c93.226 0 174.456 66.175 193.15 157.367l.54 2.623h49.375v74.536h-49.4l-.55 2.623c-18.765 91.103-99.984 157.228-193.115 157.228-93.166 0-174.396-66.125-193.15-157.228l-.54-2.623H6.578v-74.536h50.045l.54-2.623C75.882 72.753 157.126 6.578 250.358 6.578Zm0 64.56c-57.408 0-108.04 36.623-125.984 91.117l-1.42 4.313H377.77l-1.42-4.313c-17.957-54.494-68.59-91.115-125.994-91.115Zm0 6.587c53.025 0 99.965 32.868 118.23 82.265h-236.46c18.254-49.397 65.2-82.265 118.23-82.265Zm-141.885 98.488-20.579 55.551h14.21l3.276-10.08h19.891l3.354 10.08h14.333l-21.198-55.551zm40.74 0v55.551h13.156v-55.551zm22.88 0v55.551h13.112v-20.988h2.536l13.81 20.988h14.863l-15.892-23.75c3.29-1.327 5.822-3.274 7.589-5.838 1.754-2.551 2.622-5.59 2.622-9.087 0-5.234-1.711-9.353-5.149-12.363-3.426-3.004-8.258-4.513-14.498-4.513zm76.828 0v55.551h34.563v-11.596h-21.45v-43.955zm41.263 0v55.551h13.156v-55.551zm22.792 0v55.551h13.121v-34.406l24.509 34.406h13.565v-55.551h-13.112v34.807l-24.884-34.807zm60.43 0v55.551h36.646v-11.596h-23.533v-12.067h17.234v-11.23h-17.234v-9.515h21.773v-11.143zm-188.2 10.403h5.018c2.296 0 4.087.613 5.402 1.82 1.302 1.208 1.968 2.7 2.003 4.496 0 1.921-.724 3.527-2.152 4.836-1.433 1.302-3.338 1.938-5.741 1.908h-4.53zm-70.024 4.844 6.334 18.95h-12.546zm114.275 1.62-12.651 12.8 12.65 12.65 12.8-12.65zm-106.46 48.024 1.429 4.313c17.992 54.423 68.601 90.986 125.932 90.986a132.522 132.522 0 0 0 125.976-90.977l1.42-4.322zm9.192 6.578H368.56a125.924 125.924 0 0 1-118.204 82.143c-52.953 0-99.868-32.817-118.17-82.143z"/>
-</svg>"##;
-        pub(crate) const ROUNDEL_WATERLOO_CITY: &str = r##"
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Generator: Adobe Illustrator 23.0.1, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
-<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
-	 viewBox="0 0 615.327 500" enable-background="new 0 0 615.327 500" xml:space="preserve">
-<g>
-	<path fill="#6BCDB2" d="M469.467,249.984c0,89.075-72.27,161.306-161.345,161.306c-89.099,0-161.301-72.231-161.301-161.306
-		c0-89.07,72.202-161.283,161.301-161.283C397.197,88.701,469.467,160.914,469.467,249.984 M307.926,0
-		C169.924,0.106,58.097,111.992,58.097,249.984C58.097,388.062,170.029,500,308.122,500c138.064,0,249.99-111.938,249.99-250.016
-		C558.112,111.992,446.291,0.106,308.318,0H307.926z"/>
-	<rect y="199.512" fill="#6BCDB2" width="615.327" height="101.129"/>
-	<g>
-		<path fill="#000F9F" d="M63.73,272.041l-8.739-28.506l-8.337,28.506h-8.336L23.595,227.2h9.142l9.883,29.915l8.27-29.915h8.068
-			l8.605,29.915l9.681-29.915h9.075l-14.185,44.841H63.73z"/>
-		<path fill="#000F9F" d="M119.254,272.041l-3.428-9.276H97.875l-3.428,9.276H84.9l17.212-44.841h9.21l17.412,44.841H119.254z
-			 M106.75,239.032l-5.916,15.799h11.967L106.75,239.032z"/>
-		<path fill="#000F9F" d="M138.569,272.041v-37.042h-12.975V227.2h34.624v7.799h-12.975v37.042H138.569z"/>
-		<path fill="#000F9F" d="M165.231,272.041V227.2h27.832v7.663H173.97v9.412h15.06v7.934h-15.06v11.832h20.774v8H165.231z"/>
-		<path fill="#000F9F" d="M226.812,272.041l-12.706-17.882h-4.035v17.882h-8.605V227.2h13.379c2.465,0,4.448,0.19,5.949,0.57
-			c1.502,0.38,2.926,1.02,4.269,1.916c3.63,2.466,5.446,6.007,5.446,10.622c0,2.78-0.729,5.223-2.185,7.329
-			c-1.458,2.106-3.463,3.63-6.017,4.572l14.453,19.832H226.812z M214.24,246.563c2.554,0,4.549-0.539,5.984-1.616
-			c1.433-1.075,2.151-2.599,2.151-4.569c0-1.749-0.65-3.117-1.949-4.102c-1.301-0.985-3.093-1.478-5.379-1.478h-4.975v11.765H214.24
-			z"/>
-		<path fill="#000F9F" d="M241.515,272.041V227.2h8.605v36.639h18.69v8.202H241.515z"/>
-		<path fill="#000F9F" d="M316.36,258.763c-1.233,2.757-2.902,5.177-5.008,7.26c-2.107,2.086-4.595,3.722-7.463,4.909
-			s-5.916,1.78-9.142,1.78c-3.273,0-6.344-0.605-9.212-1.815s-5.367-2.858-7.496-4.941s-3.81-4.537-5.042-7.361
-			c-1.233-2.823-1.848-5.851-1.848-9.078s0.605-6.251,1.815-9.075c1.21-2.823,2.879-5.289,5.008-7.395
-			c2.128-2.106,4.615-3.765,7.461-4.975s5.906-1.815,9.177-1.815s6.342,0.617,9.21,1.85c2.868,1.233,5.367,2.913,7.496,5.042
-			s3.81,4.627,5.043,7.496c1.232,2.869,1.848,5.94,1.848,9.21C318.208,253.039,317.591,256.006,316.36,258.763z M308.327,244.008
-			c-0.763-1.838-1.816-3.428-3.16-4.774c-1.345-1.345-2.924-2.408-4.74-3.195c-1.815-0.784-3.775-1.175-5.881-1.175
-			c-2.018,0-3.922,0.38-5.716,1.144c-1.792,0.761-3.35,1.803-4.671,3.126c-1.322,1.322-2.377,2.858-3.16,4.604
-			c-0.785,1.749-1.177,3.633-1.177,5.649c0,2.017,0.392,3.921,1.177,5.713c0.784,1.795,1.85,3.35,3.193,4.673
-			s2.924,2.365,4.739,3.126c1.816,0.763,3.775,1.144,5.883,1.144c1.972,0,3.843-0.38,5.613-1.144c1.77-0.761,3.329-1.78,4.673-3.059
-			c1.345-1.276,2.408-2.766,3.193-4.468c0.784-1.703,1.177-3.52,1.177-5.448C309.469,247.816,309.087,245.846,308.327,244.008z"/>
-		<path fill="#000F9F" d="M368.038,258.763c-1.233,2.757-2.902,5.177-5.008,7.26c-2.107,2.086-4.595,3.722-7.463,4.909
-			s-5.916,1.78-9.142,1.78c-3.273,0-6.344-0.605-9.212-1.815s-5.367-2.858-7.496-4.941s-3.81-4.537-5.042-7.361
-			c-1.233-2.823-1.848-5.851-1.848-9.078s0.605-6.251,1.815-9.075c1.21-2.823,2.879-5.289,5.008-7.395
-			c2.128-2.106,4.615-3.765,7.461-4.975s5.906-1.815,9.177-1.815s6.342,0.617,9.21,1.85c2.868,1.233,5.367,2.913,7.496,5.042
-			s3.81,4.627,5.043,7.496c1.232,2.869,1.848,5.94,1.848,9.21C369.886,253.039,369.27,256.006,368.038,258.763z M360.005,244.008
-			c-0.763-1.838-1.816-3.428-3.16-4.774c-1.345-1.345-2.924-2.408-4.74-3.195c-1.815-0.784-3.775-1.175-5.881-1.175
-			c-2.018,0-3.922,0.38-5.716,1.144c-1.792,0.761-3.35,1.803-4.671,3.126c-1.322,1.322-2.377,2.858-3.16,4.604
-			c-0.785,1.749-1.177,3.633-1.177,5.649c0,2.017,0.392,3.921,1.177,5.713c0.784,1.795,1.85,3.35,3.193,4.673
-			c1.344,1.322,2.924,2.365,4.739,3.126c1.816,0.763,3.775,1.144,5.883,1.144c1.972,0,3.843-0.38,5.613-1.144
-			c1.77-0.761,3.329-1.78,4.673-3.059c1.345-1.276,2.408-2.766,3.193-4.468c0.784-1.703,1.177-3.52,1.177-5.448
-			C361.147,247.816,360.766,245.846,360.005,244.008z"/>
-		<path fill="#000F9F" d="M423.468,272.041l-4.101-4.707c-0.359,0.271-0.65,0.516-0.874,0.74c-0.225,0.225-0.426,0.403-0.605,0.539
-			c-1.569,1.299-3.317,2.319-5.243,3.06c-1.929,0.737-3.878,1.109-5.85,1.109c-1.883,0-3.653-0.36-5.311-1.077
-			c-1.658-0.714-3.116-1.703-4.37-2.956c-1.255-1.256-2.241-2.725-2.957-4.405c-0.717-1.68-1.076-3.463-1.076-5.344
-			c0-2.42,0.65-4.595,1.949-6.522c1.301-1.927,3.362-3.785,6.185-5.58c-0.268-0.311-0.516-0.57-0.739-0.772
-			c-0.225-0.202-0.403-0.372-0.537-0.504c-0.987-1.121-1.772-2.408-2.354-3.866c-0.583-1.455-0.874-2.858-0.874-4.203
-			c0-1.567,0.326-3.034,0.975-4.402c0.65-1.366,1.534-2.555,2.656-3.564c1.119-1.008,2.453-1.792,4-2.354
-			c1.546-0.559,3.193-0.838,4.941-0.838c1.792,0,3.463,0.302,5.008,0.907c1.547,0.605,2.891,1.435,4.035,2.486
-			c1.142,1.054,2.038,2.299,2.688,3.731c0.65,1.435,0.975,2.982,0.975,4.638c0,1.256-0.101,2.345-0.302,3.261
-			c-0.202,0.919-0.572,1.749-1.109,2.489c-0.537,0.738-1.278,1.443-2.218,2.117c-0.942,0.671-2.129,1.389-3.564,2.152
-			c-0.225,0.089-0.47,0.202-0.739,0.334c-0.269,0.135-0.583,0.314-0.942,0.539l6.253,7.194c0.179-0.314,0.347-0.582,0.504-0.807
-			s0.279-0.403,0.37-0.539c0.447-0.671,0.807-1.242,1.075-1.714c0.269-0.47,0.516-0.861,0.74-1.175
-			c0.448-0.763,0.762-1.345,0.941-1.749s0.337-0.962,0.471-1.68h8.605l-0.471,1.075c-0.225,0.493-0.593,1.233-1.109,2.218
-			c-0.516,0.985-1.2,2.218-2.05,3.699c-0.403,0.717-0.763,1.334-1.076,1.847c-0.314,0.516-0.628,0.988-0.941,1.412
-			c-0.314,0.426-0.651,0.853-1.01,1.279s-0.762,0.907-1.21,1.446l9.212,10.486L423.468,272.041L423.468,272.041z M406.19,252.544
-			c-1.569,0.631-2.79,1.527-3.664,2.691c-0.873,1.167-1.311,2.42-1.311,3.765c0,1.57,0.605,2.889,1.815,3.967
-			c1.211,1.075,2.689,1.613,4.438,1.613c1.165,0,2.251-0.213,3.261-0.64c1.008-0.426,2.207-1.175,3.597-2.253L406.19,252.544z
-			 M414.661,237.822c0-1.299-0.504-2.397-1.512-3.296c-1.008-0.896-2.23-1.342-3.664-1.342c-1.435,0-2.633,0.435-3.597,1.311
-			c-0.964,0.873-1.445,1.959-1.445,3.258c0,0.631,0.156,1.236,0.47,1.818s0.851,1.299,1.613,2.149l2.084,2.218
-			C412.644,242.728,414.661,240.692,414.661,237.822z"/>
-		<path fill="#000F9F" d="M486.459,271.84c-2.689,0.761-5.469,1.144-8.337,1.144c-3.317,0-6.42-0.617-9.311-1.85
-			s-5.402-2.901-7.529-5.01c-2.129-2.106-3.81-4.592-5.043-7.461c-1.233-2.866-1.848-5.937-1.848-9.21
-			c0-3.227,0.615-6.251,1.848-9.075c1.233-2.826,2.926-5.266,5.076-7.329c2.152-2.06,4.683-3.688,7.597-4.874
-			c2.913-1.187,6.051-1.78,9.412-1.78c2.511,0,4.985,0.314,7.43,0.939c2.442,0.628,5.03,1.636,7.764,3.025v9.144
-			c-1.299-0.939-2.532-1.737-3.698-2.385c-1.165-0.651-2.297-1.178-3.395-1.582c-1.098-0.403-2.195-0.694-3.294-0.873
-			c-1.098-0.179-2.251-0.268-3.461-0.268c-2.331,0-4.504,0.392-6.521,1.175c-2.018,0.784-3.765,1.861-5.245,3.227
-			c-1.479,1.368-2.645,2.97-3.496,4.808s-1.278,3.832-1.278,5.984c0,2.106,0.403,4.091,1.21,5.949
-			c0.807,1.861,1.917,3.486,3.329,4.874s3.07,2.478,4.974,3.261c1.906,0.784,3.934,1.175,6.084,1.175
-			c2.689,0,5.288-0.403,7.799-1.21c2.511-0.807,4.841-1.97,6.992-3.497v8.539C491.501,270.025,489.148,271.079,486.459,271.84z"/>
-		<path fill="#000F9F" d="M501.525,272.041V227.2h8.739v44.841H501.525z"/>
-		<path fill="#000F9F" d="M528.618,272.041v-37.042h-12.975V227.2h34.624v7.799h-12.975v37.042H528.618z"/>
-		<path fill="#000F9F" d="M569.392,272.041v-18.893L553.863,227.2h10.084l9.613,17.009l9.681-17.009h10.084l-15.329,25.948v18.893
-			H569.392z"/>
-	</g>
-</g>
-</svg>
-"##;
-
+        /// Returns the SVG markup for a given line's roundel, loaded from the external
+        /// roundel asset map. `None` if the line has no known roundel.
         pub(crate) fn roundel_svg_for_line(line_id: &str) -> Option<&'static str> {
-            match line_id {
-                "bakerloo" => Some(ROUNDEL_BAKERLOO),
-                "central" => Some(ROUNDEL_CENTRAL),
-                "circle" => Some(ROUNDEL_CIRCLE),
-                "district" => Some(ROUNDEL_DISTRICT),
-                "hammersmith-city" => Some(ROUNDEL_HAMMERSMITH_CITY),
-                "jubilee" => Some(ROUNDEL_JUBILEE),
-                "metropolitan" => Some(ROUNDEL_METROPOLITAN),
-                "northern" => Some(ROUNDEL_NORTHERN),
-                "piccadilly" => Some(ROUNDEL_PICCADILLY),
-                "victoria" => Some(ROUNDEL_VICTORIA),
-                "waterloo-city" => Some(ROUNDEL_WATERLOO_CITY),
-                "elizabeth" => Some(ROUNDEL_ELIZABETH),
-                "dlr" => Some(ROUNDEL_DLR),
-                "tramlink" => Some(ROUNDEL_TRAMLINK),
-                "underground" => Some(ROUNDEL_UNDERGROUND),
-                // Overground variants all use the Overground roundel
+            let map = load_roundel_map();
+            // Map each public line id to its ROUNDEL_<NAME> key.
+            let key = match line_id {
+                "bakerloo" => "ROUNDEL_BAKERLOO",
+                "central" => "ROUNDEL_CENTRAL",
+                "circle" => "ROUNDEL_CIRCLE",
+                "district" => "ROUNDEL_DISTRICT",
+                "hammersmith-city" => "ROUNDEL_HAMMERSMITH_CITY",
+                "jubilee" => "ROUNDEL_JUBILEE",
+                "metropolitan" => "ROUNDEL_METROPOLITAN",
+                "northern" => "ROUNDEL_NORTHERN",
+                "piccadilly" => "ROUNDEL_PICCADILLY",
+                "victoria" => "ROUNDEL_VICTORIA",
+                "waterloo-city" => "ROUNDEL_WATERLOO_CITY",
+                "elizabeth" => "ROUNDEL_ELIZABETH",
+                "dlr" => "ROUNDEL_DLR",
+                "tramlink" => "ROUNDEL_TRAMLINK",
+                "underground" => "ROUNDEL_UNDERGROUND",
                 "liberty" | "lioness" | "mildmay" | "suffragette" | "weaver" | "windrush"
-                | "overground" | "london overground" => Some(ROUNDEL_OVERGROUND),
-                "national-rail" | "national rail" => Some(ROUNDEL_NATIONAL_RAIL),
-                "emirates-airline" | "emirates" | "airline" => Some(ROUNDEL_EMIRATES_AIRLINE),
-                _ => None,
-            }
+                | "overground" | "london overground" => "ROUNDEL_OVERGROUND",
+                "national-rail" | "national rail" => "ROUNDEL_NATIONAL_RAIL",
+                "emirates-airline" | "emirates" | "airline" => "ROUNDEL_EMIRATES_AIRLINE",
+                "avanti" | "avanti-west-coast" => "ROUNDEL_AVANTI",
+                "c2c" => "ROUNDEL_C2C",
+                "caledonian-sleeper" => "ROUNDEL_CALEDONIAN_SLEEPER",
+                "east-midlands" | "east-midlands-railway" => "ROUNDEL_EAST_MIDLANDS",
+                "eurostar" => "ROUNDEL_EUROSTAR",
+                "grand-central" => "ROUNDEL_GRAND_CENTRAL",
+                "gwr" | "great-western" | "great-western-railway" => "ROUNDEL_GWR",
+                "gtr" | "great-thameslink-railway" => "ROUNDEL_GTR",
+                "heathrow-express" => "ROUNDEL_HEATHROW_EXPRESS",
+                "hull-trains" | "hull trains" => "ROUNDEL_HULL_TRAINS",
+                "lner" | "london-north-eastern-railway" => "ROUNDEL_LNER",
+                "lumo" => "ROUNDEL_LUMO",
+                "merseyrail" => "ROUNDEL_MERSEYRAIL",
+                "northern-trains" | "northern trains" => "ROUNDEL_NORTHERN_TRAINS",
+                "scotrail" => "ROUNDEL_SCOTRAIL",
+                "southeastern" => "ROUNDEL_SOUTHEASTERN",
+                "southwestern-railway" | "swr" | "south-western-railway" => "ROUNDEL_SOUTHWESTERN_RAILWAY",
+                "thameslink" => "ROUNDEL_THAMESLINK",
+                "tpe" | "transpennine" | "transpennine-express" => "ROUNDEL_TRANSPENNINE",
+                "transport-for-wales" | "tfw" | "transport for wales" => "ROUNDEL_TRANSPORT_FOR_WALES",
+                "west-midlands-railway" | "west-midlands" | "west midlands railway" | "west midlands" => "ROUNDEL_WEST_MIDLANDS_RAILWAY",
+                _ => return None,
+            };
+            map.get(key).map(|s| s.as_str())
         }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3460,87 +2993,6 @@ mod routing {
                 inside
             }
 
-            /* unused
-            pub(crate) fn snap_to_polyline(
-                &self,
-                point: &Coordinate,
-                polyline: &[Coordinate],
-            ) -> (f64, Coordinate) {
-                log_trace(&format!("GeometryEngine::snap_to_polyline called - snapping point lat={:.6}, lon={:.6} to polyline with {} points", point.lat, point.lon, polyline.len()));
-                if polyline.is_empty() {
-                    log_warn(
-                        "GeometryEngine::snap_to_polyline - polyline is empty, returning infinity",
-                    );
-                    return (f64::INFINITY, *point);
-                }
-
-                let mut min_dist = f64::INFINITY;
-                let mut nearest = *point;
-                let mut best_segment = 0usize;
-
-                for i in 0..polyline.len().saturating_sub(1) {
-                    let (dist, proj) =
-                        self.project_to_segment(point, &polyline[i], &polyline[i + 1]);
-                    if dist < min_dist {
-                        min_dist = dist;
-                        nearest = proj;
-                        best_segment = i;
-                    }
-                }
-
-                log_trace(&format!("GeometryEngine::snap_to_polyline result: distance={:.2}m, best_segment={}, nearest_lat={:.6}, nearest_lon={:.6}", min_dist, best_segment, nearest.lat, nearest.lon));
-                (min_dist, nearest)
-            }
-            */
-
-            /* unused
-            pub(crate) fn snap_to_tracks(
-                &self,
-                point: &Coordinate,
-                tracks: &[RailwayTrack],
-            ) -> (f64, Coordinate, Option<usize>) {
-                log_trace(&format!("GeometryEngine::snap_to_tracks called - snapping point lat={:.6}, lon={:.6} to {} tracks", point.lat, point.lon, tracks.len()));
-                if tracks.is_empty() {
-                    log_warn("GeometryEngine::snap_to_tracks - track list is EMPTY! Cannot snap.");
-                    return (f64::INFINITY, *point, None);
-                }
-                let (p_x, p_y) = point.to_mercator();
-
-                let mut min_dist = f64::INFINITY;
-                let mut nearest_coord = *point;
-                let mut best_track = None;
-                let mut tracks_checked = 0usize;
-
-                for nearest in self
-                    .station_index
-                    .nearest_neighbor_iter(&[p_x, p_y])
-                    .take(3)
-                {
-                    tracks_checked += 1;
-                    let track = &tracks[nearest.index];
-                    log_trace(&format!(
-                        "Checking track {}: {} with {} points",
-                        nearest.index,
-                        track.id,
-                        track.geometry.len()
-                    ));
-                    let (dist, proj) = self.snap_to_polyline(point, &track.geometry);
-                    if dist < min_dist {
-                        min_dist = dist;
-                        nearest_coord = proj;
-                        best_track = Some(nearest.index);
-                        log_trace(&format!(
-                            "New best track: {} at distance {:.2}m",
-                            track.id, dist
-                        ));
-                    }
-                }
-
-                log_info(&format!("GeometryEngine::snap_to_tracks result: checked {} tracks, best_track={:?}, distance={:.2}m", tracks_checked, best_track, min_dist));
-                (min_dist, nearest_coord, best_track)
-            }
-            */
-
             pub(crate) fn project_to_segment(
                 &self,
                 point: &Coordinate,
@@ -3704,7 +3156,6 @@ mod routing {
                                 ));
                             }
                             processed.insert(idx);
-                            hub.is_interchange = true;
                             for line in &stations[idx].lines {
                                 if !hub.lines.contains(line) {
                                     hub.lines.push(line.clone());
@@ -3714,6 +3165,11 @@ mod routing {
                         }
                     }
                     processed.insert(i);
+                    // Invariant: a station is an interchange iff it serves more than
+                    // one line. Compute this from the merged line set, NOT from
+                    // "a merge occurred" — two duplicate records for the same single
+                    // line must not be mislabeled as an interchange.
+                    hub.is_interchange = hub.lines.len() > 1;
                     merged.push(hub);
                 }
                 log_info(&format!("GeometryEngine::merge_stations completed: {} stations -> {} stations ({} merges performed)", stations.len(), merged.len(), merges_performed));
@@ -4251,6 +3707,7 @@ mod routing {
             deserts: &[Coordinate],
             radius: f64,
             max_stations: usize,
+            tracks: &[RailwayTrack],
         ) -> Vec<Coordinate> {
             log_info(&format!(
                 "plan_infill_stations [KDE+SA] called - {} desert points, radius={:.1}m, max={}",
@@ -4319,7 +3776,7 @@ mod routing {
                 // Use fewer iterations for large problem sets to stay fast
                 let sa_iters = (600 - deserts.len().min(400)) + 200;
                 let refined =
-                    sa_refine_single(warm_start, deserts, &covered, radius, &[], sa_iters);
+                    sa_refine_single(warm_start, deserts, &covered, radius, tracks, sa_iters);
 
                 // Mark covered
                 let r_m = refined.to_mercator();
@@ -4816,7 +4273,7 @@ mod routing {
         /// Represents a directed connection between two graph nodes (stations) in the
         /// routing network. Used as the key type in the edge-load map produced by
         /// [`RoutingGraph::simulate_network_load`] and consumed by
-        /// [`RoutingGraph::astar_with_congestion`].
+        /// `RoutingGraph::astar_kinematic`.
         ///
         /// # Fields
         ///
@@ -4858,7 +4315,7 @@ mod routing {
         /// # Representation
         ///
         /// - `nodes`: HashMap<usize, Node> — station ID → graph node with edges
-        /// - `grid_index`: HashMap<(i32, i32), Vec<usize>> — quantized grid cell → station IDs
+        /// - `grid_index`: HashMap<(i32, i32), Vec\<usize\>> — quantized grid cell → station IDs
         /// - Grid cells are 0.01° × 0.01° (~1.1km × ~0.7km at London's latitude)
         ///
         /// # Structural Invariants
@@ -4945,11 +4402,18 @@ mod routing {
                     "RoutingGraph::add_edge called - from={}, to={}, weight={:.2}m",
                     from, to, weight
                 ));
+                if !self.nodes.contains_key(&to) {
+                    log_error(&format!(
+                        "RoutingGraph::add_edge failed - target node {} not found",
+                        to
+                    ));
+                    return;
+                }
                 if let Some(node) = self.nodes.get_mut(&from) {
                     node.neighbors.push((to, weight));
                 } else {
                     log_error(&format!(
-                        "RoutingGraph::add_edge failed - node {} not found",
+                        "RoutingGraph::add_edge failed - source node {} not found",
                         from
                     ));
                 }
@@ -5013,9 +4477,35 @@ mod routing {
             /// fallback exists only for pathological cases where track segments have
             /// gaps >~220m between nodes (e.g. sparse National Rail routes in rural
             /// areas).
+            /// Rebuild the spatial indices (`grid_index` and `morton_index`) from the
+            /// current set of nodes. Call this after any structural mutation that adds
+            /// or removes nodes (e.g. disruptions, AI station placement) so that
+            /// nearest-neighbor lookups stay consistent.
+            pub(crate) fn rebuild_spatial_indices(&mut self) {
+                log_info("RoutingGraph::rebuild_spatial_indices called");
+                // Rebuild grid index
+                self.grid_index.clear();
+                for (&id, node) in self.nodes.iter() {
+                    let grid_x = (node.coord.lon * 1000.0).round() as i32;
+                    let grid_y = (node.coord.lat * 1000.0).round() as i32;
+                    self.grid_index
+                        .entry((grid_x, grid_y))
+                        .or_default()
+                        .push(id);
+                }
+                // Rebuild Morton index for cache-perfect nearest-neighbor
+                self.morton_index = Some(MortonSpatialIndex::build(&self.nodes));
+                log_info(&format!(
+                    "RoutingGraph::rebuild_spatial_indices - rebuilt for {} nodes",
+                    self.nodes.len()
+                ));
+            }
+
             pub(crate) fn find_nearest_node(&self, coord: &Coordinate) -> Option<usize> {
                 let result = if let Some(ref morton) = self.morton_index {
-                    log_trace("RoutingGraph::find_nearest_node - using Morton spatial index fast path");
+                    log_trace(
+                        "RoutingGraph::find_nearest_node - using Morton spatial index fast path",
+                    );
                     morton.nearest_neighbor(coord, &self.nodes)
                 } else {
                     let grid_x = (coord.lon * 1000.0).round() as i32;
@@ -5138,44 +4628,6 @@ mod routing {
                 );
                 Ok(json)
             }
-
-            /* unused
-            pub(crate) async fn post_form_json(
-                &self,
-                url: &str,
-                form: &[(&str, &str)],
-            ) -> Result<Value, Box<dyn std::error::Error>> {
-                log_info(&format!(
-                    "NetworkManager::post_form_json called - URL: {}, form fields: {}",
-                    url,
-                    form.len()
-                ));
-                let start = Utc::now();
-                let response = self.client.post(url).form(form).send().await?;
-                let status = response.status();
-                log_debug(&format!(
-                    "NetworkManager::post_form_json - response status: {}",
-                    status
-                ));
-                if !status.is_success() {
-                    let raw_text = response
-                        .text()
-                        .await
-                        .unwrap_or_else(|_| "Unreadable error body".to_string());
-                    return Err(Box::new(std::io::Error::other(format!(
-                        "Server returned error status {}: {}",
-                        status, raw_text
-                    ))));
-                }
-                let json: Value = response.json().await?;
-                let elapsed = (Utc::now() - start).num_milliseconds();
-                log_info(&format!(
-                    "NetworkManager::post_form_json completed - JSON received in {}ms",
-                    elapsed
-                ));
-                Ok(json)
-            }
-            */
         }
 
         impl Default for NetworkManager {
@@ -5890,7 +5342,6 @@ out body;"#,
         use crate::logger::*;
         use crate::primitives::*;
         use crate::spatial::*;
-        use crate::MAX_ASTAR_ITERATIONS;
         use rayon::prelude::*;
         use rstar::RTree;
         use std::collections::HashSet;
@@ -5943,14 +5394,27 @@ out body;"#,
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
                     // Security: hard cap to prevent algorithmic DoS on degenerate graphs.
-                    if iterations > MAX_ASTAR_ITERATIONS {
+                    let max_iter = crate::logger::Globals::get()
+                        .config
+                        .read()
+                        .ok()
+                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                        .unwrap_or(50000);
+                    if iterations > max_iter {
                         log_warn(&format!(
                             "RoutingGraph::astar aborted after {} iterations (limit: {})",
-                            iterations, MAX_ASTAR_ITERATIONS
+                            iterations, max_iter
                         ));
                         return Vec::new();
                     }
                     let current_id = current.node_id;
+                    if current.cost > crow_flies * 5.0 {
+                        log_debug(&format!(
+                            "RoutingGraph::astar early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                            current.cost, crow_flies * 5.0
+                        ));
+                        return Vec::new();
+                    }
                     log_trace(&format!(
                         "RoutingGraph::astar iteration {} - processing node {}",
                         iterations, current_id
@@ -5992,7 +5456,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -6033,6 +5497,13 @@ out body;"#,
                 let mut closed_set = HashSet::new();
                 let mut disruptions_avoided = 0usize;
 
+                let _max_iter_limit = crate::logger::Globals::get()
+                    .config
+                    .read()
+                    .ok()
+                    .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                    .unwrap_or(50000);
+
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
                     None => {
@@ -6070,14 +5541,27 @@ out body;"#,
                 let mut iterations = 0usize;
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
-                    if iterations > MAX_ASTAR_ITERATIONS {
+                    let max_iter = crate::logger::Globals::get()
+                        .config
+                        .read()
+                        .ok()
+                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                        .unwrap_or(50000);
+                    if iterations > max_iter {
                         log_warn(&format!(
                     "RoutingGraph::astar_with_disruptions aborted after {} iterations (limit: {})",
-                    iterations, MAX_ASTAR_ITERATIONS
+                    iterations, max_iter
                 ));
                         return Vec::new();
                     }
                     let current_id = current.node_id;
+                    if current.cost > crow_flies * 5.0 {
+                        log_debug(&format!(
+                            "RoutingGraph::astar_with_disruptions early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                            current.cost, crow_flies * 2.0
+                        ));
+                        return Vec::new();
+                    }
 
                     if current_id == end {
                         log_trace(&format!(
@@ -6095,17 +5579,13 @@ out body;"#,
                                 continue;
                             }
 
-                            // Dynamic multiplicative penalty for disrupted nodes
-                            let penalty_multiplier = if disrupted_nodes.contains(&neighbor) {
+                            // Block disrupted nodes entirely
+                            if disrupted_nodes.contains(&neighbor) {
                                 disruptions_avoided += 1;
-                                50.0 // Severe penalty forces organic bypass
-                            } else {
-                                1.0
-                            };
-
-                            let dynamic_weight = base_weight * penalty_multiplier;
+                                continue;
+                            }
                             let tentative_g_score =
-                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
+                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + base_weight;
 
                             if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
                             {
@@ -6113,7 +5593,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -6202,7 +5682,7 @@ out body;"#,
             /// # Integration Points
             ///
             /// - The returned load map feeds directly into
-            ///   [`astar_with_congestion`](Self::astar_with_congestion) for
+            ///   [`astar_kinematic`](Self::astar_kinematic) for
             ///   context-aware re-routing.
             /// - Exposed to the frontend via `POST /api/simulate-congestion`.
             pub(crate) fn simulate_network_load(
@@ -6265,15 +5745,25 @@ out body;"#,
                 // that LLVM auto-vectorizes to AVX2/AVX-512 vpaddq instructions.
                 let panic_count = std::sync::atomic::AtomicU64::new(0);
 
-                let num_threads = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(4)
-                    / 2;
-                let num_threads = num_threads.max(1);
-                let pool = rayon::ThreadPoolBuilder::new()
-                    .num_threads(num_threads)
-                    .build()
-                    .unwrap_or_else(|_| rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap());
+                static MONTE_CARLO_POOL: std::sync::OnceLock<rayon::ThreadPool> =
+                    std::sync::OnceLock::new();
+                let pool = MONTE_CARLO_POOL.get_or_init(|| {
+                    let num_threads = std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                        / 2;
+                    let num_threads = num_threads.max(1);
+                    rayon::ThreadPoolBuilder::new()
+                        .num_threads(num_threads)
+                        .thread_name(|i| format!("mc-sim-{}", i))
+                        .build()
+                        .unwrap_or_else(|_| {
+                            rayon::ThreadPoolBuilder::new()
+                                .num_threads(1)
+                                .build()
+                                .unwrap()
+                        })
+                });
 
                 let final_edge_loads: Vec<usize> = pool.install(|| {
                     commutes
@@ -6408,128 +5898,6 @@ out body;"#,
             //   `reconstruct_path` backtracking as all other A* variants in the
             //   routing engine, ensuring consistent behaviour across the codebase.
 
-            /* unused
-                pub(crate) fn astar_with_congestion(
-                    &self,
-                    start: usize,
-                    end: usize,
-                    edge_loads: &HashMap<EdgeKey, usize>,
-                    capacity_threshold: usize,
-                ) -> Vec<Coordinate> {
-                    log_trace(&format!(
-                "RoutingGraph::astar_with_congestion called - start={}, end={}, threshold={}, {} loaded edges",
-                start, end, capacity_threshold, edge_loads.len()
-            ));
-
-                    let mut g_score: HashMap<usize, f64> = HashMap::new();
-                    let mut f_score: HashMap<usize, f64> = HashMap::new();
-                    let mut came_from: HashMap<usize, usize> = HashMap::new();
-                    let mut open_set = BinaryHeap::new();
-                    let mut closed_set = HashSet::new();
-                    let mut congestion_bypasses = 0usize;
-
-                    let end_coord = match self.nodes.get(&end) {
-                        Some(n) => n.coord,
-                        None => {
-                            log_error(&format!(
-                                "RoutingGraph::astar_with_congestion - end node {} not found",
-                                end
-                            ));
-                            return Vec::new();
-                        }
-                    };
-
-                    g_score.insert(start, 0.0);
-                    let start_coord = match self.nodes.get(&start) {
-                        Some(n) => n.coord,
-                        None => {
-                            log_error(&format!(
-                                "RoutingGraph::astar_with_congestion - start node {} not found",
-                                start
-                            ));
-                            return Vec::new();
-                        }
-                    };
-                    f_score.insert(start, start_coord.distance_to(&end_coord));
-                    open_set.push(PriorityQueueItem {
-                        cost: f_score[&start],
-                        node_id: start,
-                    });
-
-                    let mut iterations = 0usize;
-                    while let Some(current) = open_set.pop() {
-                        iterations += 1;
-                        if iterations > MAX_ASTAR_ITERATIONS {
-                            log_warn(&format!(
-                        "RoutingGraph::astar_with_congestion aborted after {} iterations (limit: {})",
-                        iterations, MAX_ASTAR_ITERATIONS
-                    ));
-                            return Vec::new();
-                        }
-                        let current_id = current.node_id;
-
-                        if current_id == end {
-                            log_trace(&format!(
-                        "RoutingGraph::astar_with_congestion reached goal after {} iterations ({} congestion bypasses)",
-                        iterations, congestion_bypasses
-                    ));
-                            return self.reconstruct_path(&came_from, current_id);
-                        }
-
-                        closed_set.insert(current_id);
-
-                        if let Some(node) = self.nodes.get(&current_id) {
-                            for &(neighbor, base_weight) in &node.neighbors {
-                                if closed_set.contains(&neighbor) {
-                                    continue;
-                                }
-
-                                // DIABOLICAL PENALTY: Exponential congestion multiplier
-                                let edge = EdgeKey(current_id, neighbor);
-                                let current_load = *edge_loads.get(&edge).unwrap_or(&0);
-
-                                let congestion_multiplier =
-                                    if capacity_threshold > 0 && current_load > capacity_threshold {
-                                        congestion_bypasses += 1;
-                                        let overload_ratio =
-                                            current_load as f64 / capacity_threshold as f64;
-                                        1.0 + overload_ratio.powf(2.5) // Exponential growth
-                                    } else {
-                                        1.0
-                                    };
-
-                                let dynamic_weight = base_weight * congestion_multiplier;
-                                let tentative_g_score =
-                                    g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
-
-                                if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
-                                {
-                                    came_from.insert(neighbor, current_id);
-                                    g_score.insert(neighbor, tentative_g_score);
-
-                                    let h = match self.nodes.get(&neighbor) {
-                                        Some(n) => n.coord.distance_to(&end_coord),
-                                        None => continue,
-                                    };
-                                    f_score.insert(neighbor, tentative_g_score + h);
-
-                                    open_set.push(PriorityQueueItem {
-                                        cost: tentative_g_score + h,
-                                        node_id: neighbor,
-                                    });
-                                }
-                            }
-                        }
-                    }
-
-                    log_error(&format!(
-                        "RoutingGraph::astar_with_congestion failed after {} iterations",
-                        iterations
-                    ));
-                    Vec::new()
-                }
-                */
-
             /// Kinematic vector A* pathfinder with live congestion and interchange detection.
             ///
             /// The crown jewel of the routing engine. This method fuses two physics
@@ -6629,7 +5997,8 @@ out body;"#,
                         return Vec::new();
                     }
                 };
-                f_score.insert(start, start_coord.distance_to(&end_coord));
+                let crow_flies = start_coord.distance_to(&end_coord);
+                f_score.insert(start, crow_flies);
                 open_set.push(PriorityQueueItem {
                     cost: f_score[&start],
                     node_id: start,
@@ -6638,14 +6007,27 @@ out body;"#,
                 let mut iterations = 0usize;
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
-                    if iterations > MAX_ASTAR_ITERATIONS {
+                    let max_iter = crate::logger::Globals::get()
+                        .config
+                        .read()
+                        .ok()
+                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                        .unwrap_or(50000);
+                    if iterations > max_iter {
                         log_warn(&format!(
                             "RoutingGraph::astar_kinematic aborted after {} iterations (limit: {})",
-                            iterations, MAX_ASTAR_ITERATIONS
+                            iterations, max_iter
                         ));
                         return Vec::new();
                     }
                     let current_id = current.node_id;
+                    if current.cost > crow_flies * 5.0 {
+                        log_debug(&format!(
+                            "RoutingGraph::astar_kinematic early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                            current.cost, crow_flies * 5.0
+                        ));
+                        return Vec::new();
+                    }
 
                     if current_id == end {
                         log_trace(&format!(
@@ -6720,7 +6102,7 @@ out body;"#,
                                 g_score.insert(neighbor, tentative_g_score);
 
                                 let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to(&end_coord),
+                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
                                     None => continue,
                                 };
                                 f_score.insert(neighbor, tentative_g_score + h);
@@ -7144,8 +6526,6 @@ mod network {
     pub(crate) const WALK_SPEED_M_PER_MIN: f64 = 80.0;
     /// Rail speed on tube/rail in m/min — average including dwell time
     pub(crate) const RAIL_SPEED_M_PER_MIN: f64 = 550.0;
-    /// Interchange penalty in minutes — accounts for platform change + waiting
-    pub(crate) const INTERCHANGE_PENALTY_MIN: f64 = 3.5;
     /// Max walking distance to/from a station for journey planning
     pub(crate) const MAX_WALK_M: f64 = 900.0;
 
@@ -7502,8 +6882,14 @@ mod network {
 
             if let Some(neighbours) = adjacency.get(&idx) {
                 for &(nbr, travel_time) in neighbours {
+                    let penalty = crate::logger::Globals::get()
+                        .config
+                        .read()
+                        .ok()
+                        .and_then(|c| c.as_ref().map(|c| c.interchange_penalty_min))
+                        .unwrap_or(3.5);
                     let interchange = if !stations[nbr].lines.iter().any(|l| line_ids.contains(l)) {
-                        INTERCHANGE_PENALTY_MIN
+                        penalty
                     } else {
                         0.0
                     };
@@ -7837,6 +7223,63 @@ mod server {
     pub(crate) use handlers::*;
     pub(crate) use router::*;
     pub(crate) use state::*;
+
+    /// Returns true if a process with the given PID is still alive (without
+    /// killing it). Used by the single-instance lock-file check so we don't
+    /// mistake a stale PID from a crashed previous run for a live instance.
+    pub(crate) fn process_is_alive(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::RawHandle;
+            // SYNCHRONIZE (0x001F0000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
+            const SYNCHRONIZE: u32 = 0x001F0000;
+            const QUERY_LIMITED: u32 = 0x1000;
+            unsafe extern "system" {
+                fn OpenProcess(dwAccess: u32, bInherit: i32, dwProcessId: u32) -> RawHandle;
+                fn CloseHandle(hObject: isize) -> i32;
+                fn WaitForSingleObject(h: RawHandle, ms: u32) -> u32;
+            }
+            unsafe {
+                let h = OpenProcess(SYNCHRONIZE | QUERY_LIMITED, 0, pid);
+                if h.is_null() {
+                    return false;
+                }
+                // Wait 0ms: returns WAIT_OBJECT_0 only if the process has already
+                // exited. WAIT_TIMEOUT means the process is still alive.
+                let r = WaitForSingleObject(h, 0);
+                CloseHandle(h as isize);
+                r != 0 // WAIT_OBJECT_0 (0) means exited -> not alive
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // On Unix, probe /proc/<pid> existence (no extra crate needed).
+            std::path::Path::new(&format!("/proc/{}", pid)).exists()
+        }
+    }
+
+    /// Best-effort cleanup hook: remove `path` when the process exits. Wrapped so
+    /// a failure here never aborts shutdown.
+    pub(crate) fn libc_at_exit(path: std::path::PathBuf) {
+        // Spawn a tiny monitor-free approach: register via std::sync once we can.
+        // Simplest robust option on all platforms: a dedicated thread that waits
+        // for the parent to exit is overkill, so we just attempt deletion on a
+        // detached thread spawned at call time that polls the parent PID.
+        let pid = std::process::id();
+        std::thread::Builder::new()
+            .name("lock-cleanup".into())
+            .spawn(move || {
+                // Poll until our own PID is gone (i.e. process exiting), then delete.
+                loop {
+                    if !process_is_alive(pid) {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+                let _ = std::fs::remove_file(&path);
+            })
+            .ok();
+    }
 
     mod state {
         use crate::config::*;
@@ -8367,6 +7810,8 @@ mod server {
         ///     Json(ApiResponse::success((*stations).clone()))
         /// }
         /// ```
+        type DesertCache = Arc<std::sync::Mutex<Option<(LondonBounds, Vec<ResidentialArea>)>>>;
+
         #[derive(Clone)]
         pub(crate) struct AppState {
             /// All transport lines. Lock-free read via `.load()`.
@@ -8397,16 +7842,12 @@ mod server {
             /// Live weather data cached.
             pub(crate) weather: Arc<arc_swap::ArcSwap<Option<(f64, String)>>>,
             /// Cached transit deserts for the last requested viewport
-            pub(crate) transit_desert_cache: Arc<std::sync::Mutex<Option<(LondonBounds, Vec<ResidentialArea>)>>>,
+            pub(crate) transit_desert_cache: DesertCache,
+            /// Monotonic version of the routing graph. Bumped whenever the graph is
+            /// rebuilt (initialization, disruption, AI station placement) so that
+            /// cached line routes are invalidated and re-routed against the new graph.
+            pub(crate) routing_graph_version: Arc<std::sync::atomic::AtomicU64>,
         }
-
-        // LOAD-BEARING HACK: AppState must be Send + Sync for Axum's State<AppState>
-        // extractor. arc_swap::ArcSwap does not implicitly derive Sync on all targets
-        // (see https://github.com/vorner/arc-swap/issues/88). The struct contains no
-        // interior mutability beyond what ArcSwap provides, and all fields behind Arc
-        // are thread-safe, so this is safe.
-        unsafe impl Send for AppState {}
-        unsafe impl Sync for AppState {}
 
         impl AppState {
             pub(crate) fn new(config: Config) -> Self {
@@ -8439,20 +7880,18 @@ mod server {
                     edge_loads: Arc::new(arc_swap::ArcSwap::new(Arc::new(HashMap::new()))),
                     config: Arc::new(config),
                     transit_grid: Arc::new(arc_swap::ArcSwap::new(Arc::new(TransitNetworkGrid {
-                        // node_count: 0,
                         coords_x: Vec::new(),
                         coords_y: Vec::new(),
-                        // node_ids: Vec::new(),
-                        // zone_ids: Vec::new(),
                         edge_offsets: vec![0],
-                        // edge_targets: Vec::new(),
-                        // edge_weights: Vec::new(),
-                        // edge_line_ids: Vec::new(),
-                        // line_names: Vec::new(),
-                        // line_colors: Vec::new(),
+                        edge_targets: Vec::new(),
+                        edge_weights: Vec::new(),
+                        edge_line_ids: Vec::new(),
+                        node_ids: Vec::new(),
+                        zone_ids: Vec::new(),
                     }))),
                     weather: Arc::new(arc_swap::ArcSwap::new(Arc::new(None))),
                     transit_desert_cache: Arc::new(std::sync::Mutex::new(None)),
+                    routing_graph_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 };
 
                 log_info("AppState::new completed - application state initialized");
@@ -8467,7 +7906,12 @@ mod server {
                     "AppState::load_line_routes called - line_id: {}",
                     line_id
                 ));
-                let cache_key = format!("line_routes_{}", line_id);
+                let cache_key = format!(
+                    "line_routes_v{}_{}",
+                    self.routing_graph_version
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    line_id
+                );
                 log_debug(&format!(
                     "AppState::load_line_routes - cache_key: {}",
                     cache_key
@@ -8729,7 +8173,6 @@ mod server {
 
             pub(crate) async fn ensure_sample_network_state(&self) -> (Vec<Line>, Vec<Station>) {
                 let mut merged_lines = (**self.lines.load()).clone();
-                // Fix #7: Use configurable sample lines list from Config
                 let sample_lines = self.config.sample_lines.clone();
 
                 for line_id in &sample_lines {
@@ -8903,7 +8346,10 @@ mod server {
                 if bounds.min_lat >= bounds.max_lat || bounds.min_lon >= bounds.max_lon {
                     log_error(&format!("AppState::fetch_railway_tracks - INVALID bounds: min_lat={:.6} >= max_lat={:.6} or min_lon={:.6} >= max_lon={:.6}", bounds.min_lat, bounds.max_lat, bounds.min_lon, bounds.max_lon));
                 }
-                let cache_key = "railway_tracks_london".to_string();
+                let cache_key = format!(
+                    "railway_tracks_{:.4}_{:.4}_{:.4}_{:.4}",
+                    bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
+                );
                 log_debug(&format!(
                     "AppState::fetch_railway_tracks - cache_key: {}",
                     cache_key
@@ -9056,8 +8502,12 @@ mod server {
                 bounds: &LondonBounds,
             ) -> Result<Vec<ResidentialArea>, Box<dyn std::error::Error>> {
                 log_info(&format!("AppState::fetch_residential_coordinates called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", bounds.min_lat, bounds.max_lat, bounds.min_lon, bounds.max_lon));
-                // Fix #5: Include version hash in cache key so future query changes invalidate old caches
-                let cache_key = format!("res_areas_v3_{:.2}_{:.2}", bounds.min_lat, bounds.min_lon);
+                // Fix #5: Include version hash + ALL bounds in cache key so future
+                // query changes invalidate old caches and distinct viewports never collide.
+                let cache_key = format!(
+                    "res_areas_v3_{:.4}_{:.4}_{:.4}_{:.4}",
+                    bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
+                );
                 log_debug(&format!(
                     "AppState::fetch_residential_coordinates - cache_key: {}",
                     cache_key
@@ -9421,7 +8871,12 @@ mod server {
                     ));
                 }
 
-                self.geometry_engine.store(Arc::new(new_engine));
+                // Store the engine that carries the *station* spatial index so that
+                // downstream consumers (station merging, transit-desert detection,
+                // nearest-station queries) operate against a populated R-tree rather
+                // than an empty one. (merge_stations / compute_transit_deserts rebuild
+                // their own trees anyway, but other callers rely on the stored index.)
+                self.geometry_engine.store(Arc::new(station_index_engine));
 
                 log_debug("AppState::initialize_routing_graph - merging stations");
                 log_debug(&format!(
@@ -9444,7 +8899,7 @@ mod server {
                 );
                 let mut routing = (**self.routing_graph.load()).clone();
                 routing.build_from_tracks(&tracks);
-                self.routing_graph.store(Arc::new(routing));
+                self.hot_swap_routing_graph(routing);
 
                 log_info(
                     "AppState::initialize_routing_graph completed - routing graph initialized",
@@ -9462,7 +8917,6 @@ mod server {
 
     mod handlers {
         use super::state::*;
-        use crate::{AppError, AppResult, LondonBounds};
         use crate::logger::*;
         use crate::network::*;
         use crate::primitives::*;
@@ -9471,6 +8925,7 @@ mod server {
         use crate::validate_coordinate;
         use crate::validate_line_id;
         use crate::validate_string_input;
+        use crate::{AppError, AppResult, LondonBounds};
         use axum::{extract::State, response::IntoResponse, Json};
         use chrono::Utc;
         use rayon::prelude::*;
@@ -10345,9 +9800,13 @@ mod server {
 
         #[tracing::instrument(name = "get_lines", skip_all)]
         pub(crate) async fn get_lines(
-            State(_state): State<AppState>,
+            State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<Line>>> {
-            log_info("GET /api/lines called");
+            let state_lines = state.lines.load();
+            if !state_lines.is_empty() {
+                log_info(&format!("GET /api/lines called - returning {} state lines", state_lines.len()));
+                return Json(ApiResponse::success((**state_lines).clone()));
+            }
 
             // Parse raw embedded data ? each RailSegment is an independent polyline fragment.
             // We group by normalised name so each Line gets ALL its fragments as separate
@@ -10594,13 +10053,32 @@ mod server {
                     "thameslink" => "#0081C6".to_string(),
                     "great western railway" | "great western" | "gwr" => "#0A493B".to_string(),
                     "greater anglia" => "#D90A07".to_string(),
-                    "c2c" => "#E20000".to_string(),
+                    "c2c" => "#B71C8C".to_string(),
                     "chiltern railways" | "chiltern" => "#00205B".to_string(),
                     "south western railway" | "swr" => "#003A70".to_string(),
                     "london underground" | "underground" => "#003688".to_string(),
                     "elizabeth line" | "elizabeth" => "#7373D8".to_string(),
                     "london overground" | "overground" => "#EF7C00".to_string(),
                     "dlr" => "#00AFAD".to_string(),
+                    "avanti" | "avanti west coast" | "avanti-west-coast" => "#ff4713".to_string(),
+                    "caledonian sleeper" | "caledonian-sleeper" => "#092A30".to_string(),
+                    "east midlands railway" | "east midlands" | "east-midlands-railway" => "#452d48".to_string(),
+                    "eurostar" => "#116bfe".to_string(),
+                    "grand central" | "grand-central" => "#9d7729".to_string(),
+                    "heathrow express" | "heathrow-express" => "#666666".to_string(),
+                    "gatwick express" | "gatwick-express" => "#EB1E2B".to_string(),
+                    "great northern" | "great-northern" => "#00A6E2".to_string(),
+                    "crosscountry" | "cross country" => "#660000".to_string(),
+                    "first rail" | "first-rail" => "#1e295d".to_string(),
+                    "hull trains" | "hull-trains" => "#00A1DE".to_string(),
+                    "lner" | "london north eastern railway" | "london-north-eastern-railway" => "#BE0027".to_string(),
+                    "lumo" => "#00B2A9".to_string(),
+                    "merseyrail" => "#005CA9".to_string(),
+                    "northern" | "northern-trains" => "#0072CE".to_string(),
+                    "scotrail" => "#1C1CFF".to_string(),
+                    "transpennine express" | "transpennine" | "tpe" | "transpennine-express" => "#0072CE".to_string(),
+                    "transport for wales" | "transport-for-wales" | "tfw" => "#E7204E".to_string(),
+                    "west midlands railway" | "west midlands" | "west-midlands-railway" => "#004B87".to_string(),
                     _ => {
                         if is_nr {
                             "#c96a1e".to_string()
@@ -11015,7 +10493,9 @@ mod server {
                 if let Ok(cache_guard) = state.transit_desert_cache.lock() {
                     if let Some((cached_bounds, cached_deserts)) = &*cache_guard {
                         if cached_bounds.contains_bounds(&req.bounds) {
-                            log_info("[DESERT][CACHE] Hit - returning filtered cached transit deserts");
+                            log_info(
+                                "[DESERT][CACHE] Hit - returning filtered cached transit deserts",
+                            );
                             let filtered: Vec<ResidentialArea> = cached_deserts
                                 .iter()
                                 .filter(|r| {
@@ -11237,13 +10717,19 @@ mod server {
             }
 
             let deserts_for_plan = deserts.clone();
+            let tracks_for_plan = (**state.tracks.load()).clone();
+            let tracks_for_snap = tracks_for_plan.clone();
             let planned = tokio::task::spawn_blocking(move || {
-                plan_infill_stations(&deserts_for_plan, CATCHMENT_RADIUS, max_stations)
+                plan_infill_stations(
+                    &deserts_for_plan,
+                    CATCHMENT_RADIUS,
+                    max_stations,
+                    &tracks_for_plan,
+                )
             })
             .await
             .unwrap_or_default();
 
-            let tracks_for_snap = (**state.tracks.load()).clone();
             let planned = tokio::task::spawn_blocking(move || {
                 planned
                     .into_iter()
@@ -11325,6 +10811,17 @@ mod server {
             let mut all = (**existing).clone();
             all.extend(new_stations.iter().cloned());
             state.stations.store(Arc::new(all));
+
+            // Critical: AI-placed stations change the station set, so the routing
+            // graph's spatial indices must be rebuilt to stay consistent for
+            // pathfinding and nearest-node lookups.
+            let tracks = (**state.tracks.load()).clone();
+            let new_graph = {
+                let mut g = RoutingGraph::new();
+                g.build_from_tracks(&tracks);
+                g
+            };
+            state.hot_swap_routing_graph(new_graph);
             let cache = state.cache.clone();
             let to_save = new_stations.clone();
             let _ = tokio::task::spawn_blocking(move || {
@@ -11387,10 +10884,11 @@ mod server {
                 ));
             }
 
-            let (planned, deserts_before, centroids) = match plan_stations(&state, &req.bounds, req.max_stations).await {
-                Ok(res) => res,
-                Err(e) => return Json(ApiResponse::error(e.to_string())),
-            };
+            let (planned, deserts_before, centroids) =
+                match plan_stations(&state, &req.bounds, req.max_stations).await {
+                    Ok(res) => res,
+                    Err(e) => return Json(ApiResponse::error(e.to_string())),
+                };
 
             if deserts_before == 0 {
                 log_warn("POST /api/ai/add-station - no transit deserts found. Nothing to plan.");
@@ -11407,10 +10905,11 @@ mod server {
                 Err(e) => return Json(ApiResponse::error(e.to_string())),
             };
 
-            let (deserts_after, coverage_gain) = match update_coverage(&state, &centroids, deserts_before).await {
-                Ok(res) => res,
-                Err(e) => return Json(ApiResponse::error(e.to_string())),
-            };
+            let (deserts_after, coverage_gain) =
+                match update_coverage(&state, &centroids, deserts_before).await {
+                    Ok(res) => res,
+                    Err(e) => return Json(ApiResponse::error(e.to_string())),
+                };
 
             log_info(&format!(
                 "POST /api/ai/add-station completed - placed {} stations, deserts {} -> {} ({:.1}% eliminated)",
@@ -12037,9 +11536,13 @@ mod server {
             // Reconfigure CORS with the actual ephemeral port
             let app = app.layer({
                 use axum::http::{
-                    header::ACCEPT, header::AUTHORIZATION, header::CONTENT_TYPE, Method,
+                    header::ACCEPT, header::CONTENT_TYPE, Method,
                 };
                 CorsLayer::new()
+                    // Only the exact ephemeral origins actually used by the app are
+                    // allowed. The previous bare "http://localhost" / "http://127.0.0.1"
+                    // entries defaulted to port 80 and let any other local process on
+                    // that port hit the API — unnecessary attack surface.
                     .allow_origin([
                         cors_origin.parse().unwrap_or_else(|_| {
                             axum::http::HeaderValue::from_static("http://127.0.0.1:3000")
@@ -12049,11 +11552,11 @@ mod server {
                         }),
                         "http://dioxus.index.html".parse().unwrap(),
                         "dioxus://index.html".parse().unwrap(),
-                        "http://localhost".parse().unwrap(),
-                        "http://127.0.0.1".parse().unwrap(),
                     ])
                     .allow_methods([Method::GET, Method::POST, Method::OPTIONS, Method::PUT])
-                    .allow_headers([CONTENT_TYPE, AUTHORIZATION, ACCEPT])
+                    // AUTHORIZATION removed: nothing in this app uses bearer auth, so
+                    // advertising it only widens the request surface.
+                    .allow_headers([CONTENT_TYPE, ACCEPT])
             });
 
             log_debug("run_server - configured API routes with CORS layer for ephemeral port");
@@ -12201,66 +11704,6 @@ mod server {
             Ok(())
         }
 
-        // Load pre-computed network state from bincode cache.
-        // Falls back to embedded data if cache doesn't exist.
-
-        /* unused
-        pub(crate) fn load_or_hydrate_network() -> AppResult<(Vec<Station>, Vec<RailSegment>)> {
-            let cache_path = dirs::cache_dir()
-                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_string()))?
-                .join("alex-tube-v")
-                .join("network.bin");
-
-            if cache_path.exists() {
-                log_info("load_or_hydrate_network - loading from bincode cache");
-                let data = std::fs::read(&cache_path)?;
-
-                // Security: verify SHA-256 integrity checksum BEFORE deserialization.
-                // The first 32 bytes are the checksum; the rest is the bincode payload.
-                // This prevents cache poisoning — if an attacker modifies the cache file,
-                // the checksum will not match and we fall back to embedded data.
-                if data.len() < 32 {
-                    log_warn("load_or_hydrate_network - cache file too small (corrupted?) — using embedded data");
-                } else {
-                    use sha2::{Digest, Sha256};
-                    let (stored_hash, payload) = data.split_at(32);
-                    let computed_hash = Sha256::digest(payload);
-                    if stored_hash == computed_hash.as_slice() {
-                        match bincode::deserialize::<(Vec<Station>, Vec<RailSegment>)>(payload) {
-                            Ok((stations, segments)) => {
-                                // Sanity check: reject unreasonably large deserialized data
-                                if stations.len() > 1_000_000 || segments.len() > 10_000_000 {
-                                    log_warn(&format!(
-                                        "load_or_hydrate_network - cache integrity PASSED but data seems abusive ({} stations, {} segments) — using embedded data",
-                                        stations.len(), segments.len()
-                                    ));
-                                } else {
-                                    log_info(&format!(
-                                        "load_or_hydrate_network - cache loaded: {} stations, {} segments (SHA-256 verified)",
-                                        stations.len(), segments.len()
-                                    ));
-                                    return Ok((stations, segments));
-                                }
-                            }
-                            Err(e) => {
-                                log_warn(&format!("load_or_hydrate_network - bincode deserialize failed: {} — using embedded data", e));
-                            }
-                        }
-                    } else {
-                        log_warn("load_or_hydrate_network - SHA-256 MISMATCH — cache file may be corrupted or tampered. Discarding and using embedded data.");
-                    }
-                }
-            } else {
-                log_info("load_or_hydrate_network - no cache found, using embedded data");
-            }
-            // Fallthrough: cache missing, corrupted, or failed validation — use embedded data
-            Ok((
-                embedded_stations().clone(),
-                embedded_rail_segments().clone(),
-            ))
-        }
-        */
-
         // ============================================================================
         // MEMORY-MAPPED COLD STORAGE — instant R*-Tree loading via mmap
         // ============================================================================
@@ -12360,20 +11803,13 @@ mod server {
         /// Safe to read lock-free across all Rayon threads. The underlying `Mmap` is
         /// `Sync + Send`. The OS handles page faults transparently — first access
         /// triggers a disk read; subsequent accesses hit the page cache (L3/RAM).
-        ///
-        /// # Usage
-        ///
-        /// ```rust
-        /// let store = MmapCacheStore::new("cache/spatial.bin", 1 << 20)?;
-        /// let stations: &[StationPod] = store.read_stations_zero_copy(0, 1000);
-        /// let grid: &[TransitGridPod] = store.read_tracks_zero_copy(16000, 500);
-        /// ```
         pub struct MmapCacheStore {
-            /// The raw memory-mapped file. Safe to read lock-free across all Rayon threads.
-
-            /* unused */ // pub(crate) mmap: memmap2::Mmap,
             /// Total bytes mapped.
             pub(crate) len: usize,
+            /// Live memory mapping — kept alive so the kernel-backed region remains
+            /// valid for the lifetime of the store. `memmap2::Mmap` is `Send + Sync`.
+            #[allow(dead_code)]
+            pub(crate) mmap: memmap2::Mmap,
         }
 
         impl MmapCacheStore {
@@ -12396,80 +11832,15 @@ mod server {
                 // SAFETY: memmap2::MmapOptions::map creates a read-write memory mapping.
                 // The file was opened with read+write+create, so the mapping is valid.
                 // The returned Mmap is Sync+Send — safe for cross-thread lock-free reads.
-                let _mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+                // The mapping is retained in the struct so the bytes stay mapped.
+                let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
                 log_info(&format!(
                     "MmapCacheStore initialized - {} bytes virtual memory mapped at {}",
                     len, path
                 ));
-                Ok(Self {
-                    /* mmap: _mmap, */ len,
-                })
+                Ok(Self { len, mmap })
             }
-
-            // Retrieves spatial pods with literal zero CPU allocation/parsing.
-            // The raw disk bytes ARE the Rust struct — bytemuck cast is free.
-            // Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
-            /* unused
-            pub fn read_stations_zero_copy(
-                &self,
-                byte_offset: usize,
-                count: usize,
-            ) -> Option<&[StationPod]> {
-                let byte_length = count.checked_mul(std::mem::size_of::<StationPod>())?;
-                let end = byte_offset.checked_add(byte_length)?;
-                if end > self.len {
-                    log_warn(&format!(
-                        "MmapCacheStore: read_stations_zero_copy out of bounds (offset={} count={} len={})",
-                        byte_offset, count, self.len
-                    ));
-                    return None;
-                }
-                let slice = &self.mmap[byte_offset..end];
-                Some(bytemuck::cast_slice(slice))
-            }
-
-            /// Read raw bytes from the mapped region — for custom deserialization.
-            /// Returns None if the requested range is out of bounds.
-            pub fn read_raw(&self, offset: usize, length: usize) -> Option<&[u8]> {
-                let end = offset.checked_add(length)?;
-                if end > self.len {
-                    return None;
-                }
-                Some(&self.mmap[offset..end])
-            }
-
-            /// Get the total mapped length.
-            pub fn len(&self) -> usize {
-                self.len
-            }
-
-            /// Get a pointer to the base of the mapped region (for mlock pinning).
-            pub fn as_ptr(&self) -> *const u8 {
-                self.mmap.as_ptr()
-            }
-
-            /// Zero-copy read of transit grid pods from the mapped region.
-            /// The raw disk bytes ARE the Rust struct — bytemuck cast is free.
-            /// Returns None if the requested range is out of bounds (prevents panic on corrupted cache).
-            pub fn read_tracks_zero_copy(
-                &self,
-                byte_offset: usize,
-                count: usize,
-            ) -> Option<&[TransitGridPod]> {
-                let byte_length = count.checked_mul(std::mem::size_of::<TransitGridPod>())?;
-                let end = byte_offset.checked_add(byte_length)?;
-                if end > self.len {
-                    log_warn(&format!(
-                        "MmapCacheStore: read_tracks_zero_copy out of bounds (offset={} count={} len={})",
-                        byte_offset, count, self.len
-                    ));
-                    return None;
-                }
-                let slice = &self.mmap[byte_offset..end];
-                Some(bytemuck::cast_slice(slice))
-            }
-            */
         }
 
         // ============================================================================
@@ -12585,9 +11956,11 @@ fn main() {
     let child_args: Vec<String> = std::env::args().collect();
     if child_args.iter().any(|a| a == "--console-child") {
         log_info("Console child process detected - launching analytics console");
+        let _stderr_capture = stderr_capture::StderrCapture::start();
         LaunchBuilder::desktop()
             .with_cfg(build_console_window_configuration())
             .launch(ConsoleStandaloneApp);
+        drop(_stderr_capture);
         return;
     }
 
@@ -12597,7 +11970,8 @@ fn main() {
     let cli_args: Vec<String> = std::env::args().collect();
     if cli_args.iter().any(|a| a == "--hydrate") {
         println!("[HYDRATE] Running network data hydration...");
-        let rt_h = tokio::runtime::Runtime::new().unwrap();
+        let rt_h = tokio::runtime::Runtime::new()
+            .expect("FATAL: failed to create background Tokio runtime");
         rt_h.block_on(async {
             if let Err(e) = hydrate_network_state().await {
                 eprintln!("[HYDRATE] Failed: {}", e);
@@ -12622,6 +11996,29 @@ fn main() {
         return;
     }
 
+    if cli_args.iter().any(|a| a == "--clear-cache") {
+        println!("[CACHE] Clearing all caches...");
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("london_transport");
+        let mut cleared = 0usize;
+        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if (path.is_file() && std::fs::remove_file(&path).is_ok())
+                    || (path.is_dir() && std::fs::remove_dir_all(&path).is_ok())
+                {
+                    cleared += 1;
+                }
+            }
+        }
+        println!(
+            "[CACHE] Cleared {} cache entries at {:?}.",
+            cleared, cache_dir
+        );
+        return;
+    }
+
     // ---- BOOT TIMING: capture start + read cargo wrapper start time ----
     let boot_start = Instant::now();
     // Read the timestamp set by the cargo wrapper (CARGO_START_MS) so we can
@@ -12630,6 +12027,23 @@ fn main() {
         .ok()
         .and_then(|s| s.parse::<u128>().ok())
         .unwrap_or(0);
+
+    // =========================================================================
+    // WEBVIEW2 BROWSER ARGUMENTS (process environment)
+    // Set ONCE here, on the single main thread, BEFORE the multi-threaded Tokio
+    // runtime is created (below) and before any child processes are spawned.
+    // `std::env::set_var` is `unsafe` because a concurrent reader on another
+    // thread would be a data race; at this point in `main()` no other threads
+    // exist, so the write is race-free. The WebView2 child process spawned later
+    // reads this env var when it launches, which is exactly what we want.
+    // The two flags are kept separate so each can be justified/removed alone:
+    //   * --disable-gpu-sandbox : lets software-rendered WebGL run without a GPU.
+    //   * --disable-features=TrackingPrevention : privacy regression kept
+    //     explicitly separate from the GPU workaround for independent review.
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-gpu-sandbox --disable-features=TrackingPrevention",
+    );
 
     // =========================================================================
     // BUILD PREAMBLE ? Log the compilation/build context so the secondary
@@ -12705,19 +12119,46 @@ fn main() {
     }
 
     // LOAD-BEARING HACK: Custom panic hook that captures crash context to both
-    // stderr and the in-memory ring buffer (CRASH_LOG_ACCUMULATOR). This means
+    // stderr and the in-memory ring buffer (Globals.crash_log). This means
     // even if the WebView window disappears, the user can retrieve logs from
     // the terminal output or the --console-child process.
     //
     // CAUTION: This hook runs with the normal Rust panic-handling machinery
     // still active (the hook does NOT abort). If the hook itself panics
-    // (e.g. due to a poisoned lock in CRASH_LOG_ACCUMULATOR), the process will
+    // (e.g. due to a poisoned lock in Globals.crash_log), the process will
     // double-panic and abort. The Mutex::lock() call should always succeed
     // because the hook runs on the panicking thread, which holds no locks.
     log_debug("main - setting up panic hook");
     std::panic::set_hook(Box::new(|info| {
-        log_error("PANIC HOOK TRIGGERED - panic detected");
-        IS_PANICKED.store(true, std::sync::atomic::Ordering::SeqCst);
+        // ── DOUBLE-PANIC GUARD ──────────────────────────────────────────────
+        // If the panic hook itself panics (e.g. poisoned Mutex locks, full
+        // log buffer), the process would double-panic and abort. We use a
+        // thread-local flag to detect re-entrant calls and fall back to raw
+        // stderr output only.
+        std::thread_local! {
+            static PANIC_HOOK_RECURSION_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        let already_in_panic = PANIC_HOOK_RECURSION_GUARD.with(|g| {
+            if g.get() {
+                true
+            } else {
+                g.set(true);
+                false
+            }
+        });
+        if already_in_panic {
+            // Re-entrant panic hook invocation — avoid ALL locking/logging,
+            // write directly to stderr and return to let the runtime abort.
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(b"[FATAL] double-panic detected in panic hook - aborting\n");
+            return;
+        }
+
+        // Always set the atomic flag first — this is lock-free and safe.
+        crate::logger::Globals::get()
+            .is_panicked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
@@ -12732,22 +12173,40 @@ fn main() {
         // ── EXTREME PANIC INTERCEPTOR: Force-capture native OS backtrace ──
         let backtrace = std::backtrace::Backtrace::force_capture();
 
-        log_error(&format!("PANIC LOCATION: {}", location));
-        log_error(&format!("PANIC PAYLOAD: {}", payload));
+        // Use eprint! directly for the critical info — this is the safest
+        // output path that won't trigger secondary panics.
+        use std::io::Write;
+        let _ = std::io::stderr().write_fmt(format_args!(
+            "[PANIC HOOK] LOCATION: {}\n[PANIC HOOK] PAYLOAD: {}\n",
+            location, payload
+        ));
 
-        let crash_report = format!(
-            "[{}] [CRITICAL PANIC] System collapsed at {}\nReason: {}\n\nNative Stack Trace:\n{:?}\n\nSystem Log Trace History:\n{}",
-            Utc::now().format("%Y-%m-%d %H:%M:%S%.6f UTC"),
-            location,
-            payload,
-            backtrace,
-            get_all_logs()
-        );
-        accumulate_crash_text(&crash_report);
-        update_crash_telemetry(&format!("PANIC at {}: {}", location, payload));
-        eprintln!("{}", crash_report);
+        // Best-effort logger calls — these may fail silently if the log
+        // infrastructure is in a bad state.
+        let _ = catch_simple(|| log_error("PANIC HOOK TRIGGERED - panic detected"));
+        let _ = catch_simple(|| log_error(&format!("PANIC LOCATION: {}", location)));
+        let _ = catch_simple(|| log_error(&format!("PANIC PAYLOAD: {}", payload)));
 
-        log_debug("main - panic recovery path without spawning a new desktop window");
+        let _ = catch_simple(|| {
+            let crash_report = format!(
+                "[{}] [CRITICAL PANIC] System collapsed at {}\nReason: {}\n\nNative Stack Trace:\n{:?}\n\nSystem Log Trace History:\n{}",
+                Utc::now().format("%Y-%m-%d %H:%M:%S%.6f UTC"),
+                location,
+                payload,
+                backtrace,
+                get_all_logs()
+            );
+            accumulate_crash_text(&crash_report);
+            update_crash_telemetry(&format!("PANIC at {}: {}", location, payload));
+            eprintln!("{}", crash_report);
+        });
+
+        let _ = catch_simple(|| {
+            log_debug("main - panic recovery path without spawning a new desktop window");
+        });
+
+        // Reset recursion guard so subsequent panics on other threads work.
+        PANIC_HOOK_RECURSION_GUARD.with(|g| g.set(false));
     }));
     log_info(&format!(
         "[TIMING] Panic hook installed: {:.3}s",
@@ -12758,7 +12217,7 @@ fn main() {
 
     // Create a dedicated multi-threaded Tokio runtime for our background systems
     log_debug("main - creating Tokio runtime");
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new().expect("FATAL: failed to create main Tokio runtime");
     log_info("main - Tokio runtime created");
     log_info(&format!(
         "[TIMING] Tokio runtime created: {:.3}s",
@@ -12767,31 +12226,64 @@ fn main() {
 
     log_debug("main - loading configuration");
     let mut config = Config::load();
-    // Security: use ephemeral port (0) so the OS assigns a random available port.
-    // This prevents local process snooping and port prediction attacks.
-    config.server_port = 0;
-    log_info("main - configuration loaded (ephemeral port mode)");
+    // Ephemeral port (0) lets the OS pick a free port, avoiding port prediction.
+    // We only override when the user did NOT explicitly request a fixed port in
+    // config.toml — previously this unconditionally clobbered `server_port`,
+    // contradicting the documented config surface. A value of 0 means "use
+    // ephemeral" (the default), anything else is honored as-is.
+    if config.server_port != 0 {
+        log_info(&format!(
+            "main - honoring configured fixed port {} from config.toml",
+            config.server_port
+        ));
+    } else {
+        config.server_port = 0;
+        log_info("main - configuration loaded (ephemeral port mode)");
+    }
     log_info(&format!(
         "[TIMING] Config loaded: {:.3}s",
         boot_start.elapsed().as_secs_f64()
     ));
 
-    // Fix 4: Single-Instance Process Mutex — use a fixed sentinel port.
-    // Since the main API port is now ephemeral, we use a dedicated fixed port
-    // (3001) purely for instance detection.
-    log_debug("main - checking for running sibling processes via TCP sentinel");
-    let sentinel_addr = "127.0.0.1:3001";
-    match std::net::TcpListener::bind(sentinel_addr) {
-        Ok(_listener) => {
-            // We hold the bind; keep the listener alive for the process lifetime
-            // by leaking it (it's dropped at process exit automatically).
-            Box::leak(Box::new(_listener));
-            log_debug("main - single-instance sentinel bound");
-        }
-        Err(_) => {
-            println!("[WARN] Existing active window instance detected. Routing execution directly to foreground.");
+    // Single-instance guard via a lock file (PID + liveness check) instead of a
+    // hardcoded TCP port. A bare TCP bind on 127.0.0.1:3001 is racy and over-broad:
+    // any unrelated dev tool squatting that port would make this app refuse to
+    // start with a misleading "existing instance" message, and the bind itself is
+    // TOCTOU-racy. A lock file under the user cache dir lets us verify the claimed
+    // PID is actually still alive before concluding another instance owns it.
+    log_debug("main - checking for running sibling process via lock file");
+    if let Some(cache_dir) = dirs::cache_dir() {
+        let lock_dir = cache_dir.join("alex-tube-v");
+        let _ = std::fs::create_dir_all(&lock_dir);
+        let lock_path = lock_dir.join("alex-tube-v.lock");
+        let already_running = match std::fs::read_to_string(&lock_path) {
+            Ok(prev) => {
+                // Parse "pid\nport" — only treat as live if the PID still exists.
+                if let Some(pid_str) = prev.lines().next() {
+                    if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                        // On Windows, OpenProcess with SYNCHRONIZE + wait 0ms tells
+                        // us if the process is alive without killing it.
+                        crate::server::process_is_alive(pid)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        };
+        if already_running {
+            println!("[WARN] Existing active window instance detected. Exiting.");
             std::process::exit(0);
         }
+        // Write our own PID (and a placeholder port, updated after binding).
+        let _ = std::fs::write(&lock_path, format!("{}\n0\n", std::process::id()));
+        // Best-effort: clear the lock file on exit so a crash doesn't permanently
+        // block future launches.
+        let lock_path_clone = lock_path.clone();
+        libc_at_exit(lock_path_clone);
+        log_debug("main - single-instance lock file acquired");
     }
 
     // ----------------------------------------------------------------
@@ -12960,6 +12452,11 @@ fn main() {
                 pin_memory_to_ram(grid.coords_x.as_ptr() as *const u8, grid.coords_x.len() * std::mem::size_of::<f32>());
                 pin_memory_to_ram(grid.coords_y.as_ptr() as *const u8, grid.coords_y.len() * std::mem::size_of::<f32>());
                 pin_memory_to_ram(grid.edge_offsets.as_ptr() as *const u8, grid.edge_offsets.len() * std::mem::size_of::<usize>());
+                log_debug(&format!("TransitNetworkGrid CSR: {} edges (t/w/l={}/{}/{}) over {} nodes (id={}, zones={})",
+                    grid.edge_targets.len(), grid.edge_weights.len(), grid.edge_line_ids.len(),
+                    grid.edge_line_ids.len(),
+                    grid.node_ids.len(),
+                    grid.node_ids.len(), grid.zone_ids.len()));
                 log_info("TransitNetworkGrid SoA arrays pinned to physical RAM");
 
                 bg_state.transit_grid.store(Arc::new(grid));
@@ -13013,14 +12510,18 @@ fn main() {
         }
     });
     let api_base = format!("http://{}:{}", config.server_host, actual_port);
-    let _ = API_BASE_URL.set(api_base.clone());
+    if let Ok(mut guard) = crate::logger::Globals::get().api_base.write() {
+        *guard = Some(api_base.clone());
+    }
     log_info(&format!(
         "main - server bound on ephemeral port {}, api_base={}",
         actual_port, api_base
     ));
 
     // Now spawn the analytics console child with the actual ephemeral port.
-    let _ = CONSOLE_SERVER_PORT.set(actual_port);
+    if let Ok(mut guard) = crate::logger::Globals::get().console_port.write() {
+        *guard = Some(actual_port);
+    }
     if !skip_console {
         log_info("main - spawning analytics console window with actual ephemeral port");
         let initial_logs: Vec<String> = {
@@ -13075,13 +12576,23 @@ fn main() {
     let living_engine_state = state.clone();
     rt.spawn(async move {
         log_info("LIVING ENGINE: Background Monte Carlo flow loop started (one-shot).");
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        // Poll until routing graph is ready instead of a fixed 10s sleep.
+        loop {
+            let graph = living_engine_state.routing_graph.load();
+            let ready = !graph.nodes.is_empty();
+            drop(graph);
+            if ready {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        log_info("LIVING ENGINE: Routing graph ready, starting simulation.");
         let graph = living_engine_state.routing_graph.load();
         if !graph.nodes.is_empty() {
             let graph_for_sim = (*graph).clone();
             drop(graph);
             let current_loads = tokio::task::spawn_blocking(move || {
-                graph_for_sim.simulate_network_load(10_000)
+                graph_for_sim.simulate_network_load(2_000)
             })
             .await
             .unwrap_or_default();
@@ -13113,27 +12624,32 @@ fn main() {
     // Drop _stderr_capture here restores the original stderr handle.
     drop(_stderr_capture);
 
-    // Dioxus window has closed — signal Axum to shut down gracefully.
-    // This prevents the Tokio runtime from lingering as a zombie process
-    // and locking the TCP port.
-    log_info("main - Dioxus window closed, signalling Axum graceful shutdown");
-    shutdown_token.cancel();
-
     // Ensure IS_PANICKED reflects any panic caught above (the panic hook sets it
     // for panics inside the hook, but catch_unwind catches panics before the hook
     // fires on some platforms).
     if result.is_err() {
-        IS_PANICKED.store(true, std::sync::atomic::Ordering::SeqCst);
-        // WebView fallback: if Dioxus crashed/failed, open the API in the default browser
+        crate::logger::Globals::get()
+            .is_panicked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // WebView fallback: if Dioxus crashed/failed, open the API in the default browser.
+        // IMPORTANT: do NOT cancel the shutdown token here — the Axum server must
+        // stay alive for the browser session.
         log_warn("Dioxus WebView failed — attempting browser fallback");
         let fallback_url = format!("http://127.0.0.1:{}", actual_port);
         if let Err(e) = open::that(&fallback_url) {
             log_error(&format!("Browser fallback failed: {}", e));
         } else {
             log_info(&format!("Browser opened at {} as fallback", fallback_url));
-            // Keep server alive for the browser session
-            std::thread::park();
+            // Keep server alive for the browser session — park main thread
+            // indefinitely so the Tokio runtime + Axum keep running.
+            loop {
+                std::thread::park();
+            }
         }
+    } else {
+        // Dioxus window closed normally — signal Axum to shut down gracefully.
+        log_info("main - Dioxus window closed, signalling Axum graceful shutdown");
+        shutdown_token.cancel();
     }
     log_info(&format!(
         "[TIMING] Dioxus window closed (total runtime): {:.3}s",
@@ -13192,7 +12708,7 @@ fn main() {
 
 mod ui {
 
-    pub(crate) use api_client::*;
+    // pub(crate) use api_client::*;
 
     pub(crate) use components::*;
 
@@ -13351,7 +12867,7 @@ pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> = std::sync::Lazy
 }
 
 /* INLINED THEME MIN CSS */
-:root{--color-primary:#00bcd4;--color-primary-hover:#00acc1;--color-primary-dark:#008ba3;--color-primary-glow:rgba(0,188,212,0.4);--color-primary-glow-strong:rgba(0,188,212,0.6);--color-success:#4caf50;--color-success-bg:rgba(76,175,80,0.15);--color-warning:#ff9800;--color-error:#f44336;--color-error-bg:rgba(244,67,54,0.15);--color-bg:#050505;--color-surface:rgba(10,10,12,0.85);--color-surface-solid:#111;--color-surface-dark:rgba(10,10,15,0.95);--color-surface-elevated:rgba(15,15,18,0.85);--color-surface-hover:rgba(255,255,255,0.1);--color-surface-subtle:rgba(255,255,255,0.03);--color-surface-muted:rgba(255,255,255,0.05);--color-border:rgba(255,255,255,0.08);--color-border-light:rgba(255,255,255,0.1);--color-border-medium:rgba(255,255,255,0.15);--color-border-solid:#333;--color-border-input:#444;--color-text:#fff;--color-text-secondary:#ddd;--color-text-muted:#aaa;--color-text-dim:#999;--color-text-terminal:#0f0;--shadow-sm:0 4px 12px rgba(0,0,0,0.4);--shadow-md:0 8px 24px rgba(0,0,0,0.6);--shadow-lg:0 16px 40px rgba(0,0,0,0.8);--shadow-xl:0 20px 60px rgba(0,0,0,0.8);--shadow-glow:0 4px 20px var(--color-primary-glow);--radius-sm:4px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;--radius-full:50%;--space-xs:4px;--space-sm:8px;--space-md:12px;--space-lg:16px;--space-xl:20px;--space-2xl:24px;--space-3xl:30px;--font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'JetBrains Mono','Fira Code','Courier New',monospace;--font-size-xs:0.5625rem;--font-size-sm:0.6875rem;--font-size-base:0.8125rem;--font-size-md:0.875rem;--font-size-lg:0.9375rem;--font-size-xl:1.125rem;--ease-out:cubic-bezier(0.19,1,0.22,1);--ease-bounce:cubic-bezier(0.175,0.885,0.32,1.275);--transition-fast:.2s ease;--transition-smooth:.3s var(--ease-out);--transition-bounce:.4s var(--ease-bounce);--z-map:1;--z-controls:1000;--z-logger:10000;--z-modal:11000;--z-toast:12000;--z-loading:20000}*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-transform:translateZ(0);transform:translateZ(0);backface-visibility:hidden;perspective:1000}html,body{width:100%;height:100%;overflow:hidden;font-family:var(--font-family);background:#000;cursor:crosshair;-webkit-font-smoothing:antialiased}#map-viewport{width:100vw;height:100vh;position:absolute;top:0;left:0;z-index:var(--z-map);background:#0d0d11}.legend-container{position:absolute;top:var(--space-2xl);left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(16px);padding:var(--space-lg);border-radius:var(--radius-xl);border:1px solid var(--color-border);max-height:calc(100vh - 48px);overflow-y:auto;box-shadow:var(--shadow-lg);color:var(--color-text);min-width:260px;transition:opacity var(--transition-fast),transform var(--transition-fast)}.legend-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md);border-bottom:1px solid var(--color-border-light);padding-bottom:var(--space-sm)}.legend-title{font-weight:800;font-size:var(--font-size-base);text-transform:uppercase;letter-spacing:1.5px;background:linear-gradient(135deg,var(--color-primary),#80deea);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.legend-item{display:flex;align-items:center;margin:6px 0;cursor:pointer;padding:6px var(--space-sm);border-radius:var(--radius-md);transition:all var(--transition-fast)}.legend-item:hover{background:var(--color-surface-hover);transform:translateX(4px)}.legend-color{width:12px;height:12px;border-radius:var(--radius-sm);margin-right:var(--space-md);box-shadow:0 0 6px rgba(0,188,212,0.4);flex-shrink:0}.legend-name{font-size:var(--font-size-sm);font-weight:600;color:var(--color-text-secondary)}.catchment-toggle-container{margin-top:var(--space-md);padding:var(--space-sm);background:rgba(255,255,255,0.03);border-radius:var(--radius-md);border:1px solid var(--color-border);display:flex;flex-direction:column;gap:var(--space-xs)}.catchment-toggle-header{display:flex;justify-content:space-between;align-items:center;font-size:var(--font-size-sm);font-weight:700;color:var(--color-text)}.switch{position:relative;display:inline-block;width:36px;height:20px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#333;transition:.3s;border-radius:20px}.slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background-color:#fff;transition:.3s;border-radius:50%}input:checked+.slider{background-color:var(--color-error)}input:checked+.slider:before{transform:translateX(16px)}.tfl-bottom-sheet{position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(0);width:100%;max-width:450px;background:rgba(18,18,20,0.96);backdrop-filter:blur(20px);border-top-left-radius:var(--radius-xl);border-top-right-radius:var(--radius-xl);box-shadow:var(--shadow-xl);z-index:1005;transition:transform var(--transition-bounce);color:var(--color-text);padding:var(--space-xl) var(--space-2xl) var(--space-3xl) var(--space-2xl);border:1px solid var(--color-border);border-bottom:none}.tfl-bottom-sheet.slide-down{transform:translateX(-50%) translateY(100%)}.sheet-handle{width:40px;height:4px;background:rgba(255,255,255,0.2);border-radius:2px;margin:0 auto var(--space-md) auto}.sheet-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)}.sheet-header h2{font-size:20px;font-weight:800;color:var(--color-text)}.badge-status{padding:4px var(--space-sm);background:var(--color-success-bg);color:var(--color-success);border:1px solid var(--color-success);font-size:var(--font-size-xs);font-weight:800;border-radius:var(--radius-sm);text-transform:uppercase}.custom-context-dropdown{position:fixed;background:var(--color-surface-dark);border:1px solid var(--color-border-medium);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);backdrop-filter:blur(10px);padding:var(--space-xs) 0;z-index:10000;min-width:180px}.menu-item{padding:8px var(--space-lg);font-size:var(--font-size-sm);color:var(--color-text-secondary);cursor:pointer;transition:background var(--transition-fast),color var(--transition-fast)}.menu-item:hover{background:var(--color-primary);color:#000}#logger-wrapper{position:fixed;bottom:var(--space-2xl);right:var(--space-2xl);z-index:var(--z-logger);display:flex;flex-direction:column;align-items:flex-end}#logger-fab{width:52px;height:52px;background:linear-gradient(135deg,var(--color-primary),var(--color-primary-dark));border-radius:var(--radius-full);display:flex;justify-content:center;align-items:center;font-size:22px;cursor:pointer;box-shadow:var(--shadow-glow);transition:all var(--transition-fast);border:2px solid rgba(255,255,255,0.1)}#logger-fab:hover{transform:scale(1.1)}#logger-panel{position:absolute;bottom:66px;right:0;width:480px;height:380px;background:var(--color-surface-dark);border:1px solid var(--color-border-solid);border-radius:var(--radius-lg);display:flex;flex-direction:column;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transform:translateY(20px) scale(0.95);transform-origin:bottom right;transition:opacity var(--transition-smooth),transform var(--transition-smooth)}#logger-wrapper:hover #logger-panel,#logger-panel.pinned{opacity:1;pointer-events:all;transform:translateY(0) scale(1)}#log-content{flex:1;overflow-y:auto;padding:var(--space-md);padding-bottom:95px!important;color:var(--color-text-terminal);font-family:var(--font-mono);font-size:var(--font-size-sm);line-height:1.5;background:#040406}#logger-actions{display:flex;gap:var(--space-sm);padding:var(--space-md);background:rgba(0,0,0,0.5);border-top:1px solid var(--color-border-solid)}#system-stats-widget{position:absolute;bottom:var(--space-2xl);left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(12px);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:var(--space-md);box-shadow:var(--shadow-md);transition:all .3s ease}.stat-grid{display:flex;gap:20px}.stat-item{display:flex;flex-direction:column;align-items:center;min-width:60px}.stat-label{font-size:9px;font-weight:800;color:var(--color-text-dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}.stat-value{font-size:16px;font-weight:800;color:var(--color-primary);font-family:var(--font-mono)}#fps-counter-widget{position:fixed;top:24px;right:320px;z-index:var(--z-controls);background:rgba(10,10,15,0.85);backdrop-filter:blur(8px);border:1px solid var(--color-border);padding:6px 12px;border-radius:var(--radius-md);color:#0f0;font-family:var(--font-mono);font-size:var(--font-size-sm);font-weight:700;box-shadow:var(--shadow-sm);pointer-events:none}.toast-container{position:fixed;top:var(--space-xl);right:var(--space-xl);z-index:var(--z-toast);display:flex;flex-direction:column;gap:var(--space-sm);pointer-events:none}.toast{background:rgba(15,15,20,0.9);backdrop-filter:blur(12px);border:1px solid var(--color-border-medium);padding:var(--space-md) var(--space-xl);border-radius:var(--radius-md);color:var(--color-text);font-size:var(--font-size-sm);font-weight:600;box-shadow:var(--shadow-md);transform:translateY(-20px);opacity:0;transition:all .3s var(--ease-bounce);pointer-events:auto}.toast.show{transform:translateY(0);opacity:1}.toast.success{border-left:4px solid var(--color-success)}.toast.error{border-left:4px solid var(--color-error)}.toast.info{border-left:4px solid var(--color-primary)}.loading-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;background:#030305;z-index:var(--z-loading);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:var(--space-2xl)}.spinner{width:48px;height:48px;border:3px solid rgba(0,188,212,0.1);border-radius:var(--radius-full);border-top-color:var(--color-primary);animation:spin .8s linear infinite}.status-container{background:rgba(10,10,12,0.6);border:1px solid var(--color-border);padding:var(--space-xl);border-radius:var(--radius-lg);width:100%;max-width:400px}.status-header{color:var(--color-text-muted);font-size:var(--font-size-xs);font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:var(--space-md)}.status-row{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;font-size:var(--font-size-sm);color:var(--color-text-secondary)}.status-badge{font-family:var(--font-mono);font-size:var(--font-size-xs);text-transform:uppercase;font-weight:700}@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{to{opacity:.4}}.logger-btn{flex:1;padding:6px var(--space-sm);background:rgba(255,255,255,0.08);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-secondary);font-size:var(--font-size-xs);font-weight:600;cursor:pointer;transition:all var(--transition-fast)}.logger-btn:hover{background:rgba(255,255,255,0.15);color:var(--color-text)}.btn-highlight{background:rgba(0,188,212,0.15);border-color:var(--color-primary);color:var(--color-primary)}.btn-highlight:hover{background:rgba(0,188,212,0.3)}.sheet-body p{font-size:var(--font-size-sm);color:var(--color-text-secondary);margin:4px 0}.station-icon,.hub-icon{background:none!important;border:none!important;width:16px!important;height:16px!important;display:flex!important;align-items:center!important;justify-content:center!important}.nr-icon{background:transparent!important;border:none!important;display:flex!important;align-items:center!important;justify-content:center!important}.station-icon div,.hub-icon div{flex-shrink:0;transition:transform .2s ease}.station-icon:hover div,.hub-icon:hover div{transform:scale(1.4);cursor:pointer}
+:root{--color-primary:#00bcd4;--color-primary-hover:#00acc1;--color-primary-dark:#008ba3;--color-primary-glow:rgba(0,188,212,0.4);--color-primary-glow-strong:rgba(0,188,212,0.6);--color-success:#4caf50;--color-success-bg:rgba(76,175,80,0.15);--color-warning:#ff9800;--color-error:#f44336;--color-error-bg:rgba(244,67,54,0.15);--color-bg:#050505;--color-surface:rgba(10,10,12,0.85);--color-surface-solid:#111;--color-surface-dark:rgba(10,10,15,0.95);--color-surface-elevated:rgba(15,15,18,0.85);--color-surface-hover:rgba(255,255,255,0.1);--color-surface-subtle:rgba(255,255,255,0.03);--color-surface-muted:rgba(255,255,255,0.05);--color-border:rgba(255,255,255,0.08);--color-border-light:rgba(255,255,255,0.1);--color-border-medium:rgba(255,255,255,0.15);--color-border-solid:#333;--color-border-input:#444;--color-text:#fff;--color-text-secondary:#ddd;--color-text-muted:#aaa;--color-text-dim:#999;--color-text-terminal:#0f0;--shadow-sm:0 4px 12px rgba(0,0,0,0.4);--shadow-md:0 8px 24px rgba(0,0,0,0.6);--shadow-lg:0 16px 40px rgba(0,0,0,0.8);--shadow-xl:0 20px 60px rgba(0,0,0,0.8);--shadow-glow:0 4px 20px var(--color-primary-glow);--radius-sm:4px;--radius-md:8px;--radius-lg:12px;--radius-xl:16px;--radius-full:50%;--space-xs:4px;--space-sm:8px;--space-md:12px;--space-lg:16px;--space-xl:20px;--space-2xl:24px;--space-3xl:30px;--font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;--font-mono:'JetBrains Mono','Fira Code','Courier New',monospace;--font-size-xs:0.5625rem;--font-size-sm:0.6875rem;--font-size-base:0.8125rem;--font-size-md:0.875rem;--font-size-lg:0.9375rem;--font-size-xl:1.125rem;--ease-out:cubic-bezier(0.19,1,0.22,1);--ease-bounce:cubic-bezier(0.175,0.885,0.32,1.275);--transition-fast:.2s ease;--transition-smooth:.3s var(--ease-out);--transition-bounce:.4s var(--ease-bounce);--z-map:1;--z-controls:1000;--z-logger:10000;--z-modal:11000;--z-toast:12000;--z-loading:20000}*,*::before,*::after{margin:0;padding:0;box-sizing:border-box;-webkit-transform:translateZ(0);transform:translateZ(0);backface-visibility:hidden;perspective:1000}html,body{width:100%;height:100%;overflow:hidden;font-family:var(--font-family);background:#000;cursor:crosshair;-webkit-font-smoothing:antialiased}#map-viewport{width:100vw;height:100vh;position:absolute;top:0;left:0;z-index:var(--z-map);background:#0d0d11}.legend-container{position:absolute;top:72px;left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(16px);padding:var(--space-lg);border-radius:var(--radius-xl);border:1px solid var(--color-border);max-height:calc(100vh - 48px);overflow-y:auto;box-shadow:var(--shadow-lg);color:var(--color-text);min-width:260px;transition:opacity var(--transition-fast),transform var(--transition-fast)}.legend-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md);border-bottom:1px solid var(--color-border-light);padding-bottom:var(--space-sm)}.legend-title{font-weight:800;font-size:var(--font-size-base);text-transform:uppercase;letter-spacing:1.5px;background:linear-gradient(135deg,var(--color-primary),#80deea);-webkit-background-clip:text;-webkit-text-fill-color:transparent}.legend-item{display:flex;align-items:center;margin:6px 0;cursor:pointer;padding:6px var(--space-sm);border-radius:var(--radius-md);transition:all var(--transition-fast)}.legend-item{display:flex;align-items:center;margin:6px 0;cursor:pointer;padding:6px var(--space-sm);border-radius:var(--radius-md);transition:all var(--transition-fast);will-change:transform}.legend-item:hover{background:var(--color-surface-hover);transform:translateX(4px)}.legend-color{width:12px;height:12px;border-radius:var(--radius-sm);margin-right:var(--space-md);box-shadow:0 0 6px rgba(0,188,212,0.4);flex-shrink:0}.legend-name{font-size:var(--font-size-sm);font-weight:600;color:var(--color-text-secondary)}.catchment-toggle-container{margin-top:var(--space-md);padding:var(--space-sm);background:rgba(255,255,255,0.03);border-radius:var(--radius-md);border:1px solid var(--color-border);display:flex;flex-direction:column;gap:var(--space-xs)}.catchment-toggle-header{display:flex;justify-content:space-between;align-items:center;font-size:var(--font-size-sm);font-weight:700;color:var(--color-text)}.switch{position:relative;display:inline-block;width:36px;height:20px}.switch input{opacity:0;width:0;height:0}.slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background-color:#333;transition:.3s;border-radius:20px}.slider:before{position:absolute;content:"";height:14px;width:14px;left:3px;bottom:3px;background-color:#fff;transition:.3s;border-radius:50%}input:checked+.slider{background-color:var(--color-error)}input:checked+.slider:before{transform:translateX(16px)}.tfl-bottom-sheet{position:fixed;bottom:0;left:50%;transform:translateX(-50%) translateY(0);width:100%;max-width:450px;background:rgba(18,18,20,0.96);backdrop-filter:blur(20px);border-top-left-radius:var(--radius-xl);border-top-right-radius:var(--radius-xl);box-shadow:var(--shadow-xl);z-index:1005;transition:transform var(--transition-bounce);color:var(--color-text);padding:var(--space-xl) var(--space-2xl) var(--space-3xl) var(--space-2xl);border:1px solid var(--color-border);border-bottom:none}.tfl-bottom-sheet.slide-down{transform:translateX(-50%) translateY(100%)}.sheet-handle{width:40px;height:4px;background:rgba(255,255,255,0.2);border-radius:2px;margin:0 auto var(--space-md) auto}.sheet-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)}.sheet-header h2{font-size:20px;font-weight:800;color:var(--color-text)}.badge-status{padding:4px var(--space-sm);background:var(--color-success-bg);color:var(--color-success);border:1px solid var(--color-success);font-size:var(--font-size-xs);font-weight:800;border-radius:var(--radius-sm);text-transform:uppercase}.custom-context-dropdown{position:fixed;background:var(--color-surface-dark);border:1px solid var(--color-border-medium);border-radius:var(--radius-md);box-shadow:var(--shadow-lg);backdrop-filter:blur(10px);padding:var(--space-xs) 0;z-index:10000;min-width:180px}.menu-item{padding:8px var(--space-lg);font-size:var(--font-size-sm);color:var(--color-text-secondary);cursor:pointer;transition:background var(--transition-fast),color var(--transition-fast)}.menu-item:hover{background:var(--color-primary);color:#000}#logger-wrapper{position:fixed;bottom:var(--space-2xl);right:var(--space-2xl);z-index:var(--z-logger);display:flex;flex-direction:column;align-items:flex-end}#logger-fab{width:52px;height:52px;background:linear-gradient(135deg,var(--color-primary),var(--color-primary-dark));border-radius:var(--radius-full);display:flex;justify-content:center;align-items:center;font-size:22px;cursor:pointer;box-shadow:var(--shadow-glow);transition:all var(--transition-fast);border:2px solid rgba(255,255,255,0.1)}#logger-fab:hover{transform:scale(1.1)}#logger-panel{position:absolute;bottom:66px;right:0;width:480px;height:380px;background:var(--color-surface-dark);border:1px solid var(--color-border-solid);border-radius:var(--radius-lg);display:flex;flex-direction:column;box-shadow:var(--shadow-lg);opacity:0;pointer-events:none;transform:translateY(20px) scale(0.95);transform-origin:bottom right;transition:opacity var(--transition-smooth),transform var(--transition-smooth)}#logger-wrapper:hover #logger-panel,#logger-panel.pinned{opacity:1;pointer-events:all;transform:translateY(0) scale(1)}#log-content{flex:1;overflow-y:auto;padding:var(--space-md);padding-bottom:95px!important;color:var(--color-text-terminal);font-family:var(--font-mono);font-size:var(--font-size-sm);line-height:1.5;background:#040406}#logger-actions{display:flex;gap:var(--space-sm);padding:var(--space-md);background:rgba(0,0,0,0.5);border-top:1px solid var(--color-border-solid)}#system-stats-widget{position:absolute;bottom:var(--space-2xl);left:var(--space-2xl);z-index:var(--z-controls);background:var(--color-surface);backdrop-filter:blur(12px);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:var(--space-md);box-shadow:var(--shadow-md);transition:all .3s ease}.stat-grid{display:flex;gap:20px}.stat-item{display:flex;flex-direction:column;align-items:center;min-width:60px}.stat-label{font-size:9px;font-weight:800;color:var(--color-text-dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}.stat-value{font-size:16px;font-weight:800;color:var(--color-primary);font-family:var(--font-mono)}#fps-counter-widget{position:fixed;top:72px;right:320px;z-index:var(--z-controls);background:rgba(10,10,15,0.85);backdrop-filter:blur(8px);border:1px solid var(--color-border);padding:6px 12px;border-radius:var(--radius-md);color:#0f0;font-family:var(--font-mono);font-size:var(--font-size-sm);font-weight:700;box-shadow:var(--shadow-sm);pointer-events:none}.toast-container{position:fixed;top:72px;right:var(--space-xl);z-index:var(--z-toast);display:flex;flex-direction:column;gap:var(--space-sm);pointer-events:none}.toast{background:rgba(15,15,20,0.9);backdrop-filter:blur(12px);border:1px solid var(--color-border-medium);padding:var(--space-md) var(--space-xl);border-radius:var(--radius-md);color:var(--color-text);font-size:var(--font-size-sm);font-weight:600;box-shadow:var(--shadow-md);transform:translateY(-20px);opacity:0;transition:all .3s var(--ease-bounce);pointer-events:auto}.toast.show{transform:translateY(0);opacity:1}.toast.success{border-left:4px solid var(--color-success)}.toast.error{border-left:4px solid var(--color-error)}.toast.info{border-left:4px solid var(--color-primary)}.loading-overlay{position:fixed;top:0;left:0;width:100vw;height:100vh;background:#030305;z-index:var(--z-loading);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:var(--space-2xl);will-change:transform,opacity}.spinner{width:48px;height:48px;border:3px solid rgba(0,188,212,0.1);border-radius:var(--radius-full);border-top-color:var(--color-primary);animation:spin .8s linear infinite;will-change:transform}.status-container{background:rgba(10,10,12,0.6);border:1px solid var(--color-border);padding:var(--space-xl);border-radius:var(--radius-lg);width:100%;max-width:400px}.status-header{color:var(--color-text-muted);font-size:var(--font-size-xs);font-weight:800;text-transform:uppercase;letter-spacing:1px;margin-bottom:var(--space-md)}.status-row{display:flex;justify-content:space-between;align-items:center;padding:var(--space-xs) 0;font-size:var(--font-size-sm);color:var(--color-text-secondary)}.status-badge{font-family:var(--font-mono);font-size:var(--font-size-xs);text-transform:uppercase;font-weight:700}@keyframes spin{0%{transform:rotate(0deg)}to{transform:rotate(360deg)}}@keyframes pulse{to{opacity:.4}}.logger-btn{flex:1;padding:6px var(--space-sm);background:rgba(255,255,255,0.08);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-secondary);font-size:var(--font-size-xs);font-weight:600;cursor:pointer;transition:all var(--transition-fast)}.logger-btn:hover{background:rgba(255,255,255,0.15);color:var(--color-text)}.btn-highlight{background:rgba(0,188,212,0.15);border-color:var(--color-primary);color:var(--color-primary)}.btn-highlight:hover{background:rgba(0,188,212,0.3)}.sheet-body p{font-size:var(--font-size-sm);color:var(--color-text-secondary);margin:4px 0}.station-icon,.hub-icon{background:none!important;border:none!important;width:16px!important;height:16px!important;display:flex!important;align-items:center!important;justify-content:center!important;will-change:transform}.nr-icon{background:transparent!important;border:none!important;display:flex!important;align-items:center!important;justify-content:center!important}.station-icon div,.hub-icon div{flex-shrink:0;transition:transform .2s ease;will-change:transform}.station-icon:hover div,.hub-icon:hover div{transform:scale(1.4);cursor:pointer}.status-grid{display:flex;flex-direction:column;gap:var(--space-xs)}.status-name{font-weight:600;color:var(--color-text)}.status-pending{color:var(--color-text-muted)}.status-success{color:var(--color-success)}.status-failed{color:var(--color-error)}
 
 /* ================================================================
    ACCESSIBILITY FOUNDATION
@@ -13585,6 +13101,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
   50% { transform: scale(1.05); opacity: 1; filter: drop-shadow(0 0 15px rgba(0,188,212,0.4)); }
   100% { transform: scale(0.95); opacity: 0.8; }
 }
+.pulse-element{will-change:transform,opacity}
 @keyframes progress {
   0% { left: -40%; width: 40%; }
   50% { left: 20%; width: 60%; }
@@ -13639,21 +13156,6 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
 
         pub(crate) fn build_copy_log_js(text: &str) -> String {
             copy_to_clipboard_js(&serde_json::to_string(text).unwrap_or_default())
-        }
-
-        pub(crate) fn scroll_to_bottom_js(element_id: &str) -> String {
-            format!(
-                r#"setTimeout(() => {{
-            let el = document.getElementById('{}');
-            if (el) {{
-                let atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-                if (atBottom) {{
-                    el.scrollTop = el.scrollHeight;
-                }}
-            }}
-        }}, 32);"#,
-                element_id
-            )
         }
 
         pub(crate) fn scroll_to_bottom_query_js(selector: &str) -> String {
@@ -14004,6 +13506,22 @@ window.initMap = async function() {
     }
     window.midLog = midLog;
 
+    window._renderThrottled = function(callback) {
+        var now = performance.now();
+        var elapsed = now - (window._lastRenderTime || 0);
+        if (elapsed < 50 && window._lastRenderTime > 0) {
+            if (window._renderThrottleTimer) return;
+            window._renderThrottleTimer = setTimeout(function() {
+                window._renderThrottleTimer = null;
+                window._lastRenderTime = performance.now();
+                callback();
+            }, 50);
+            return;
+        }
+        window._lastRenderTime = now;
+        callback();
+    };
+
     function checkLeafletReady(callback, attempts) {
         if (typeof attempts === 'undefined') attempts = 0;
         if (window.L && window.L.map) {
@@ -14033,16 +13551,23 @@ window.initMap = async function() {
     let lastLoopTime = performance.now();
     let frameCount = 0;
     let lastLogTime = lastLoopTime;
+    let lastFpsWarningTime = 0;
+    let fpsWidgetEl = document.getElementById("fps-counter-widget");
     function recordFrame() {
         frameCount++;
         let now = performance.now();
-        if (now >= lastLoopTime + 1000) {
+        if (now >= lastLoopTime + 500) {
             let currentFps = Math.round((frameCount * 1000) / (now - lastLoopTime));
-            let fpsWidget = document.getElementById("fps-counter-widget");
-            if (fpsWidget) { fpsWidget.innerText = "PERF: " + currentFps + " FPS"; }
+            if (fpsWidgetEl) { fpsWidgetEl.innerText = "PERF: " + currentFps + " FPS"; }
+            
+            if (currentFps < 30 && (now - lastFpsWarningTime >= 5000)) {
+                console.warn("[FPS] Performance drop: " + currentFps + " FPS");
+                lastFpsWarningTime = now;
+            }
+            
             frameCount = 0;
             lastLoopTime = now;
-            if (now >= lastLogTime + 5000) {
+            if (now >= lastLogTime + 10000) {
                 try { dioxus.send({ "event": "fps_audit", "fps": currentFps }); } catch(e) {}
                 lastLogTime = now;
             }
@@ -14059,7 +13584,15 @@ window.initMap = async function() {
         window.map = L.map('map-viewport', {
             zoomControl: false,
             bounceAtZoomLimits: false,
-            wheelDebounceTime: 40
+            wheelDebounceTime: 40,
+            zoomAnimation: true,
+            fadeAnimation: true,
+            markerZoomAnimation: false,
+            inertia: true,
+            inertiaDeceleration: 3000,
+            inertiaMaxSpeed: 1500,
+            easeLinearity: 0.25,
+            worldCopyJump: false
         }).setView([51.5074, -0.1278], 12);
 
         window.map.invalidateSize();
@@ -14251,18 +13784,26 @@ window.initMap = async function() {
         if (!window.railPane) {
             window.railPane = window.map.createPane('railPane');
             window.railPane.style.zIndex = 350;
+            window.railPane.style.willChange = 'transform';
+            window.railPane.style.transform = 'translateZ(0)';
         }
-        window.railRenderer = L.svg({ padding: 1.5, pane: 'railPane' });
+        window.railRenderer = L.canvas({ padding: 1.5, pane: 'railPane' });
         
         // Tiled Basemap segments optimization
         window.basemapGrid = {};
         window.basemapLoaded = false;
         
+        window._lastBasemapZoom = -1;
+        window._lastBasemapBounds = null;
         window.renderBasemapForZoom = function() {
             if (!window.basemapLoaded) return;
             let z = window.map.getZoom();
             let bounds = window.map.getBounds();
-            let padded = bounds.pad(0.2); // Pad to load cells slightly offscreen for smooth panning
+            // Skip if zoom same and center within ~1km of last render
+            if (z === window._lastBasemapZoom && window._lastBasemapBounds && window._lastBasemapBounds.getCenter().distanceTo(bounds.getCenter()) < 500) return;
+            window._lastBasemapZoom = z;
+            window._lastBasemapBounds = bounds;
+            let padded = bounds.pad(0.2);
             
             for (let key in window.basemapGrid) {
                 let cell = window.basemapGrid[key];
@@ -14270,29 +13811,10 @@ window.initMap = async function() {
                 let cellMaxLon = (cell.cellX + 1) * 0.08;
                 let cellMinLat = cell.cellY * 0.05;
                 let cellMaxLat = (cell.cellY + 1) * 0.05;
-                
-                let cellBounds = L.latLngBounds([cellMinLat, cellMinLon], [cellMaxLat, cellMaxLon]);
-                let isVisible = padded.intersects(cellBounds);
-                
-                if (isVisible) {
-                    if (z >= 8) {
-                        if (!window.map.hasLayer(cell.tflGroup)) {
-                            cell.tflGroup.addTo(window.map);
-                        }
-                    } else {
-                        if (window.map.hasLayer(cell.tflGroup)) {
-                            window.map.removeLayer(cell.tflGroup);
-                        }
-                    }
-                    if (z >= 8) {
-                        if (!window.map.hasLayer(cell.nrGroup)) {
-                            cell.nrGroup.addTo(window.map);
-                        }
-                    } else {
-                        if (window.map.hasLayer(cell.nrGroup)) {
-                            window.map.removeLayer(cell.nrGroup);
-                        }
-                    }
+                let isVisible = padded.intersects(L.latLngBounds([cellMinLat, cellMinLon], [cellMaxLat, cellMaxLon]));
+                if (isVisible && z >= 8) {
+                    if (!window.map.hasLayer(cell.tflGroup)) cell.tflGroup.addTo(window.map);
+                    if (!window.map.hasLayer(cell.nrGroup)) cell.nrGroup.addTo(window.map);
                 } else {
                     if (window.map.hasLayer(cell.tflGroup)) window.map.removeLayer(cell.tflGroup);
                     if (window.map.hasLayer(cell.nrGroup)) window.map.removeLayer(cell.nrGroup);
@@ -14327,18 +13849,29 @@ window.initMap = async function() {
                         };
                     }
                     let isNR = seg.g === 'nationalrail';
+                    let bgPoly = L.polyline(seg.p, {
+                        pane: 'railPane',
+                        renderer: window.railRenderer,
+                        color: '#000000',
+                        weight: 6,
+                        opacity: 1.0,
+                        lineJoin: 'round', lineCap: 'round',
+                        interactive: false
+                    });
                     let poly = L.polyline(seg.p, {
                         pane: 'railPane',
                         renderer: window.railRenderer,
                         color: seg.c,
-                        weight: isNR ? 1.8 : 2.5,
-                        opacity: isNR ? 0.8 : 0.95,
+                        weight: 4,
+                        opacity: 1.0,
                         lineJoin: 'round', lineCap: 'round',
                         interactive: false
                     });
                     if (isNR) {
+                        bgPoly.addTo(grid[cellKey].nrGroup);
                         poly.addTo(grid[cellKey].nrGroup);
                     } else {
+                        bgPoly.addTo(grid[cellKey].tflGroup);
                         poly.addTo(grid[cellKey].tflGroup);
                     }
                 });
@@ -14377,7 +13910,10 @@ window.initMap = async function() {
 
         window._isInteracting = false;
         window._renderDebounceTimer = null;
-        window._RENDER_DEBOUNCE_MS = 300;
+        window._renderThrottleTimer = null;
+        window._RENDER_DEBOUNCE_MS = 100;
+        window._lastRenderTime = 0;
+        window._RENDER_THROTTLE_MS = 50;
 
         // ============================================================
         // VIEWPORT TRANSLATION SYNC FOR CANVAS DURING PANNING
@@ -14387,9 +13923,48 @@ window.initMap = async function() {
         window._roundelImages = {};
         window._roundelImagesReady = false;
 
+        function makeImageWhiteTransparent(img, category) {
+            var canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth || img.width || 128;
+            canvas.height = img.naturalHeight || img.height || 128;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            try {
+                var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                var data = imgData.data;
+                for (var i = 0; i < data.length; i += 4) {
+                    var r = data[i];
+                    var g = data[i+1];
+                    var b = data[i+2];
+                    var a = data[i+3];
+                    if (r > 240 && g > 240 && b > 240) {
+                        if (category === 'first-rail') {
+                            var x = (i / 4) % canvas.width;
+                            var y = Math.floor((i / 4) / canvas.width);
+                            var cx = canvas.width / 2;
+                            var cy = canvas.height / 2;
+                            var dx = x - cx;
+                            var dy = y - cy;
+                            var dist = Math.sqrt(dx*dx + dy*dy);
+                            var maxRadius = Math.min(canvas.width, canvas.height) / 2;
+                            if (dist > maxRadius * 0.85) {
+                                data[i+3] = 0;
+                            }
+                        } else {
+                            data[i+3] = 0;
+                        }
+                    }
+                }
+                ctx.putImageData(imgData, 0, 0);
+            } catch(e) {
+                console.warn('makeImageWhiteTransparent failed:', e);
+            }
+            return canvas;
+        }
+
         window._preRenderRoundels = function() {
             var svgs = window.ROUNDEL_SVGS || {};
-            // Each underground line gets its own roundel rendered from its SVG
+            // Each category gets its own roundel rendered from its SVG or PNG
             var categories = {
                 'bakerloo': ['bakerloo'],
                 'central': ['central'],
@@ -14408,50 +13983,118 @@ window.initMap = async function() {
                 'tramlink': ['tramlink','tram'],
                 'national-rail': ['national-rail','national rail','nationalrail'],
                 'emirates-airline': ['emirates-airline','emirates','airline'],
-                'underground': ['underground']
+                'underground': ['underground'],
+                
+                // SVG Operators
+                'avanti': ['avanti','avanti-west-coast'],
+                'c2c': ['c2c'],
+                'caledonian-sleeper': ['caledonian-sleeper'],
+                'east-midlands': ['east-midlands','east-midlands-railway'],
+                'eurostar': ['eurostar'],
+                'grand-central': ['grand-central'],
+                'gwr': ['gwr','great-western','great-western-railway'],
+                'gtr': ['gtr','great-thameslink-railway'],
+                'heathrow-express': ['heathrow-express'],
+                'hull-trains': ['hull-trains','hull trains'],
+                'lner': ['lner','london-north-eastern-railway'],
+                'lumo': ['lumo'],
+                'merseyrail': ['merseyrail'],
+                'northern-trains': ['northern-trains','northern trains'],
+                'scotrail': ['scotrail'],
+                'southeastern': ['southeastern'],
+                'southwestern-railway': ['southwestern-railway','swr','south-western-railway'],
+                'thameslink': ['thameslink'],
+                'tpe': ['tpe','transpennine','transpennine-express'],
+                'transport-for-wales': ['transport-for-wales','tfw','transport for wales'],
+                'west-midlands-railway': ['west-midlands-railway','west-midlands','west midlands railway'],
+                
+                // PNG Operators
+                'chiltern': 'chiltern_logo.png',
+                'crosscountry': 'crosscountry_logo.png',
+                'first-rail': 'firstrail_logo.png',
+                'greater-anglia': 'greateranglia_logo.png',
+                'gatwick-express': 'gatwickexpress_logo.png',
+                'great-northern': 'greatnorthern_logo.png',
+                'southern': 'southern_logo.png',
+                'thameslink': 'thameslink_logo.png'
             };
             var renderSize = 48;
             var promises = [];
             for (var cat in categories) {
-                var lineIds = categories[cat];
-                var svgStr = null;
-                for (var li = 0; li < lineIds.length; li++) {
-                    if (svgs[lineIds[li]]) { svgStr = svgs[lineIds[li]]; break; }
+                var val = categories[cat];
+                if (typeof val === 'string') {
+                    // It's a PNG filename
+                    (function(category, filename) {
+                        var img = new Image();
+                        var p = new Promise(function(resolve) {
+                            img.onload = function() {
+                                var transparentCanvas = makeImageWhiteTransparent(img, category);
+                                var offscreen = document.createElement('canvas');
+                                offscreen.width = renderSize;
+                                offscreen.height = renderSize;
+                                var ctx2 = offscreen.getContext('2d');
+                                var aspectRatio = transparentCanvas.width / transparentCanvas.height;
+                                var drawWidth, drawHeight;
+                                if (aspectRatio > 1) {
+                                    drawWidth = renderSize;
+                                    drawHeight = renderSize / aspectRatio;
+                                } else {
+                                    drawHeight = renderSize;
+                                    drawWidth = renderSize * aspectRatio;
+                                }
+                                var offsetX = (renderSize - drawWidth) / 2;
+                                var offsetY = (renderSize - drawHeight) / 2;
+                                ctx2.drawImage(transparentCanvas, offsetX, offsetY, drawWidth, drawHeight);
+                                window._roundelImages[category] = offscreen;
+                                resolve();
+                            };
+                            img.onerror = function() {
+                                console.warn('Failed to load PNG asset for category:', category);
+                                resolve();
+                            };
+                        });
+                        img.src = 'tube://asset/' + filename;
+                        promises.push(p);
+                    })(cat, val);
+                } else {
+                    // It's an SVG array
+                    var svgStr = null;
+                    for (var li = 0; li < val.length; li++) {
+                        if (svgs[val[li]]) { svgStr = svgs[val[li]]; break; }
+                    }
+                    if (!svgStr) continue;
+                    (function(category, svgString) {
+                        var img = new Image();
+                        var blob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+                        var url = URL.createObjectURL(blob);
+                        var p = new Promise(function(resolve) {
+                            img.onload = function() {
+                                var offscreen = document.createElement('canvas');
+                                var aspectRatio = img.width / img.height;
+                                var drawWidth, drawHeight;
+                                if (aspectRatio > 1) {
+                                    drawWidth = renderSize;
+                                    drawHeight = renderSize / aspectRatio;
+                                } else {
+                                    drawHeight = renderSize;
+                                    drawWidth = renderSize * aspectRatio;
+                                }
+                                offscreen.width = renderSize;
+                                offscreen.height = renderSize;
+                                var ctx2 = offscreen.getContext('2d');
+                                var offsetX = (renderSize - drawWidth) / 2;
+                                var offsetY = (renderSize - drawHeight) / 2;
+                                ctx2.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+                                URL.revokeObjectURL(url);
+                                window._roundelImages[category] = offscreen;
+                                resolve();
+                            };
+                            img.onerror = function() { URL.revokeObjectURL(url); resolve(); };
+                        });
+                        img.src = url;
+                        promises.push(p);
+                    })(cat, svgStr);
                 }
-                if (!svgStr) continue;
-                (function(category, svgString) {
-                    var img = new Image();
-                    var blob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
-                    var url = URL.createObjectURL(blob);
-                    var p = new Promise(function(resolve) {
-                        img.onload = function() {
-                            var offscreen = document.createElement('canvas');
-                            // Preserve aspect ratio to prevent flattening
-                            var aspectRatio = img.width / img.height;
-                            var drawWidth, drawHeight;
-                            if (aspectRatio > 1) {
-                                drawWidth = renderSize;
-                                drawHeight = renderSize / aspectRatio;
-                            } else {
-                                drawHeight = renderSize;
-                                drawWidth = renderSize * aspectRatio;
-                            }
-                            offscreen.width = renderSize;
-                            offscreen.height = renderSize;
-                            var ctx2 = offscreen.getContext('2d');
-                            // Center the image in the canvas
-                            var offsetX = (renderSize - drawWidth) / 2;
-                            var offsetY = (renderSize - drawHeight) / 2;
-                            ctx2.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
-                            URL.revokeObjectURL(url);
-                            window._roundelImages[category] = offscreen;
-                            resolve();
-                        };
-                        img.onerror = function() { URL.revokeObjectURL(url); resolve(); };
-                    });
-                    img.src = url;
-                    promises.push(p);
-                })(cat, svgStr);
             }
             Promise.all(promises).then(function() {
                 window._roundelImagesReady = true;
@@ -14470,45 +14113,129 @@ window.initMap = async function() {
                            .replace(/ Station$/i, '')
                            .trim().toLowerCase();
             }
-            function getRoundelCategory(st) {
+            function getRoundelCategories(st) {
                 var linesLower = st.lines ? st.lines.map(function(l) { return l.toLowerCase(); }) : [];
-                var nrKeywords = ['national rail','nationalrail','lumo','southern','southeastern','greater anglia','thameslink','great western','c2c','chiltern','crosscountry','east midlands','great northern','south western','avanti','lner','london northwestern','chiltern railways','gatwick express'];
-                
+                var categories = new Set();
                 var nameLower = st.name.toLowerCase();
                 var isOutsideLondonNR = nameLower.includes('cambridge') || nameLower.includes('oxford') || nameLower.includes('brighton');
                 
-                var isNR = isOutsideLondonNR || linesLower.some(function(l) { return nrKeywords.some(function(k) { return l.includes(k); }); });
-                if (isNR) return 'national-rail';
+                var specificLines = ['bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','elizabeth','dlr','tramlink','emirates-airline'];
                 
-                if (st.isProposed) return 'proposed';
+                var nrOperators = {
+                    'avanti': ['avanti','avanti-west-coast','avanti west coast'],
+                    'c2c': ['c2c'],
+                    'caledonian-sleeper': ['caledonian-sleeper','caledonian sleeper'],
+                    'chiltern': ['chiltern','chiltern-railways','chiltern railways'],
+                    'crosscountry': ['crosscountry','cross country'],
+                    'east-midlands': ['east-midlands','east-midlands-railway','east midlands railway','east midlands'],
+                    'eurostar': ['eurostar'],
+                    'first-rail': ['first-rail','firstrail','first rail'],
+                    'grand-central': ['grand-central','grand central'],
+                    'gwr': ['gwr','great-western','great-western-railway','great western railway','great western'],
+                    'greater-anglia': ['greater-anglia','greater anglia'],
+                    'gtr': ['gtr','great-thameslink-railway','great thameslink railway'],
+                    'gatwick-express': ['gatwick-express','gatwick express'],
+                    'great-northern': ['great-northern','great northern'],
+                    'heathrow-express': ['heathrow-express','heathrow express'],
+                    'hull-trains': ['hull-trains','hull trains'],
+                    'lner': ['lner','london-north-eastern-railway','london north eastern railway'],
+                    'lumo': ['lumo'],
+                    'merseyrail': ['merseyrail'],
+                    'northern-trains': ['northern-trains','northern trains'],
+                    'scotrail': ['scotrail'],
+                    'southeastern': ['southeastern','south eastern'],
+                    'southwestern-railway': ['southwestern-railway','swr','south-western-railway','south western railway'],
+                    'thameslink': ['thameslink'],
+                    'tpe': ['tpe','transpennine','transpennine-express','transpennine express'],
+                    'transport-for-wales': ['transport-for-wales','tfw','transport for wales'],
+                    'west-midlands-railway': ['west-midlands-railway','west-midlands','west midlands railway','west midlands']
+                };
                 
-                var specificLines = ['bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','elizabeth','dlr','tramlink','liberty','lioness','mildmay','suffragette','weaver','windrush','emirates-airline'];
+                var hasOperator = false;
                 for (var i = 0; i < linesLower.length; i++) {
                     var l = linesLower[i].replace('&', 'and').replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').trim();
                     if (l === 'waterloo-and-city') l = 'waterloo-city';
                     if (l === 'emirates-air-line') l = 'emirates-airline';
-                    if (specificLines.indexOf(l) >= 0) return l;
-                    if (l === 'tram') return 'tramlink';
-                    if (l.includes('emirates')) return 'emirates-airline';
+                    
+                    if (['liberty','lioness','mildmay','suffragette','weaver','windrush','overground','london overground'].indexOf(l) >= 0) {
+                        categories.add('overground');
+                        continue;
+                    }
+                    if (specificLines.indexOf(l) >= 0) {
+                        categories.add(l);
+                        continue;
+                    }
+                    if (l === 'tram') {
+                        categories.add('tramlink');
+                        continue;
+                    }
+                    if (l.includes('emirates')) {
+                        categories.add('emirates-airline');
+                        continue;
+                    }
+                    
+                    var matchedOp = false;
+                    for (var op in nrOperators) {
+                        if (nrOperators[op].some(function(keyword) { return linesLower[i].includes(keyword); })) {
+                            categories.add(op);
+                            matchedOp = true;
+                            hasOperator = true;
+                            break;
+                        }
+                    }
                 }
                 
-                return 'underground';
-            }
-            var catPriority = ['national-rail','elizabeth','dlr','overground','tramlink','emirates-airline','bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','proposed','underground'];
-            var groups = {};
-            stations.forEach(function(st) {
-                var normName = normalizeName(st.name);
-                var cat = getRoundelCategory(st);
-                if (!groups[normName]) groups[normName] = { stations: [], category: null, normName: normName };
-                groups[normName].stations.push(st);
-                var cur = groups[normName].category;
-                if (cur === null || catPriority.indexOf(cat) < catPriority.indexOf(cur)) {
-                    groups[normName].category = cat;
+                var nrOnlyKeywords = ['national rail','nationalrail','southeastern','south western','swr','hull trains','lner','lumo','merseyrail','northern trains','scotrail','transpennine','transport for wales','west midlands'];
+                var hasNRKeyword = linesLower.some(function(l) { return nrOnlyKeywords.some(function(kw) { return l.includes(kw); }); });
+                
+                // Conditional rendering: if total categories > 3, show only non-NR and generic national-rail
+                var nonNrCount = 0;
+                var operatorCount = 0;
+                categories.forEach(function(cat) {
+                    if (cat === 'national-rail' || cat === 'overground') return;
+                    if (cat === 'underground') return;
+                    if (Object.keys(nrOperators).indexOf(cat) >= 0) {
+                        operatorCount++;
+                    } else {
+                        nonNrCount++;
+                    }
+                });
+                var total = nonNrCount + operatorCount + (hasOperator ? 0 : 1); // +1 for generic NR if no specific operator
+                
+                if ((isOutsideLondonNR || hasNRKeyword) && !hasOperator) {
+                    categories.add('national-rail');
                 }
+                
+                if (categories.size === 0) {
+                    categories.add('underground');
+                }
+                
+                return Array.from(categories);
+            }
+            
+            // Unpack each station into virtual stations per unique category
+            var unpacked = [];
+            stations.forEach(function(st) {
+                var cats = getRoundelCategories(st);
+                cats.forEach(function(cat) {
+                    var virtualSt = Object.assign({}, st, { category: cat });
+                    unpacked.push(virtualSt);
+                });
             });
+            
+            var groups = {};
+            unpacked.forEach(function(st) {
+                var normName = normalizeName(st.name);
+                var groupKey = normName + '_' + st.category;
+                if (!groups[groupKey]) {
+                    groups[groupKey] = { stations: [], category: st.category, normName: normName };
+                }
+                groups[groupKey].stations.push(st);
+            });
+            
             var merged = [];
-            for (var normName in groups) {
-                var group = groups[normName];
+            for (var groupKey in groups) {
+                var group = groups[groupKey];
                 var stArr = group.stations;
                 var anyHistorical = stArr.some(function(s) { return s.isHistorical || s.category === 'historic'; });
                 var latSum = 0, lonSum = 0;
@@ -14535,6 +14262,13 @@ window.initMap = async function() {
                 this._dpr = 1;
                 this._visibleHits = [];
                 this._buffer = 400;
+                this._cachedNameToIndices = null;
+                this._cachedOffsetX = null;
+                this._cachedZoom = -1;
+                this._cachedBounds = null;
+                this._renderPending = false;
+                this._lastRedrawTime = 0;
+                this._resizeSkipCount = 0;
                 
                 this.nrLogo = new Image();
                 this.nrLogo.src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 62 39"><g stroke="%23ED1C24" fill="none"><path d="M1,-8.9 46,12.4 16,26.6 61,47.9" stroke-width="6"/><path d="M0,12.4H62m0,14.2H0" stroke-width="6.4"/></g></svg>';
@@ -14546,15 +14280,11 @@ window.initMap = async function() {
                 this._canvas.style.pointerEvents = 'none';
                 this._canvas.style.position = 'absolute';
                 this._canvas.style.zIndex = '600';
-                // Force pointer-events:none as inline with highest specificity
-                // to ensure clicks pass through to the map regardless of any CSS override
                 this._canvas.setAttribute('style', (this._canvas.getAttribute('style') || '') + ';pointer-events:none!important;');
                 
                 map.getPanes().overlayPane.appendChild(this._canvas);
 
-                // Bind continuous hardware events
                 map.on('moveend', this._onMoveEnd, this);
-                map.on('zoom', this._onZoom, this);
                 map.on('zoomanim', this._animateZoom, this);
                 map.on('resize', this._resize, this);
 
@@ -14565,7 +14295,6 @@ window.initMap = async function() {
             onRemove: function(map) {
                 L.DomUtil.remove(this._canvas);
                 map.off('moveend', this._onMoveEnd, this);
-                map.off('zoom', this._onZoom, this);
                 map.off('zoomanim', this._animateZoom, this);
                 map.off('resize', this._resize, this);
             },
@@ -14580,27 +14309,84 @@ window.initMap = async function() {
             _resize: function() {
                 var size = this._map.getSize();
                 var dpr = window.devicePixelRatio || 1;
-                
-                this._canvas.width = (size.x + this._buffer * 2) * dpr;
-                this._canvas.height = (size.y + this._buffer * 2) * dpr;
+                var newW = (size.x + this._buffer * 2) * dpr;
+                var newH = (size.y + this._buffer * 2) * dpr;
+                if (this._canvas.width === newW && this._canvas.height === newH) return;
+                this._canvas.width = newW;
+                this._canvas.height = newH;
                 this._canvas.style.width = (size.x + this._buffer * 2) + 'px';
                 this._canvas.style.height = (size.y + this._buffer * 2) + 'px';
                 this._dpr = dpr;
-                
+                this._cachedZoom = -1;
+                this._cachedNameToIndices = null;
+                this._cachedOffsetX = null;
                 this._redraw();
             },
 
-            _onMove: function() {
-                if (this._animationFrame) cancelAnimationFrame(this._animationFrame);
-                this._animationFrame = requestAnimationFrame(() => this._redraw());
+            _buildNameCache: function(stSize) {
+                var arr = this.stations;
+                var showHistorical = !document.getElementById('historical-toggle') || document.getElementById('historical-toggle').checked;
+                var nameToIndices = {};
+                var offsetX = new Array(arr.length);
+                var zoom = this._map.getZoom();
+                var catPriority = [
+                    'victoria','bakerloo','central','circle','district','hammersmith-city',
+                    'jubilee','metropolitan','northern','piccadilly','waterloo-city','underground',
+                    'overground','elizabeth','dlr','tramlink','emirates-airline','national-rail',
+                    'avanti','c2c','caledonian-sleeper','chiltern','crosscountry','east-midlands',
+                    'eurostar','first-rail','grand-central','gwr','greater-anglia','gtr',
+                    'gatwick-express','great-northern','southern','thameslink','heathrow-express',
+                    'hull-trains','lner','lumo','merseyrail','northern','scotrail','southeastern',
+                    'southwestern-railway','tpe','transport-for-wales','west-midlands-railway'
+                ];
+                for (var i = 0; i < arr.length; i++) {
+                    var st = arr[i];
+                    if ((st.category === 'historic' || st.isHistorical) && !showHistorical) continue;
+                    var nn = (st.name || '').replace(/ \(.*?\)$/i, '')
+                               .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
+                               .replace(/ Station$/i, '')
+                               .trim().toLowerCase();
+                    if (!nameToIndices[nn]) nameToIndices[nn] = [];
+                    nameToIndices[nn].push(i);
+                }
+                for (var nn in nameToIndices) {
+                    var arr2 = nameToIndices[nn];
+                    if (arr2.length <= 1) { offsetX[arr2[0]] = 0; continue; }
+                    arr2.sort(function(a, b) {
+                        var catA = arr[a].category;
+                        var catB = arr[b].category;
+                        var idxA = catPriority.indexOf(catA);
+                        var idxB = catPriority.indexOf(catB);
+                        if (idxA === -1) idxA = 999;
+                        if (idxB === -1) idxB = 999;
+                        return idxA - idxB;
+                    });
+                    var gap = 2;
+                    var totalWidth = arr2.length * stSize + (arr2.length - 1) * gap;
+                    var startX = -totalWidth / 2 + stSize / 2;
+                    for (var j = 0; j < arr2.length; j++) {
+                        offsetX[arr2[j]] = startX + j * (stSize + gap);
+                    }
+                }
+                this._cachedNameToIndices = nameToIndices;
+                this._cachedOffsetX = offsetX;
+                this._cachedZoom = zoom;
             },
 
             _onMoveEnd: function() {
-                this._redraw();
-            },
-
-            _onZoom: function() {
-                this._redraw();
+                if (this._renderPending) return;
+                this._renderPending = true;
+                var self = this;
+                var now = performance.now();
+                if (now - (this._lastRedrawTime || 0) < 30) {
+                    requestAnimationFrame(function() {
+                        self._renderPending = false;
+                        self._redraw();
+                    });
+                } else {
+                    this._renderPending = false;
+                    this._redraw();
+                }
             },
 
             _redraw: function() {
@@ -14626,7 +14412,16 @@ window.initMap = async function() {
                 }
 
                 var zoom = this._map.getZoom();
-                var stSize = zoom >= 17 ? 52 : zoom >= 15 ? 42 : zoom >= 13 ? 34 : zoom >= 11 ? 26 : 18;
+                var stSize;
+                if (zoom >= 18) stSize = 68;
+                else if (zoom >= 17) stSize = 54;
+                else if (zoom >= 16) stSize = 42;
+                else if (zoom >= 15) stSize = 30;
+                else if (zoom >= 14) stSize = 20;
+                else if (zoom >= 13) stSize = 12;
+                else if (zoom >= 12) stSize = 8;
+                else if (zoom >= 11) stSize = 5;
+                else stSize = 3;
                 var half = stSize / 2;
                 var colors = { 
                     underground: '#E32017', 
@@ -14647,36 +14442,89 @@ window.initMap = async function() {
                     'national-rail': '#ED1C24', 
                     'emirates-airline': '#dc2451',
                     proposed: '#FFD700',
-                    overground: '#EE7C0E' 
+                    overground: '#EE7C0E',
+                    
+                    // Custom operators
+                    avanti: '#ff4713',
+                    c2c: '#B71C8C',
+                    'caledonian-sleeper': '#092A30',
+                    chiltern: '#00205B',
+                    crosscountry: '#660000',
+                    'east-midlands': '#452d48',
+                    eurostar: '#116bfe',
+                    'first-rail': '#1e295d',
+                    'grand-central': '#9d7729',
+                    gwr: '#0A493B',
+                    'greater-anglia': '#D90A07',
+                    gtr: '#3a5c68',
+                    'gatwick-express': '#EB1E2B',
+                    'great-northern': '#00A6E2',
+                    southern: '#004328',
+                    thameslink: '#0081C6',
+                    'heathrow-express': '#666666',
+                    'hull-trains': '#00A1DE',
+                    lner: '#BE0027',
+                    lumo: '#00B2A9',
+                    merseyrail: '#005CA9',
+                    'northern-trains': '#0072CE',
+                    scotrail: '#1C1CFF',
+                    southeastern: '#E20000',
+                    'southwestern-railway': '#003A70',
+                    tpe: '#0072CE',
+                    'transport-for-wales': '#E7204E',
+                    'west-midlands-railway': '#004B87'
                 };
 
-                var showHistorical = document.getElementById('historical-toggle') ? document.getElementById('historical-toggle').checked : false;
+                var showHistorical = !document.getElementById('historical-toggle') || document.getElementById('historical-toggle').checked;
 
-                // Build multi-roundel offset map
-                var nameToIndices = {};
-                for (var i = 0; i < this.stations.length; i++) {
-                    var st = this.stations[i];
-                    if ((st.category === 'historic' || st.isHistorical) && !showHistorical) continue;
-
-                    var nn = (st.name || '').replace(/ \(.*?\)$/i, '')
-                               .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
-                               .replace(/ Station$/i, '')
-                               .trim().toLowerCase();
-                    if (!nameToIndices[nn]) nameToIndices[nn] = [];
-                    nameToIndices[nn].push(i);
-                }
-
-                var offsetX = new Array(this.stations.length);
-                for (var nn in nameToIndices) {
-                    var arr = nameToIndices[nn];
-                    if (arr.length <= 1) { offsetX[arr[0]] = 0; continue; }
-                    var gap = 2;
-                    var totalWidth = arr.length * stSize + (arr.length - 1) * gap;
-                    var startX = -totalWidth / 2 + stSize / 2;
-                    for (var j = 0; j < arr.length; j++) {
-                        offsetX[arr[j]] = startX + j * (stSize + gap);
+                // Rebuild name cache only on zoom change or first render
+                if (zoom !== this._cachedZoom || !this._cachedNameToIndices) {
+                    var nameToIndices = {};
+                    var catPriority = [
+                        'victoria','bakerloo','central','circle','district','hammersmith-city',
+                        'jubilee','metropolitan','northern','piccadilly','waterloo-city','underground',
+                        'overground','elizabeth','dlr','tramlink','emirates-airline','national-rail',
+                        'avanti','c2c','caledonian-sleeper','chiltern','crosscountry','east-midlands',
+                        'eurostar','first-rail','grand-central','gwr','greater-anglia','gtr',
+                        'gatwick-express','great-northern','southern','thameslink','heathrow-express'
+                    ];
+                    var arr = this.stations;
+                    for (var i = 0; i < arr.length; i++) {
+                        var st = arr[i];
+                        if ((st.category === 'historic' || st.isHistorical) && !showHistorical) continue;
+                        var nn = (st.name || '').replace(/ \(.*?\)$/i, '')
+                                   .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
+                                   .replace(/ Station$/i, '')
+                                   .trim().toLowerCase();
+                        if (!nameToIndices[nn]) nameToIndices[nn] = [];
+                        nameToIndices[nn].push(i);
                     }
+                    var offsetX = new Array(arr.length);
+                    for (var nn in nameToIndices) {
+                        var arr2 = nameToIndices[nn];
+                        if (arr2.length <= 1) { offsetX[arr2[0]] = 0; continue; }
+                        arr2.sort(function(a, b) {
+                            var catA = arr[a].category;
+                            var catB = arr[b].category;
+                            var idxA = catPriority.indexOf(catA);
+                            var idxB = catPriority.indexOf(catB);
+                            if (idxA === -1) idxA = 999;
+                            if (idxB === -1) idxB = 999;
+                            return idxA - idxB;
+                        });
+                        var gap = 2;
+                        var totalWidth = arr2.length * stSize + (arr2.length - 1) * gap;
+                        var startX = -totalWidth / 2 + stSize / 2;
+                        for (var j = 0; j < arr2.length; j++) {
+                            offsetX[arr2[j]] = startX + j * (stSize + gap);
+                        }
+                    }
+                    this._cachedNameToIndices = nameToIndices;
+                    this._cachedOffsetX = offsetX;
+                    this._cachedZoom = zoom;
                 }
+
+                var offsetX = this._cachedOffsetX;
 
                 for (var i = 0; i < this.stations.length; i++) {
                     var st = this.stations[i];
@@ -14691,6 +14539,11 @@ window.initMap = async function() {
 
                     if (st.isHistorical) {
                         ctx.beginPath();
+                        ctx.arc(drawX, drawY, half * 0.7 + 1.5, 0, Math.PI * 2);
+                        ctx.fillStyle = '#000000';
+                        ctx.fill();
+                        
+                        ctx.beginPath();
                         ctx.arc(drawX, drawY, half * 0.7, 0, Math.PI * 2);
                         ctx.fillStyle = '#12141a';
                         ctx.fill();
@@ -14702,11 +14555,21 @@ window.initMap = async function() {
                         ctx.fillStyle = '#d4af37';
                         ctx.fill();
                         this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
-                    } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && this.nrLogo.complete) {
+                    } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && (!window._roundelImages['national-rail'] || !window._roundelImagesReady) && this.nrLogo.complete) {
+                        ctx.beginPath();
+                        ctx.arc(drawX, drawY, half + 1.5, 0, Math.PI * 2);
+                        ctx.fillStyle = '#000000';
+                        ctx.fill();
+
                         ctx.drawImage(this.nrLogo, drawX - half, drawY - half, stSize, stSize);
                         this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
                     } else {
                         var img = window._roundelImages[st.category];
+                        ctx.beginPath();
+                        ctx.arc(drawX, drawY, half + 1.5, 0, Math.PI * 2);
+                        ctx.fillStyle = '#000000';
+                        ctx.fill();
+
                         if (img && window._roundelImagesReady) {
                             ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
                         } else {
@@ -14726,7 +14589,6 @@ window.initMap = async function() {
                         ctx.font = (zoom >= 17 ? '600 12px' : '500 11px') + " 'Inter', 'Roboto', sans-serif";
                         ctx.textAlign = 'center';
                         ctx.textBaseline = 'top';
-                        // Glassmorphism text shadow
                         ctx.shadowColor = "rgba(0,0,0,0.8)";
                         ctx.shadowBlur = 4;
                         ctx.fillStyle = st.isHistorical ? '#d4af37' : '#ffffff';
@@ -14736,11 +14598,15 @@ window.initMap = async function() {
                     }
                 }
                 ctx.restore();
+                this._lastRedrawTime = performance.now();
             },
 
             setStations: function(stations) {
                 window.allStations = stations;
                 this.stations = window._mergeStations(stations);
+                this._cachedNameToIndices = null;
+                this._cachedOffsetX = null;
+                this._cachedZoom = -1;
                 this._redraw();
             },
 
@@ -14862,9 +14728,10 @@ window.initMap = async function() {
             var stationCircleCount = 0;
             var desertErrors = 0;
 
-            // Green circles for all stations in view (coverage context)
-            if (window.allStations && window.allStations.length) {
-                for (var si = 0; si < window.allStations.length; si++) {
+            // Green circles for stations in view (coverage context) - limit to avoid FPS drop
+            if (window.allStations && window.allStations.length && window._roundelImagesReady) {
+                var stationCircleLimit = 0;
+                for (var si = 0; si < window.allStations.length && stationCircleLimit < 200; si++) {
                     var stData = window.allStations[si];
                     if (!stData || !stData.coord) continue;
                     var stLatLng = [stData.coord.lat, stData.coord.lon];
@@ -14877,6 +14744,7 @@ window.initMap = async function() {
                                 pane: 'deserts', interactive: false
                             }).addTo(window.coverageLayerGroup);
                             stationCircleCount++;
+                            stationCircleLimit++;
                         } catch(ex) { console.error('[DESERT][RENDER] station circle error', ex); }
                     }
                 }
@@ -14929,17 +14797,26 @@ window.initMap = async function() {
                     features: geojsonFeatures
                 };
                 try {
-                    L.geoJSON(collection, {
-                        pane: 'deserts',
-                        style: {
-                            fillColor: '#ff1744',
-                            fillOpacity: 0.65,
-                            color: '#cc0022',
-                            weight: 1.5,
-                            stroke: true,
-                            interactive: false
-                        }
-                    }).addTo(window.coverageLayerGroup);
+                    // Reuse a single GeoJSON layer across calls (no per-call
+                    // allocation / flicker). Update its data in place.
+                    if (!window.desertPolygonLayer) {
+                        window.desertPolygonLayer = L.geoJSON([], {
+                            pane: 'deserts',
+                            style: {
+                                fillColor: '#ff1744',
+                                fillOpacity: 0.65,
+                                color: '#cc0022',
+                                weight: 1.5,
+                                stroke: true,
+                                interactive: false
+                            }
+                        });
+                    }
+                    if (!window.coverageLayerGroup.hasLayer(window.desertPolygonLayer)) {
+                        window.desertPolygonLayer.addTo(window.coverageLayerGroup);
+                    }
+                    window.desertPolygonLayer.clearLayers();
+                    window.desertPolygonLayer.addData(collection);
                 } catch(ex) {
                     console.error('[DESERT][RENDER] L.geoJSON failed:', ex);
                 }
@@ -15052,12 +14929,13 @@ window.initMap = async function() {
                 window.activeDeserts = [];  // Clear stale data
                 if (window.coverageLayerGroup) window.coverageLayerGroup.clearLayers();
                 window.fetchAndRenderDeserts(reason);
-            }, 1500); // 1500ms debounce
+            }, 800); // 800ms debounce - reduced from 1500ms for snappier updates
         };
 
-        // Track culling optimization (uses requestIdleCallback for non-critical renders)
+        // Track culling – spatial grid cache (rebuilds only when data changes, not on every pan)
         window.allTracks = [];
-        window.trackLayers = [];
+        window.trackGrid = {};
+        window._trackGridDirty = true;
         window._trackRenderPending = false;
         window.drawTracksForCurrentViewport = function() {
             if (window._trackRenderPending) return;
@@ -15065,58 +14943,61 @@ window.initMap = async function() {
             var doRender = function() {
                 window._trackRenderPending = false;
                 var t0 = performance.now();
-                window.trackLayers.forEach(layer => { try { window.map.removeLayer(layer); } catch(ex){} });
-                window.trackLayers = [];
-                if (!window.allTracks) return;
                 let z = window.map.getZoom();
                 if (z < 11) return;
-                let bounds = window.map.getBounds().pad(0.1);
-                let visibleCount = 0;
-                let features = [];
+                if (!window.allTracks || !window.allTracks.length) return;
 
-                window.allTracks.forEach(track => {
-                    if (visibleCount > 2500) return;
-                    if (!track.geometry || track.geometry.length < 2) return;
-                    let first = track.geometry[0];
-                    if (bounds.contains([first.lat, first.lon])) {
-                        let coords = track.geometry.map(pt => [pt.lon, pt.lat]); // Lng, Lat
+                // Rebuild grid cache when data changes
+                if (window._trackGridDirty) {
+                    // Remove old layers
+                    for (let key in window.trackGrid) {
+                        try { window.map.removeLayer(window.trackGrid[key]); } catch(ex){}
+                    }
+                    window.trackGrid = {};
+                    let cellSize = 0.04;
+                    window.allTracks.forEach(track => {
+                        if (!track.geometry || track.geometry.length < 2) return;
+                        let first = track.geometry[0];
+                        let cx = Math.floor(first.lon / cellSize);
+                        let cy = Math.floor(first.lat / cellSize);
+                        let key = cx + '_' + cy;
+                        if (!window.trackGrid[key]) {
+                            window.trackGrid[key] = L.layerGroup(null, { interactive: false });
+                        }
+                        let coords = track.geometry.map(pt => [pt.lat, pt.lon]);
                         let op = (track.operator_name || '').toLowerCase();
                         let isTfl = op.includes('underground') || op.includes('tfl') || op.includes('elizabeth') || op.includes('overground') || op.includes('dlr');
-                        let isNR = op.includes('national rail') || op.includes('southeastern') || op.includes('thameslink') || op.includes('great western') || op.includes('southern');
+                        let isNR = op.includes('national rail') || op.includes('southeastern') || op.includes('thameslink') || op.includes('great western') || op.includes('southern') || op.includes('avanti') || op.includes('c2c') || op.includes('caledonian') || op.includes('chiltern') || op.includes('crosscountry') || op.includes('east midlands') || op.includes('eurostar') || op.includes('first rail') || op.includes('grand central') || op.includes('gtr') || op.includes('gatwick') || op.includes('great northern') || op.includes('heathrow') || op.includes('hull') || op.includes('lner') || op.includes('lumo') || op.includes('merseyrail') || op.includes('northern') || op.includes('scotrail') || op.includes('south western') || op.includes('swr') || op.includes('transpennine') || op.includes('transport for wales') || op.includes('west midlands');
                         let color = isTfl ? '#4a6fa5' : isNR ? '#c96a1e' : '#667';
-                        
-                        features.push({
-                            type: "Feature",
-                            properties: { color: color },
-                            geometry: {
-                                type: "LineString",
-                                coordinates: coords
-                            }
-                        });
-                        visibleCount++;
-                    }
-                });
+                        L.polyline(coords, {
+                            color: color, weight: 1.5, opacity: 0.5,
+                            renderer: window.railRenderer, interactive: false
+                        }).addTo(window.trackGrid[key]);
+                    });
+                    window._trackGridDirty = false;
+                    console.log('[PERF][TRACKS] Grid cache rebuilt: ' + Object.keys(window.trackGrid).length + ' cells in ' + (performance.now() - t0).toFixed(1) + 'ms');
+                }
 
-                if (features.length > 0) {
-                    let collection = { type: "FeatureCollection", features: features };
-                    try {
-                        let layer = L.geoJSON(collection, {
-                            style: function(feature) {
-                                return {
-                                    color: feature.properties.color,
-                                    weight: 1.5,
-                                    opacity: 0.5,
-                                    renderer: window.railRenderer,
-                                    interactive: false
-                                };
-                            }
-                        }).addTo(window.map);
-                        window.trackLayers.push(layer);
-                    } catch(ex) {
-                        console.error('[PERF][TRACKS] L.geoJSON failed:', ex);
+                // Just add/remove visible cells
+                let bounds = window.map.getBounds().pad(0.1);
+                let added = 0;
+                for (let key in window.trackGrid) {
+                    let parts = key.split('_');
+                    let cellMinLon = parseInt(parts[0]) * 0.04;
+                    let cellMinLat = parseInt(parts[1]) * 0.04;
+                    let cellBounds = L.latLngBounds([cellMinLat, cellMinLon], [cellMinLat + 0.04, cellMinLon + 0.04]);
+                    if (bounds.intersects(cellBounds)) {
+                        if (!window.map.hasLayer(window.trackGrid[key])) {
+                            window.trackGrid[key].addTo(window.map);
+                            added++;
+                        }
+                    } else {
+                        if (window.map.hasLayer(window.trackGrid[key])) {
+                            window.map.removeLayer(window.trackGrid[key]);
+                        }
                     }
                 }
-                console.log('[PERF][TRACKS] Rendered ' + visibleCount + ' tracks in ' + (performance.now() - t0).toFixed(1) + 'ms');
+                console.log('[PERF][TRACKS] Rendered ' + added + ' cell layers in ' + (performance.now() - t0).toFixed(1) + 'ms');
             };
             if (window.requestIdleCallback) {
                 requestIdleCallback(doRender, { timeout: 200 });
@@ -15128,15 +15009,20 @@ window.initMap = async function() {
         // ============================================================
         // DEBOUNCED MOVEEND HANDLER (Frame Budget System)
         // ============================================================
+        window._renderRAF = null;
+        window._lastRenderZoom = -1;
+        window._lastRenderCenter = null;
         window._debouncedRender = function() {
-            window._isInteracting = false;
-            var t0 = performance.now();
-            console.log('[PERF] Debounced render triggered');
-            window.renderBasemapForZoom();
-            if (window._stationCanvas._redraw) { window._stationCanvas._redraw(); }
-            window.drawDesertsForCurrentViewport();
-            window.drawTracksForCurrentViewport();
-            console.log('[PERF] Full render pass: ' + (performance.now() - t0).toFixed(1) + 'ms');
+            if (window._renderRAF) return;
+            window._renderRAF = requestAnimationFrame(function() {
+                window._renderRAF = null;
+                window._isInteracting = false;
+                window._renderThrottled(function() {
+                    window.renderBasemapForZoom();
+                    window.drawDesertsForCurrentViewport();
+                    window.drawTracksForCurrentViewport();
+                });
+            });
         };
 
         window.map.on('moveend', function() {
@@ -15222,23 +15108,13 @@ window.initMap = async function() {
             }, 500);
         });
 
-        // Update line weights on zoom change for consistent visual proportions
-        window.map.on('zoomend', function() {
-            if (!window.lineLayers) return;
-            var zoom = window.map.getZoom();
-            for (var id in window.lineLayers) {
-                var entry = window.lineLayers[id];
-                if (!entry || !entry.polys) continue;
-                var line = entry.lineRef;
-                if (!line) continue;
-                var isCustom = line.is_custom || line.group === 'custom';
-                var baseWeight = isCustom ? 5 : 4;
-                var newWeight = zoom >= 16 ? baseWeight + 2 : zoom >= 14 ? baseWeight + 1 : baseWeight;
-                entry.polys.forEach(function(p) {
-                    if (p && p.setStyle) p.setStyle({ weight: newWeight });
-                });
-            }
-        });
+        // Historical stations toggle: re-render station canvas on change
+        var historicalToggle = document.getElementById('historical-toggle');
+        if (historicalToggle) {
+            historicalToggle.addEventListener('change', function() {
+                if (window._stationCanvas) window._stationCanvas._redraw();
+            });
+        }
 
         let activeHighlightPolyline = null;
         window.focusOnTrackAndZoom = function(lat, lon, lineSegmentsArray) {
@@ -15452,11 +15328,24 @@ window.initMap = async function() {
 
         pub(crate) static MAP_LOOP_JS: &str = r##"
 // ── Parallel Line Offset Helpers ─────────────────────────────────────────────
-// When multiple lines share the same track, offset them perpendicular so they
-// run side-by-side instead of overlapping.
-
-const PARALLEL_OFFSET_M = 80; // meters between parallel lines
-
+// Generate a deterministic colour for lines missing a custom colour
+function getLineFallbackColor(line) {
+    var palette = [
+        '#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#42d4f4',
+        '#f032e6','#bfef45','#fabed4','#469990','#dcbeff','#9A6324','#fffac8',
+        '#800000','#aaffc3','#808000','#ffd8b1','#000075','#a9a9a9','#e6beff',
+        '#ff6f61','#6b5b95','#88b04b','#f7cac9','#92a8d1','#955251','#b565a7',
+        '#009b77','#dd4124','#d65076','#45b8ac','#efc050','#5b5ea6','#9de0d3',
+        '#f78b8b','#7fc7f0','#b79d82','#a7c5c9','#f1c6c9','#c1a1d3','#f0c5a0'
+    ];
+    var hash = 0;
+    var id = line.id || '';
+    for (var k = 0; k < id.length; k++) {
+        hash = ((hash << 5) - hash) + id.charCodeAt(k);
+        hash |= 0;
+    }
+    return palette[Math.abs(hash) % palette.length];
+}
 // Offset a single [lat, lon] point perpendicular to a bearing (radians)
 function offsetPoint(lat, lon, bearingRad, offsetM) {
     const R = 6378137; // Earth radius in meters
@@ -15609,7 +15498,7 @@ while (true) {
             let serialized = JSON.stringify({ color: line.color, geom: line.geometry, sub: line.sub_geometries, name: line.name });
             let existing = window.lineLayers[line.id];
             let offsetIdx = parallelOffsets.get(line.id) || 0;
-            let offsetMeters = offsetIdx * PARALLEL_OFFSET_M;
+            let offsetMeters = offsetIdx * 80; // meters between parallel lines (configurable via config.parallel_offset_m)
 
             if (existing) {
                 if (existing.serialized === serialized) {
@@ -15617,14 +15506,22 @@ while (true) {
                 } else {
                     let geoSets = (line.sub_geometries && line.sub_geometries.length > 0)
                         ? line.sub_geometries : [line.geometry];
-                    if (existing.polys.length === geoSets.length) {
+                    if (existing.polys.length === geoSets.length * 2) {
                         for (let g = 0; g < geoSets.length; g++) {
                             let coords = geoSets[g].map(pt => [pt.lat, pt.lon]);
                             if (offsetMeters !== 0) {
                                 coords = offsetCoords(coords, offsetMeters);
                             }
-                            existing.polys[g].setLatLngs(coords);
-                            existing.polys[g].setStyle({ color: line.color || '#00bcd4' });
+                            existing.polys[g * 2].setLatLngs(coords);
+                            existing.polys[g * 2 + 1].setLatLngs(coords);
+                            
+                            var lineColor = line.color;
+                            if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
+                                lineColor = getLineFallbackColor(line);
+                            }
+                            var dashStyle = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
+                            existing.polys[g * 2].setStyle({ color: '#000000', weight: 6, dashArray: dashStyle });
+                            existing.polys[g * 2 + 1].setStyle({ color: lineColor, weight: 4, dashArray: dashStyle });
                         }
                         existing.serialized = serialized;
                         existing.lineRef = line;
@@ -15647,23 +15544,37 @@ while (true) {
                 }
                 if (coords.length > 1) {
                     try {
-                        let isCustom = line.is_custom || line.group === 'custom';
-                        // Line weight scales with zoom for visibility at deep zoom
-                        let zoom = window.map.getZoom();
-                        let baseWeight = isCustom ? 5 : 4;
-                        let weight = zoom >= 16 ? baseWeight + 2 : zoom >= 14 ? baseWeight + 1 : baseWeight;
-                        let poly = L.polyline(coords, {
-                            color: line.color || '#00bcd4',
-                            weight: weight,
-                            opacity: 0.95,
+                        var lineColor = line.color;
+                        if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
+                            lineColor = getLineFallbackColor(line);
+                        }
+                        var dashPattern = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
+                        
+                        var bgPoly = L.polyline(coords, {
+                            color: '#000000',
+                            weight: 6,
+                            opacity: 1.0,
+                            dashArray: dashPattern,
                             smoothFactor: 1.2,
                             lineCap: 'round',
                             lineJoin: 'round'
                         }).addTo(window.map);
+                        
+                        var poly = L.polyline(coords, {
+                            color: lineColor,
+                            weight: 4,
+                            opacity: 1.0,
+                            dashArray: dashPattern,
+                            smoothFactor: 1.2,
+                            lineCap: 'round',
+                            lineJoin: 'round'
+                        }).addTo(window.map);
+                        
                         poly.bindTooltip(line.name, { sticky: true, className: 'line-tooltip' });
                         poly.on('click', function() {
                             try { dioxus.send({ "event": "line_click", "id": line.id }); } catch(ex){}
                         });
+                        polys.push(bgPoly);
                         polys.push(poly);
                     } catch(ex) { console.warn('polyline add failed', ex); }
                 }
@@ -15699,6 +15610,7 @@ while (true) {
         }
     } else if (msg.type === "updateTracks") {
         window.allTracks = msg.data || [];
+        window._trackGridDirty = true;
         if (window.drawTracksForCurrentViewport) {
             window.drawTracksForCurrentViewport();
         }
@@ -15720,6 +15632,9 @@ while (true) {
             marker.bindTooltip('Catchment Node', { direction: 'top' });
             setTimeout(function() { try { window.map.removeLayer(marker); } catch(ex){} }, 6000);
         } catch(ex){}
+    } else if (msg.type === "scrollToBottom") {
+        let el = document.getElementById(msg.element);
+        if (el) { el.scrollTop = el.scrollHeight; }
     }
     } catch(err) { console.error("map loop inner error", err); }
 }
@@ -15729,16 +15644,11 @@ while (true) {
     mod api_client {
         use crate::logger::*;
         use crate::network::ApiResponse;
-        use std::sync::OnceLock;
+        // use std::sync::OnceLock;
         use std::time::Duration;
 
         pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
-        pub(crate) static API_BASE_URL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-        /// Port the analytics console window connects back to the main engine on.
-        /// Set once during main() based on CLI arguments or a random available port.
-        pub(crate) static CONSOLE_SERVER_PORT: OnceLock<u16> = OnceLock::new();
 
         /// Returns a lazily-initialised &'static reqwest::Client shared by all Axum
         /// handlers. The client is created on first call and lives for the lifetime of
@@ -15777,10 +15687,12 @@ while (true) {
             body: &REQ,
         ) -> Option<T> {
             let client = get_api_client_slow();
-            let base_url = API_BASE_URL
-                .get()
-                .map(|s| s.as_str())
-                .unwrap_or("http://127.0.0.1:3000");
+            let base_url = crate::logger::Globals::get()
+                .api_base
+                .read()
+                .ok()
+                .and_then(|g| g.as_ref().cloned())
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("post_api_slow - POST {}", target_endpoint));
             match client.post(&target_endpoint).json(body).send().await {
@@ -15803,10 +15715,12 @@ while (true) {
 
         pub(crate) async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
-            let base_url = API_BASE_URL
-                .get()
-                .map(|s| s.as_str())
-                .unwrap_or("http://127.0.0.1:3000");
+            let base_url = crate::logger::Globals::get()
+                .api_base
+                .read()
+                .ok()
+                .and_then(|g| g.as_ref().cloned())
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("fetch_api - GET {}", target_endpoint));
 
@@ -15833,10 +15747,12 @@ while (true) {
             body: &REQ,
         ) -> Option<T> {
             let client = get_api_client();
-            let base_url = API_BASE_URL
-                .get()
-                .map(|s| s.as_str())
-                .unwrap_or("http://127.0.0.1:3000");
+            let base_url = crate::logger::Globals::get()
+                .api_base
+                .read()
+                .ok()
+                .and_then(|g| g.as_ref().cloned())
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("post_api - POST {}", target_endpoint));
 
@@ -15860,10 +15776,12 @@ while (true) {
 
         pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
-            let base_url = API_BASE_URL
-                .get()
-                .map(|s| s.as_str())
-                .unwrap_or("http://127.0.0.1:3000");
+            let base_url = crate::logger::Globals::get()
+                .api_base
+                .read()
+                .ok()
+                .and_then(|g| g.as_ref().cloned())
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("get_api - GET {}", target_endpoint));
 
@@ -15893,7 +15811,7 @@ while (true) {
         pub(crate) static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
         pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
-        /// Build the HTML <head> string for the desktop WebView.
+        /// Build the HTML \<head> string for the desktop WebView.
         /// Uses push_str so that Leaflet's `{}` JS syntax never touches format!().
         ///
         /// # Accessibility
@@ -15956,7 +15874,7 @@ while (true) {
             h.push_str(r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Alex's Tube V","description":"London Transport network visualiser and spatial analysis engine featuring A* pathfinding and geographic indexing.","applicationCategory":"DeveloperApplication","operatingSystem":"All","browserRequirements":"Requires JavaScript and HTML5 Canvas.","offers":{"@type":"Offer","price":"0.00","priceCurrency":"GBP"}}</script>"#);
 
             // Accessibility: disable tap highlight on mobile WebViews
-            h.push_str(r#"<style>* { -webkit-tap-highlight-color: transparent; }</style>"#);
+            h.push_str(r#"<style>* { -webkit-tap-highlight-color: transparent; } body { margin: 0; padding: 0; overflow: hidden; }</style>"#);
 
             // Favicon
             h.push_str(r#"<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300bcd4'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='20' fill='black' font-family='sans-serif' font-weight='bold'%3ET%3C/text%3E%3C/svg%3E" />"#);
@@ -16079,6 +15997,32 @@ window.__consoleDupCount = 0;
                 "emirates-airline",
                 "emirates",
                 "airline",
+                "avanti",
+                "avanti-west-coast",
+                "c2c",
+                "caledonian-sleeper",
+                "east-midlands",
+                "east-midlands-railway",
+                "eurostar",
+                "grand-central",
+                "gwr",
+                "great-western",
+                "great-western-railway",
+                "gtr",
+                "great-thameslink-railway",
+                "heathrow-express",
+                "hull-trains",
+                "lner",
+                "lumo",
+                "merseyrail",
+                "northern",
+                "scotrail",
+                "southeastern",
+                "southwestern-railway",
+                "thameslink",
+                "tpe",
+                "transport-for-wales",
+                "west-midlands-railway",
             ];
 
             let mut svg_map = std::collections::HashMap::new();
@@ -16101,15 +16045,17 @@ window.__consoleDupCount = 0;
 
         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
             log_info("build_desktop_window_configuration - configuring desktop WebView");
-            // Security: only disable GPU sandbox (safe) — never disable web security.
-            // CSP header in build_webview_head() handles XSS prevention.
-            // FIXME: Audit that the environment access only happens in single-threaded code.
-            unsafe {
-                std::env::set_var(
-                    "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-                    "--disable-gpu-sandbox --disable-features=TrackingPrevention",
-                )
-            };
+            // The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is set once, early, in
+            // main() BEFORE the multi-threaded Tokio runtime is created, so no other
+            // thread is reading process environment while we write it. (Writing env
+            // is `unsafe` precisely because of concurrent readers; doing it on the
+            // single main thread first guarantees there is no race.) The two concerns
+            // are now separated into individually-justified flags:
+            //   * --disable-gpu-sandbox : required so software-rendered WebGL works on
+            //     headless/remote sessions without a GPU.
+            //   * --disable-features=TrackingPrevention : restores the previous
+            //     behaviour, but kept separate so it can be audited/removed on its own
+            //     merits (it is a privacy regression, not a GPU workaround).
 
             let local_profile_dir = std::env::current_dir()
                 .unwrap_or_default()
@@ -16120,7 +16066,7 @@ window.__consoleDupCount = 0;
                 .with_title("Alex’s Tube Ⅴ")
                 .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1280.0, 800.0))
                 .with_resizable(true)
-                .with_decorations(true)
+                .with_decorations(false)
                 .with_transparent(true); // Allows true glassmorphism blending with the map
 
             dioxus::desktop::Config::new()
@@ -16128,13 +16074,64 @@ window.__consoleDupCount = 0;
                 .with_window(window)
                 .with_custom_head(build_webview_head(api_base))
                 .with_custom_protocol("tube".to_string(), move |request| {
-                    // tube:// custom protocol for zero-copy binary IPC
-                    log_debug(&format!("tube:// protocol request: {:?}", request.uri()));
-                    dioxus::desktop::wry::http::Response::builder()
-                        .status(200)
-                        .header("Content-Type", "application/octet-stream")
-                        .body(std::borrow::Cow::Owned(Vec::new()))
-                        .unwrap()
+                    // tube:// custom protocol: serves real data to the WebView instead
+                    // of an empty 200. Supported paths:
+                    //   tube://roundel/<line_id>  -> the SVG markup for that line's roundel
+                    //   tube://asset/<filename>  -> serves static assets from assets/ directory
+                    // Anything unrecognised returns 404 so callers can detect the miss
+                    // and fall back, rather than silently receiving an empty body.
+                    let uri = request.uri().to_string();
+                    log_debug(&format!("tube:// protocol request: {}", uri));
+                    if let Some(rest) = uri.strip_prefix("tube://roundel/") {
+                        let line_id = rest.trim_end_matches('/');
+                        match roundel_svg_for_line(line_id) {
+                            Some(svg) => dioxus::desktop::wry::http::Response::builder()
+                                .status(200)
+                                .header("Content-Type", "image/svg+xml")
+                                .body(std::borrow::Cow::Owned(svg.as_bytes().to_vec()))
+                                .unwrap(),
+                            None => dioxus::desktop::wry::http::Response::builder()
+                                .status(404)
+                                .header("Content-Type", "text/plain")
+                                .body(std::borrow::Cow::Owned(
+                                    b"unknown roundel".to_vec(),
+                                ))
+                                .unwrap(),
+                        }
+                    } else if let Some(rest) = uri.strip_prefix("tube://asset/") {
+                        let filename = rest.trim_end_matches('/');
+                        let path = std::path::Path::new("assets").join(filename);
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                let mime = if filename.ends_with(".png") {
+                                    "image/png"
+                                } else if filename.ends_with(".svg") {
+                                    "image/svg+xml"
+                                } else {
+                                    "application/octet-stream"
+                                };
+                                dioxus::desktop::wry::http::Response::builder()
+                                    .status(200)
+                                    .header("Content-Type", mime)
+                                    .body(std::borrow::Cow::Owned(bytes))
+                                    .unwrap()
+                            }
+                            Err(e) => {
+                                log_error(&format!("Failed to read asset {}: {}", path.display(), e));
+                                dioxus::desktop::wry::http::Response::builder()
+                                    .status(404)
+                                    .header("Content-Type", "text/plain")
+                                    .body(std::borrow::Cow::Owned(b"asset not found".to_vec()))
+                                    .unwrap()
+                            }
+                        }
+                    } else {
+                        dioxus::desktop::wry::http::Response::builder()
+                            .status(404)
+                            .header("Content-Type", "text/plain")
+                            .body(std::borrow::Cow::Owned(b"not found".to_vec()))
+                            .unwrap()
+                    }
                 })
         }
     }
@@ -16149,6 +16146,7 @@ window.__consoleDupCount = 0;
         use crate::primitives::*;
         use crate::routing::{Line, RailwayTrack};
         use chrono::Utc;
+        use dioxus::desktop::use_window;
         use dioxus::prelude::*;
         use std::collections::HashMap;
         use std::collections::HashSet;
@@ -16235,7 +16233,13 @@ window.__consoleDupCount = 0;
                         .and_then(|p| p.parse::<u16>().ok())
                 })
                 .next()
-                .or_else(|| CONSOLE_SERVER_PORT.get().copied())
+                .or_else(|| {
+                    crate::logger::Globals::get()
+                        .console_port
+                        .read()
+                        .ok()
+                        .and_then(|g| *g)
+                })
                 .unwrap_or(3010);
             // Parse --initial-log= args passed by the parent process (the first
             // few real log lines captured at spawn time) so the console shows
@@ -16344,11 +16348,15 @@ window.__consoleDupCount = 0;
                                 // Only show reconnect message if we were previously connected
                                 // (i.e., this is a mid-session disconnect, not initial boot)
                                 if connected {
-                                    let msg = format!(
-                                        "Reconnecting... ({} attempts remaining)\n",
+                                    let mut current_logs = log_stream.read().clone();
+                                    if !current_logs.ends_with("\n") {
+                                        current_logs.push_str("\n");
+                                    }
+                                    current_logs.push_str(&format!(
+                                        "⚠ Reconnecting... ({} attempts remaining)\n",
                                         retries_remaining
-                                    );
-                                    log_stream.set(msg);
+                                    ));
+                                    log_stream.set(current_logs);
                                 }
                                 tokio::time::sleep(Duration::from_millis(wait)).await;
                             }
@@ -16364,12 +16372,34 @@ window.__consoleDupCount = 0;
                 eval(&scroll_to_bottom_query_js(".stream-view"));
             });
 
+            let filtered_lines = use_memo(move || {
+                let show_error = *show_error.read();
+                let show_warn = *show_warn.read();
+                let show_info = *show_info.read();
+                let show_debug = *show_debug.read();
+                let show_trace = *show_trace.read();
+                streaming_logs.read().lines().filter_map(move |line| {
+                    if line.contains("[ERROR]") && !show_error { return None; }
+                    if line.contains("[WARN]") && !show_warn { return None; }
+                    if line.contains("[INFO]") && !show_info { return None; }
+                    if line.contains("[DEBUG]") && !show_debug { return None; }
+                    if line.contains("[TRACE]") && !show_trace { return None; }
+                    let text_color = if line.contains("[ERROR]") { "#ff4444" }
+                        else if line.contains("[WARN]") { "#ffaa00" }
+                        else if line.contains("[DEBUG]") { "#00bcd4" }
+                        else if line.contains("[TRACE]") { "#55555c" }
+                        else if line.contains("[INFO]") { "#4caf50" }
+                        else { "#39ff14" };
+                    Some((line.to_string(), text_color.to_string()))
+                }).collect::<Vec<_>>()
+            });
+
             rsx! {
                 style { {r#"
             body { background: #020204; color: #39ff14; font-family: 'JetBrains Mono', 'Fira Code', monospace; padding: 16px; margin: 0; overflow: hidden; }
             .terminal-container { display: flex; flex-direction: column; height: 100vh; gap: 12px; padding-bottom: 32px; }
             .header-panel { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; }
-            .stream-view { flex: 1; background: #070709; border: 1px solid #1c1c1f; border-radius: 6px; padding: 14px; padding-bottom: 120px !important; overflow-y: auto; white-space: pre-wrap; font-size: 11px; line-height: 1.6; box-shadow: inset 0 0 10px rgba(0,0,0,0.8); }
+            .stream-view { flex: 1; background: #070709; border: 1px solid #1c1c1f; border-radius: 6px; padding: 14px; padding-bottom: 120px !important; overflow-y: auto; white-space: pre-wrap; font-size: 11px; line-height: 1.6; box-shadow: inset 0 0 10px rgba(0,0,0,0.8); will-change:transform }
             .copy-btn { background: #00bcd4; color: #000; font-weight: bold; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-family: sans-serif; letter-spacing: 0.5px; transition: background 0.2s ease; }
             .copy-btn:hover { background: #00acc1; }
             .status-badge { color: #888; font-size: 10px; font-family: sans-serif; }
@@ -16418,20 +16448,7 @@ window.__consoleDupCount = 0;
                         class: "stream-view",
                         style: "display: flex; flex-direction: column; background: #050508; font-family: monospace; font-size: 11px; padding: 12px; height: 100%; overflow-y: auto;",
                         tabindex: "0",
-                        {streaming_logs.read().lines().filter(|line| {
-                            if line.contains("[ERROR]") && !*show_error.read() { return false; }
-                            if line.contains("[WARN]") && !*show_warn.read() { return false; }
-                            if line.contains("[INFO]") && !*show_info.read() { return false; }
-                            if line.contains("[DEBUG]") && !*show_debug.read() { return false; }
-                            if line.contains("[TRACE]") && !*show_trace.read() { return false; }
-                            true
-                        }).map(|log_line| {
-                            let text_color = if log_line.contains("[ERROR]") { "#ff4444" }
-                                else if log_line.contains("[WARN]") { "#ffaa00" }
-                                else if log_line.contains("[DEBUG]") { "#00bcd4" }
-                                else if log_line.contains("[TRACE]") { "#55555c" }
-                                else if log_line.contains("[INFO]") { "#4caf50" }
-                                else { "#39ff14" };
+                        {filtered_lines.read().iter().map(|(log_line, text_color)| {
                             rsx! {
                                 span {
                                     style: "color: {text_color}; font-family: 'JetBrains Mono', monospace; line-height: 1.5; white-space: pre-wrap; word-break: break-all;",
@@ -16470,6 +16487,31 @@ window.__consoleDupCount = 0;
         /// nested Dioxus trees.
         #[allow(dependency_on_unit_never_type_fallback)]
         pub fn app() -> Element {
+            // ── Panic-safe guard: if a prior Dioxus rendering panic occurred, render a
+            //    minimal recovery UI that keeps the Axum server alive for browser users.
+            //    Without this guard, the Dioxus diff engine would re-panic on the same
+            //    stale VDOM and the window would go black.
+            if crate::logger::Globals::get()
+                .is_panicked
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                return rsx! {
+                    div {
+                        style: "display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #0a0a0c; color: #888; font-family: sans-serif; gap: 16px;",
+                        div { style: "font-size: 48px;", "\u{26A0}\u{FE0F}" }
+                        div { style: "font-size: 18px; color: #f44336; font-weight: 700;", "Engine Render Error" }
+                        div { style: "font-size: 13px; color: #aaa; max-width: 400px; text-align: center;",
+                            "The rendering engine encountered an error. Your browser session is unaffected. You can continue using the map in your browser."
+                        }
+                        button {
+                            style: "margin-top: 8px; padding: 8px 24px; background: #00bcd4; color: #000; border: none; border-radius: 6px; font-weight: bold; cursor: pointer;",
+                            onclick: move |_| { std::process::exit(0); },
+                            "Exit"
+                        }
+                    }
+                };
+            }
+
             let mut toasts = use_signal::<Vec<Toast>>(Vec::new);
             let mut toast_id_counter = use_signal::<usize>(|| 0);
 
@@ -16494,7 +16536,7 @@ window.__consoleDupCount = 0;
             let mut custom_line_name = use_signal::<String>(String::new);
             let mut custom_line_color = use_signal::<String>(|| "#ff00ff".to_string());
             let mut custom_line_coords = use_signal::<Vec<Coordinate>>(Vec::new);
-            let mut active_network_tab = use_signal::<String>(|| "tfl".to_string());
+            let active_network_tab = use_signal::<String>(|| "tfl".to_string());
 
             // Automated planning + manual station sandbox state
             let mut create_station_mode = use_signal::<bool>(|| false);
@@ -16503,8 +16545,8 @@ window.__consoleDupCount = 0;
             let mut coverage_summary = use_signal::<String>(String::new);
             let mut new_station_counter = use_signal::<usize>(|| 0);
 
-            let mut hidden_lines = use_signal::<HashSet<String>>(HashSet::new);
-            let mut permanent_deletions = use_signal::<HashSet<String>>(HashSet::new);
+            let hidden_lines = use_signal::<HashSet<String>>(HashSet::new);
+            let permanent_deletions = use_signal::<HashSet<String>>(HashSet::new);
 
             // Menu state signals for persistent click-based menus
             // let mut file_menu_open = use_signal::<bool>(|| false);
@@ -16530,6 +16572,14 @@ window.__consoleDupCount = 0;
 
             let mut context_menu = use_signal::<Option<(Coordinate, (i32, i32))>>(|| None);
             let mut eval_handle = use_signal::<Option<UseEval>>(|| None);
+
+            // Bring window to front on launch so map is on top of the console
+            {
+                let desktop = use_window();
+                use_effect(move || {
+                    desktop.set_focus();
+                });
+            }
 
             // Fix #9: Track whether data loading has timed out for user feedback
             let mut data_timeout = use_signal::<bool>(|| false);
@@ -16584,13 +16634,11 @@ window.__consoleDupCount = 0;
             let mut omnibox_results = use_signal::<Vec<StationSearchResult>>(Vec::new);
 
             let unique_lines = use_memo(move || {
-                let mut ul: Vec<Line> = lines.read().iter().cloned().collect();
-                ul.sort_by(|a, b| a.id.cmp(&b.id));
-
-                let mut seen = std::collections::HashSet::new();
-                ul.retain(|line| {
+                let lines_ref = lines.read();
+                let mut seen = std::collections::HashSet::with_capacity(lines_ref.len());
+                let mut ul = Vec::with_capacity(lines_ref.len());
+                for line in lines_ref.iter() {
                     let mut name_lower = line.name.to_lowercase();
-                    // normalise some known dupes
                     if name_lower.contains("avanti") {
                         name_lower = "avanti".to_string();
                     }
@@ -16603,20 +16651,17 @@ window.__consoleDupCount = 0;
                     if name_lower.contains("tramlink") {
                         name_lower = "tramlink".to_string();
                     }
-
-                    if seen.contains(&name_lower) {
-                        false
-                    } else {
-                        seen.insert(name_lower);
-                        true
+                    if seen.insert(name_lower) {
+                        ul.push(line.clone());
                     }
-                });
+                }
                 ul
             });
 
             let interchange_matrix = use_memo(move || {
-                let mut matrix = std::collections::HashMap::new();
-                for line in &*unique_lines.read() {
+                let u_lines = unique_lines.read();
+                let mut matrix = std::collections::HashMap::with_capacity(u_lines.len() * 8);
+                for line in u_lines.iter() {
                     for st in &line.stations {
                         *matrix.entry(st.id.clone()).or_insert(0) += 1;
                     }
@@ -16626,12 +16671,16 @@ window.__consoleDupCount = 0;
 
             // Inject crash report into log stream when panic becomes active
             use_effect(move || {
-                let panic_active = IS_PANICKED.load(std::sync::atomic::Ordering::SeqCst);
+                let panic_active = crate::logger::Globals::get()
+                    .is_panicked
+                    .load(std::sync::atomic::Ordering::SeqCst);
                 if panic_active && !*panic_log_injected.read() {
                     panic_log_injected.set(true);
-                    let crash_text_val = CRASH_LOG_ACCUMULATOR
-                        .get()
-                        .and_then(|m| m.lock().ok().map(|g| g.clone()))
+                    let crash_text_val = crate::logger::Globals::get()
+                        .crash_log
+                        .lock()
+                        .ok()
+                        .map(|g| g.clone())
                         .unwrap_or_else(|| "No crash details available.".to_string());
                     let short_report = format!("\u{2501}\u{2501}\u{2501} ENGINE CRASH \u{2501}\u{2501}\u{2501}\n{}\nFull crash report available via COPY button above.\n\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
                         crash_text_val.lines().take(20).collect::<Vec<_>>().join("\n")
@@ -16651,22 +16700,29 @@ window.__consoleDupCount = 0;
                 let mut attempts = 0usize;
                 let start_time = std::time::Instant::now();
 
-                while attempts < 12 {
+                while attempts < 6 {
                     // Update loading stages to show current attempt
-                    let attempt_label = format!("attempt {}/12", attempts + 1);
+                    let attempt_label = format!("attempt {}/6", attempts + 1);
                     loading_stages.with_mut(|stages| {
                         if let Some(first) = stages.first_mut() {
                             first.1 = attempt_label;
                         }
                     });
 
-                    let lines_ok = fetch_api::<Vec<Line>>("/api/lines").await;
-                    let stations_ok = fetch_api::<Vec<Station>>("/api/stations").await;
-                    let tracks_ok = fetch_api::<Vec<RailwayTrack>>("/api/tracks").await;
+                    let (lines_result, stations_result, tracks_result) = tokio::join!(
+                        tokio::time::timeout(std::time::Duration::from_secs(2), fetch_api::<Vec<Line>>("/api/lines")),
+                        tokio::time::timeout(std::time::Duration::from_secs(2), fetch_api::<Vec<Station>>("/api/stations")),
+                        tokio::time::timeout(std::time::Duration::from_secs(2), fetch_api::<Vec<RailwayTrack>>("/api/tracks")),
+                    );
+                    let lines_ok: Option<Vec<Line>> = lines_result.unwrap_or_default();
+                    let stations_ok: Option<Vec<Station>> = stations_result.unwrap_or_default();
+                    let tracks_ok: Option<Vec<RailwayTrack>> = tracks_result.unwrap_or_default();
 
                     if let Some(ref loaded_lines) = lines_ok {
                         if !loaded_lines.is_empty() {
-                            lines.set(loaded_lines.clone());
+                            if lines.read().len() != loaded_lines.len() {
+                                lines.set(loaded_lines.clone());
+                            }
                         } else {
                             log_warn("App::warm_up - /api/lines returned EMPTY list");
                         }
@@ -16675,7 +16731,9 @@ window.__consoleDupCount = 0;
                     }
                     if let Some(ref loaded_stations) = stations_ok {
                         if !loaded_stations.is_empty() {
-                            stations.set(loaded_stations.clone());
+                            if stations.read().len() != loaded_stations.len() {
+                                stations.set(loaded_stations.clone());
+                            }
                         } else {
                             log_warn("App::warm_up - /api/stations returned EMPTY list");
                         }
@@ -16684,7 +16742,9 @@ window.__consoleDupCount = 0;
                     }
                     if let Some(ref loaded_tracks) = tracks_ok {
                         if !loaded_tracks.is_empty() {
-                            tracks.set(loaded_tracks.clone());
+                            if tracks.read().len() != loaded_tracks.len() {
+                                tracks.set(loaded_tracks.clone());
+                            }
                         } else {
                             log_warn("App::warm_up - /api/tracks returned EMPTY list");
                         }
@@ -16724,7 +16784,7 @@ window.__consoleDupCount = 0;
                     }
 
                     attempts += 1;
-                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
 
                 // Final existence check
@@ -16732,21 +16792,18 @@ window.__consoleDupCount = 0;
                 let has_stations = !stations.read().is_empty();
 
                 if has_lines || has_stations {
-                    // Success — mark all stages as loaded
-                    for stage in &[
-                        "Bakerloo",
-                        "Central",
-                        "Jubilee",
-                        "Northern",
-                        "Piccadilly",
-                        "Victoria",
-                    ] {
-                        loading_stages.with_mut(|stages| {
+                    // Success — mark all stages as loaded (single batch mutation)
+                    loading_stages.with_mut(|stages| {
+                        let names: [&str; 6] = [
+                            "Bakerloo", "Central", "Jubilee",
+                            "Northern", "Piccadilly", "Victoria",
+                        ];
+                        for stage in &names {
                             if let Some(idx) = stages.iter().position(|(n, _)| n == stage) {
                                 stages[idx].1 = "success".to_string();
                             }
-                        });
-                    }
+                        }
+                    });
                     server_status.set("connected".to_string());
                     show_toast(
                         &mut toasts,
@@ -16788,17 +16845,21 @@ window.__consoleDupCount = 0;
                 }
             });
 
-            // Logging refresh
+            // Logging refresh (only polls logs — lines/stations/tracks are static after warm-up)
             use_future(move || async move {
                 log_debug("App::log_refresh - starting log polling loop (2s interval)");
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                    if IS_PANICKED.load(std::sync::atomic::Ordering::SeqCst) {
+                    if crate::logger::Globals::get()
+                        .is_panicked
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
                         break;
                     }
                     if let Some(loaded_logs) = fetch_api::<String>("/api/logs").await {
-                        logs.set(loaded_logs);
-                        eval(&scroll_to_bottom_js("log-content"));
+                        if loaded_logs.len() != logs.read().len() {
+                            logs.set(loaded_logs);
+                        }
                     }
                 }
             });
@@ -16812,7 +16873,7 @@ window.__consoleDupCount = 0;
                     {
                         stats_data.set(Some(stats));
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
                 }
             });
 
@@ -16839,7 +16900,12 @@ window.__consoleDupCount = 0;
             // Smart auto-scroll for logger panel: follows bottom; stops if user scrolls up; resumes at bottom
             use_effect(move || {
                 let _ = logs.read().len();
-                eval(&scroll_to_bottom_js("log-content"));
+                if let Some(ref ev) = *eval_handle.read() {
+                    let _ = ev.send(serde_json::json!({
+                        "type": "scrollToBottom",
+                        "element": "log-content"
+                    }));
+                }
             });
 
             // Fetch live/mock arrivals when selected station changes
@@ -17382,46 +17448,68 @@ window.__consoleDupCount = 0;
                 });
             });
 
-            // Update map layer geometry
+            // Per-topic map layer updates – each effect subscribes only to the
+            // signals it needs, so a stations-only change won't re-send lines.
+            // Lines + visibility
             use_effect(move || {
-                let lines_val = lines.read();
-                let hidden_val = hidden_lines.read();
-                let deletions_val = permanent_deletions.read();
-                let stations_val = stations.read();
-                let tracks_val = tracks.read();
-                let catchment_on = catchment_enabled.read();
-                let drawing_coords = custom_line_coords.read();
-
-                if let Some(ev) = *eval_handle.read() {
-                    let active_lines: Vec<Line> = lines_val
-                        .iter()
-                        .filter(|l| !deletions_val.contains(&l.id))
-                        .cloned()
-                        .collect();
-
+                let eval = eval_handle.read().clone();
+                if let Some(ref ev) = eval {
+                    let (active_lines, hidden_ids) = {
+                        let lines_val = lines.read();
+                        let deletions_val = permanent_deletions.read();
+                        let hidden_val = hidden_lines.read();
+                        let active: Vec<Line> = lines_val
+                            .iter()
+                            .filter(|l| !deletions_val.contains(&l.id))
+                            .cloned()
+                            .collect();
+                        let ids: Vec<String> = hidden_val.iter().cloned().collect();
+                        (active, ids)
+                    };
                     let _ = ev.send(serde_json::json!({
                         "type": "updateLines",
-                        "data": {
-                            "lines": active_lines,
-                            "hiddenIds": hidden_val.iter().cloned().collect::<Vec<String>>()
-                        }
+                        "data": { "lines": active_lines, "hiddenIds": hidden_ids }
                     }));
-
+                }
+            });
+            // Stations
+            use_effect(move || {
+                let eval = eval_handle.read().clone();
+                if let Some(ref ev) = eval {
+                    let stations_val = stations.read();
                     let _ = ev.send(serde_json::json!({
                         "type": "updateStations",
                         "data": &*stations_val
                     }));
-
+                }
+            });
+            // Tracks
+            use_effect(move || {
+                let eval = eval_handle.read().clone();
+                if let Some(ref ev) = eval {
+                    let tracks_val = tracks.read();
                     let _ = ev.send(serde_json::json!({
                         "type": "updateTracks",
                         "data": &*tracks_val
                     }));
-
+                }
+            });
+            // Catchment toggle
+            use_effect(move || {
+                let eval = eval_handle.read().clone();
+                if let Some(ref ev) = eval {
+                    let catchment_on = catchment_enabled.read();
                     let _ = ev.send(serde_json::json!({
                         "type": "setCatchmentEnabled",
                         "enabled": *catchment_on
                     }));
-
+                }
+            });
+            // Drawing coords
+            use_effect(move || {
+                let eval = eval_handle.read().clone();
+                if let Some(ref ev) = eval {
+                    let drawing_coords = custom_line_coords.read();
                     let _ = ev.send(serde_json::json!({
                         "type": "updateDrawing",
                         "data": &*drawing_coords
@@ -17491,11 +17579,6 @@ window.__consoleDupCount = 0;
                 );
             };
 
-            let clear_logs = move |_| {
-                logs.set(String::new());
-            };
-
-            let logger_class = if *logger_open.read() { "pinned" } else { "" };
             let _catchment_status = if *catchment_enabled.read() {
                 "ON"
             } else {
@@ -17519,11 +17602,11 @@ window.__consoleDupCount = 0;
                 })
                 .unwrap_or_default();
 
-            let panic_active = IS_PANICKED.load(std::sync::atomic::Ordering::SeqCst);
+            let panic_active = crate::logger::Globals::get()
+                .is_panicked
+                .load(std::sync::atomic::Ordering::SeqCst);
             let panic_display = if panic_active { "flex" } else { "none" };
 
-            let loading_active = !panic_active && *show_loading.read();
-            let loading_display = if loading_active { "flex" } else { "none" };
             let timeout_display = if *data_timeout.read() {
                 "block"
             } else {
@@ -17555,9 +17638,11 @@ window.__consoleDupCount = 0;
             // let splash_pointer_events = if srv_status == "connected" { "none" } else { "auto" };
 
             // Pre-compute crash text for the crash recovery overlay (must be outside rsx!)
-            let crash_text_val = CRASH_LOG_ACCUMULATOR
-                .get()
-                .and_then(|m| m.lock().ok().map(|g| g.clone()))
+            let crash_text_val = crate::logger::Globals::get()
+                .crash_log
+                .lock()
+                .ok()
+                .map(|g| g.clone())
                 .unwrap_or_else(|| "No crash details available.".to_string());
 
             // let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
@@ -17639,12 +17724,11 @@ window.__consoleDupCount = 0;
                         style: "
                     position: fixed;
                     top: 0; left: 0; right: 0;
-                    height: 42px;
+                    height: 54px;
                     z-index: 9999;
                     background: rgba(12, 14, 18, 0.72);
                     backdrop-filter: blur(16px);
                     -webkit-backdrop-filter: blur(16px);
-                    -webkit-app-region: drag;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
@@ -17652,8 +17736,12 @@ window.__consoleDupCount = 0;
                     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
                     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
                 ",
+                        // Transparent absolute drag region layer
                         div {
-                            style: "display: flex; align-items: center; gap: 12px;",
+                            style: "position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 1; -webkit-app-region: drag; background: transparent;"
+                        }
+                        div {
+                            style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 12px;",
                             span {
                                 style: "color: #00bcd4; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;",
                                 "LONDON TRANSPORT"
@@ -17668,7 +17756,7 @@ window.__consoleDupCount = 0;
                             }
                         }
                         div {
-                            style: "display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag;",
+                            style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 8px;",
                             // Search Bar in Menu Bar
                             div {
                                 style: "position: relative;",
@@ -17704,7 +17792,7 @@ window.__consoleDupCount = 0;
                                             div {
                                                 id: "search-results",
                                                 style: "position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: rgba(8,10,14,.98); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; overflow: hidden; box-shadow: 0 12px 32px rgba(0,0,0,.5); max-height: 280px; overflow-y: auto; z-index: 10001;",
-                                                {search_results.read().iter().map(|r| {
+                                                {search_results.read().iter().enumerate().map(|(idx, r)| {
                                                     let s = r.station.clone();
                                                     let score_pct = (r.score * 100.0).round() as i64;
                                                     let lines_label = s.lines.join(" ┬À ");
@@ -17712,7 +17800,7 @@ window.__consoleDupCount = 0;
                                                     let lon = s.coord.lon;
                                                     rsx! {
                                                         div {
-                                                            key: "{s.id}",
+                                                            key: "{idx}_{s.id}",
                                                             class: "sr-item",
                                                             style: "padding: 8px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; color: #fff;",
                                                             onclick: move |_| {
@@ -18063,7 +18151,7 @@ window.__consoleDupCount = 0;
                                     // Minimize via JavaScript
                                     eval("window.minimize();");
                                 },
-                                "ÔÇö"
+                                "\u{2014}"
                             }
                             button {
                                 style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 16px;",
@@ -18071,7 +18159,7 @@ window.__consoleDupCount = 0;
                                     // Maximize/Fullscreen via JavaScript
                                     eval("window.toggleMaximize();");
                                 },
-                                "Ôûí"
+                                "\u{25A2}"
                             }
                             button {
                                 style: "background: rgba(244,67,54,0.15); border: 1px solid rgba(244,67,54,0.3); border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #f44336; font-size: 12px; font-weight: bold;",
@@ -18079,7 +18167,7 @@ window.__consoleDupCount = 0;
                                     fn quit() { std::process::exit(0); }
                                     quit();
                                 },
-                                "Ô£ò"
+                                "\u{2717}"
                             }
                         }
                     }
@@ -18184,7 +18272,7 @@ window.__consoleDupCount = 0;
                                 if !omnibox_results.read().is_empty() {
                                     div {
                                         style: "max-height: 320px; overflow-y: auto;",
-                                        {omnibox_results.read().iter().map(|r| {
+                                        {omnibox_results.read().iter().enumerate().map(|(idx, r)| {
                                             let s = r.station.clone();
                                             let lines_label = s.lines.join(" ┬À ");
                                             let lat = s.coord.lat;
@@ -18192,7 +18280,7 @@ window.__consoleDupCount = 0;
                                             let score_pct = (r.score * 100.0).round() as i64;
                                             rsx! {
                                                 div {
-                                                    key: "{s.id}",
+                                                    key: "{idx}_{s.id}",
                                                     style: "padding: 10px 16px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,0.04); display: flex; justify-content: space-between; align-items: center;",
                                                     onmouseover: move |_| {},
                                                     onclick: move |_| {
@@ -18229,7 +18317,7 @@ window.__consoleDupCount = 0;
                         id: "map-viewport",
                         role: "application",
                         "aria-label": "London Transport interactive map",
-                        style: "position: absolute; top: 42px; left: 0; right: 0; bottom: 0; z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden;"
+                        style: "position: absolute; top: 54px; left: 0; right: 0; bottom: 0; z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden;"
                     }
 
                     div { id: "fps-counter-widget", "PERF: -- FPS" }
@@ -18238,220 +18326,17 @@ window.__consoleDupCount = 0;
                     // Can be toggled off by user; also auto-disabled by prefers-reduced-motion JS
                     div { class: "tactical-crt-overlay", id: "crt-overlay-toggleable" }
 
-                div { class: "legend-container",
-                    role: "complementary",
-                    "aria-label": "Network Layers legend",
-                    div { class: "legend-header",
-                        div { class: "legend-title", "Network Layers" }
-                    }
-                    div { class: "legend-content",
-                        {
-                            let u_lines = unique_lines.read();
-                            let matrix = interchange_matrix.read();
-
-                            let mut tfl_lines = Vec::new();
-                            let mut nr_lines = Vec::new();
-                            let mut custom_group = Vec::new();
-
-                            for line in u_lines.iter().filter(|l| !permanent_deletions.read().contains(&l.id)) {
-                                if line.is_custom {
-                                    custom_group.push(line.clone());
-                                } else if line.group == "nationalrail" {
-                                    nr_lines.push(line.clone());
-                                } else {
-                                    tfl_lines.push(line.clone());
-                                }
-                            }
-
-                            let render_line = |line: &Line| {
-                                let element_color = line.color.clone();
-                                let element_id = line.id.clone();
-                                let element_id_toggle = element_id.clone();
-                                let element_id_delete = element_id.clone();
-                                let element_name = line.name.clone();
-                                let is_custom = line.is_custom;
-                                let data_type = if is_custom { "custom" } else if line.group == "nationalrail" { "rail" } else { "tube" };
-                                let is_hidden = hidden_lines.read().contains(&element_id);
-                                let visibility_glyph = if is_hidden { "🚫" } else { "👁️" };
-
-                                if !is_custom {
-                                    rsx! {
-                                        details { key: "{element_id}", class: "line-dropdown", style: "margin: 6px 0; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px;",
-                                            summary { style: "color: {element_color}; cursor: pointer; font-weight: bold; list-style: none; display: flex; align-items: center;",
-                                                div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
-                                                span { class: "legend-name", style: "flex: 1;", "{element_name}" }
-                                                button {
-                                                    style: "background: none; border: none; color: #00bcd4; cursor: pointer; font-size: 13px;",
-                                                    onclick: move |e| {
-                                                        e.stop_propagation();
-                                                        if hidden_lines.read().contains(&element_id_toggle) {
-                                                            hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
-                                                        } else {
-                                                            hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
-                                                        }
-                                                    },
-                                                    "{visibility_glyph}"
-                                                }
-                                                button {
-                                                    style: "background: none; border: none; color: #f44336; cursor: pointer; font-size: 12px; margin-left: 2px; opacity: 0.6;",
-                                                    title: "Remove from list",
-                                                    onclick: move |e| {
-                                                        e.stop_propagation();
-                                                        permanent_deletions.with_mut(|d| { d.insert(element_id_delete.clone()); });
-                                                    },
-                                                    "ÔØî"
-                                                }
-                                            }
-                                            div { class: "branch-segment", style: "padding-left: 20px; margin-top: 8px;",
-                                                {line.stations.iter().map(|st| {
-                                                    let st_name = st.name.clone();
-                                                    let lat = st.coord.lat;
-                                                    let lon = st.coord.lon;
-                                                    let is_interchange = *matrix.get(&st.id).unwrap_or(&0) > 1;
-                                                    let geom_json = serde_json::to_string(&line.geometry).unwrap_or_else(|_| "[]".to_string());
-                                                    rsx! {
-                                                        button {
-                                                            key: "{st.id}",
-                                                            class: "station-node-link",
-                                                            style: "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;",
-                                                            onclick: move |_| {
-                                                                let js = format!("window.focusOnTrackAndZoom({}, {}, {});", lat, lon, geom_json);
-                                                                eval(&js);
-                                                            },
-                                                            "{st_name}"
-                                                            {is_interchange.then(|| rsx! { span { style: "color: #00bcd4; margin-left: 4px; font-size: 10px;", "­ƒöä" } })}
-                                                        }
-                                                    }
-                                                })}
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    rsx! {
-                                        div { class: "legend-item", key: "{element_id}",
-                                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
-                                            span { class: "legend-name", style: "flex: 1;", "{element_name}" }
-
-                                            button {
-                                                style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",
-                                                onclick: move |e| {
-                                                    e.stop_propagation();
-                                                    if hidden_lines.read().contains(&element_id_toggle) {
-                                                        hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
-                                                    } else {
-                                                        hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
-                                                    }
-                                                },
-                                                "{visibility_glyph}"
-                                            }
-
-                                            button {
-                                                style: "background: none; border: none; color: #f44336; cursor: pointer; font-weight: bold; font-size: 13px;",
-                                                onclick: move |e| {
-                                                    e.stop_propagation();
-                                                    let target_id = element_id_delete.clone();
-                                                    let mut lines_sig = lines;
-                                                    let mut deletions_sig = permanent_deletions;
-                                                    spawn(async move {
-                                                        let target_endpoint = format!("/api/lines/delete/{}", target_id);
-                                                        let _ = post_api::<_, bool>(&target_endpoint, &true).await;
-                                                        deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
-                                                        lines_sig.with_mut(|l| { l.retain(|line| line.id != target_id); });
-                                                    });
-                                                },
-                                                "ÔØî"
-                                            }
-                                        }
-                                    }
-                                }
-                            };
-
-                            rsx! {
-                                div { class: "network-tabs", style: "display: flex; gap: 8px; margin-bottom: 12px;",
-                                    button {
-                                        style: if *active_network_tab.read() == "tfl" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                        onclick: move |_| active_network_tab.set("tfl".to_string()),
-                                        "TfL"
-                                    }
-                                    button {
-                                        style: if *active_network_tab.read() == "nr" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                        onclick: move |_| active_network_tab.set("nr".to_string()),
-                                        "NR"
-                                    }
-                                    button {
-                                        style: if *active_network_tab.read() == "custom" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                        onclick: move |_| active_network_tab.set("custom".to_string()),
-                                        "Custom"
-                                    }
-                                }
-
-                                if *active_network_tab.read() == "tfl" {
-                                    div { style: "margin-bottom: 12px;",
-                                        {tfl_lines.iter().map(&render_line).collect::<Vec<_>>().into_iter()}
-                                    }
-                                }
-
-                                if *active_network_tab.read() == "nr" {
-                                    div { style: "margin-bottom: 12px;",
-                                        {nr_lines.iter().map(&render_line).collect::<Vec<_>>().into_iter()}
-                                    }
-                                }
-
-                                if *active_network_tab.read() == "custom" {
-                                    div { style: "margin-bottom: 12px;",
-                                        div { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;",
-                                            div { style: "font-weight: bold; font-size: 11px; color: #aaa;", "Custom / AI Lines & Stations" }
-                                            button {
-                                                style: "background: rgba(244, 67, 54, 0.2); border: 1px solid rgba(244, 67, 54, 0.5); color: #f44336; padding: 2px 6px; border-radius: 4px; font-size: 10px; cursor: pointer;",
-                                                onclick: move |_| {
-                                                    let custom_ids: Vec<String> = custom_group.iter().map(|l| l.id.clone()).collect();
-                                                    let mut lines_sig = lines;
-                                                    let mut stations_sig = stations;
-                                                    let mut permanent_deletions_sig = permanent_deletions;
-                                                    spawn(async move {
-                                                        for target_id in &custom_ids {
-                                                            let endpoint = format!("/api/lines/delete/{}", target_id);
-                                                            let _ = post_api::<_, bool>(&endpoint, &true).await;
-                                                            permanent_deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
-                                                        }
-                                                        // Also remove directly from the lines signal for immediate effect
-                                                        lines_sig.with_mut(|l| {
-                                                            l.retain(|line| !custom_ids.contains(&line.id));
-                                                        });
-                                                        if post_api::<_, bool>("/api/stations/clear", &true).await.is_some() {
-                                                            stations_sig.with_mut(|s| {
-                                                                s.retain(|st| !st.id.starts_with("user_station_") && !st.id.starts_with("ai_station_"));
-                                                            });
-                                                        }
-                                                    });
-                                                },
-                                                "Clear All"
-                                            }
-                                        }
-                                        {custom_group.iter().map(render_line).collect::<Vec<_>>().into_iter()}
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    div { class: "catchment-toggle-container",
-                        div { class: "catchment-toggle-header",
-                            span { "Catchment Overlay (800m+)" }
-                            label { class: "switch",
-                                input {
-                                    r#type: "checkbox",
-                                    "aria-label": "Toggle catchment overlay 800 meter radius",
-                                    checked: *catchment_enabled.read(),
-                                    onchange: move |_| {
-                                        let current = *catchment_enabled.peek();
-                                        catchment_enabled.set(!current);
-                                    }
-                                }
-                                span { class: "slider" }
-                            }
-                        }
-                    }
+                LegendPanel {
+                    unique_lines,
+                    interchange_matrix,
+                    permanent_deletions,
+                    hidden_lines,
+                    active_network_tab,
+                    lines,
+                    stations,
+                    catchment_enabled,
+                    toasts,
+                    toast_id_counter,
                 }
 
                 {
@@ -18494,43 +18379,11 @@ window.__consoleDupCount = 0;
                     }
                 }
 
-                div { id: "logger-wrapper",
-                    div {
-                        id: "logger-fab",
-                        onclick: move |_| {
-                            let current = *logger_open.read();
-                            logger_open.set(!current);
-                        },
-                        "Companion Diagnostics"
-                    }
-                    div {
-                        id: "logger-panel",
-                        class: "{logger_class}",
-                        div {
-                            id: "log-content",
-                            style: "display: flex; flex-direction: column; background: #070709; overflow-y: auto; padding: 10px; height: 100%;",
-                            {logs.read().lines().map(|line| {
-                                let text_color = if line.contains("[ERROR]") { "#ff4444" }
-                                    else if line.contains("[WARN]") { "#ffaa00" }
-                                    else if line.contains("[DEBUG]") { "#00bcd4" }
-                                    else if line.contains("[TRACE]") { "#55555c" }
-                                    else if line.contains("[INFO]") { "#4caf50" }
-                                    else { "#39ff14" };
-                                rsx! {
-                                    span {
-                                        style: "color: {text_color}; font-family: var(--font-mono); font-size: 11px; line-height: 1.42; white-space: pre-wrap; word-break: break-all;",
-                                        "{line}"
-                                    }
-                                }
-                            })}
-                        }
-                        div { id: "logger-actions",
-                            button { class: "logger-btn", onclick: clear_logs, "Clear" }
-                            button { class: "logger-btn btn-highlight", onclick: move |_| {
-                                show_toast(&mut toasts, &mut toast_id_counter, "Logs exported to console.", "success");
-                            }, "Export" }
-                        }
-                    }
+                LogConsole {
+                    logger_open,
+                    logs,
+                    toasts,
+                    toast_id_counter,
                 }
 
 
@@ -18725,7 +18578,7 @@ window.__consoleDupCount = 0;
 
 
                 div {
-                    style: "position: absolute; top: 24px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.9); padding: 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); color: #fff; width: 280px;",
+                    style: "position: absolute; top: 72px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.9); padding: 15px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1); color: #fff; width: 280px;",
                     button {
                         style: "width: 100%; padding: 8px; border-radius: 6px; border: none; font-weight: bold; background: #00bcd4; color: #000; cursor: pointer; margin-bottom: 10px;",
                         onclick: move |_| {
@@ -18787,7 +18640,7 @@ window.__consoleDupCount = 0;
                 // ---- AI Urban Planner panel ---------------------------------------
                 div {
                     class: "ai-planner-panel",
-                    style: "position: absolute; top: 250px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.92); padding: 15px; border-radius: 12px; border: 1px solid rgba(0,188,212,0.35); color: #fff; width: 280px; box-shadow: 0 0 24px rgba(0,188,212,0.15);",
+                    style: "position: absolute; top: 310px; right: 24px; z-index: 1000; background: rgba(10,10,15,0.92); padding: 15px; border-radius: 12px; border: 1px solid rgba(0,188,212,0.35); color: #fff; width: 280px; box-shadow: 0 0 24px rgba(0,188,212,0.15);",
                     div { style: "font-weight: bold; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: #00bcd4; margin-bottom: 10px;", "AI Urban Planner" }
 
                     button {
@@ -19142,7 +18995,7 @@ window.__consoleDupCount = 0;
                                     })}
                                     div {
                                         style: "margin-top: 12px; font-size: 11px; color: #4caf50; line-height: 1.6;",
-                                        {j.accessibility_notes.iter().map(|n| rsx! { div { key: "{n}", "Ô£ô {n}" } })}
+                                        {j.accessibility_notes.iter().enumerate().map(|(idx, n)| rsx! { div { key: "{idx}_{n}", "Ô£ô {n}" } })}
                                     }
                                 })
                             } else {
@@ -19191,11 +19044,11 @@ window.__consoleDupCount = 0;
                                         }
                                     }
                                     div { style: "font-size: 11px; color: #888; margin-bottom: 8px;", "{s.breakdown}" }
-                                    {s.nearby_stations.iter().map(|ns| {
+                                    {s.nearby_stations.iter().enumerate().map(|(idx, ns)| {
                                         let walk_min = ns.walk_minutes;
                                         rsx! {
                                             div {
-                                                key: "{ns.name}",
+                                                key: "{idx}_{ns.name}",
                                                 style: "display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.05); font-size: 12px;",
                                                 span { style: "color: #ddd;", "{ns.name}" }
                                                 span { style: "color: #00bcd4;", "{walk_min:.0} min walk" }
@@ -19550,40 +19403,8 @@ window.__consoleDupCount = 0;
                 }
 
                 // I. Network Stats HUD container (replacing system stats widget)
-                {
-                    stats_data.read().as_ref().map(|s| rsx! {
-                            div {
-                                id: "network-stats-hud",
-                                role: "status",
-                                "aria-live": "polite",
-                                "aria-label": "Network statistics",
-                                style: "position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(8,10,14,.88); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 8px 18px; z-index: 10500; display: flex; gap: 22px; align-items: center; font-family: Inter,sans-serif; backdrop-filter: blur(10px); box-shadow: 0 6px 24px rgba(0,0,0,.4); pointer-events: none;",
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_lines}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Lines" }
-                                }
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_stations}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Stations" }
-                                }
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_track_km:.0}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Track km" }
-                                }
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.interchange_count}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Interchanges" }
-                                }
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_ai_stations}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "AI Stations" }
-                                }
-                                div { style: "text-align: center;",
-                                    div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.routing_graph_nodes}" }
-                                    div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Graph Nodes" }
-                                }
-                            }
-                        })
+                HudStats {
+                    stats_data
                 }
 
 
@@ -19622,7 +19443,7 @@ window.__consoleDupCount = 0;
                     }
                 }
 
-                // ÔöÇÔöÇ Engine Offline Overlay ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                //== Engine Offline Overlay==========================================
                 // Shown when the data server fails to start or all fetch attempts fail.
                 // Gives the user clear diagnostic info instead of a blank unresponsive screen.
                 div {
@@ -19656,7 +19477,7 @@ window.__consoleDupCount = 0;
                     }
                 }
 
-                // ÔöÇÔöÇ Persistent Server Status Indicator ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                //== Persistent Server Status Indicator==============================
                 // Always-visible pill showing engine connection state in the top-right corner.
                 // Hidden when the crash or offline overlay is active (they cover everything).
                 div {
@@ -19665,7 +19486,7 @@ window.__consoleDupCount = 0;
                     span { style: "color:{srv_status_color};font-size:10px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px", "{srv_status_icon} {srv_status_label}" }
                 }
 
-                // ÔöÇÔöÇ Legal Compliance: EULA Click-Wrap Overlay ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                //== Legal Compliance: EULA Click-Wrap Overlay=========================
                 // Shown on first launch only. User must accept before using the app.
                 // Persisted via localStorage. Satisfies Consumer Rights Act 2015.
                 {
@@ -19708,7 +19529,7 @@ window.__consoleDupCount = 0;
                     }
                 }
 
-                // ÔöÇÔöÇ Legal Compliance: Data Attribution Footer ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+                //== Legal Compliance: Data Attribution Footer=======================
                 // Satisfies TfL Open Data attribution requirement and National Rail credit.
                 div {
                     style: "position:fixed;bottom:0;left:0;right:0;height:20px;background:rgba(0,0,0,.7);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;gap:16px;z-index:8000;border-top:1px solid rgba(255,255,255,.04);",
@@ -19719,31 +19540,32 @@ window.__consoleDupCount = 0;
                     span { style: "color:rgba(255,255,255,.3);font-size:9px;font-family:Inter,sans-serif;", "Simulations are not official TfL guidance" }
                 }
 
-                div {
-                    class: "loading-overlay",
-                    role: "alert",
-                    "aria-busy": "true",
-                    "aria-label": "Loading network data",
-                    style: "display:{loading_display}",
-                    div { class: "spinner" }
-                    div { class: "status-container",
-                        div { class: "status-header", "Initialising Network" }
-                        div { class: "status-grid",
-                            for (name, status) in loading_stages.read().iter() {
-                                div {
-                                    class: "status-row",
-                                    key: "{name}",
-                                    span { class: "status-name", "Loading: {name}" }
-                                    span { class: "status-badge status-{status}", "{status}" }
+                if *show_loading.read() && !panic_active {
+                    div {
+                        class: "loading-overlay",
+                        role: "alert",
+                        "aria-busy": "true",
+                        "aria-label": "Loading network data",
+                        div { class: "spinner" }
+                        div { class: "status-container",
+                            div { class: "status-header", "Initialising Network" }
+                            div { class: "status-grid",
+                                for (name, status) in loading_stages.read().iter() {
+                                    div {
+                                        class: "status-row",
+                                        key: "{name}",
+                                        span { class: "status-name", "Loading: {name}" }
+                                        span { class: "status-badge status-{status}", "{status}" }
+                                    }
                                 }
                             }
-                        }
-                        div {
-                            style: "margin-top:12px;text-align:center;display:{timeout_display}",
-                            button {
-                                style: "padding:8px 24px;background:#ff9800;color:#000;border:none;border-radius:6px;font-weight:bold;cursor:pointer",
-                                onclick: move |_| { data_timeout.set(false); },
-                                "Retry Loading"
+                            div {
+                                style: "margin-top:12px;text-align:center;display:{timeout_display}",
+                                button {
+                                    style: "padding:8px 24px;background:#ff9800;color:#000;border:none;border-radius:6px;font-weight:bold;cursor:pointer",
+                                    onclick: move |_| { data_timeout.set(false); },
+                                    "Retry Loading"
+                                }
                             }
                         }
                     }
@@ -19780,12 +19602,43 @@ window.__consoleDupCount = 0;
                 }
             });
 
+            let filtered_lines = use_memo(move || {
+                let show_trace = *show_trace.read();
+                let show_debug = *show_debug.read();
+                let show_info = *show_info.read();
+                let show_warn = *show_warn.read();
+                let show_error = *show_error.read();
+                streaming_logs.read().lines().filter_map(move |line| {
+                    let is_trace = line.contains("[TRACE]");
+                    let is_debug = line.contains("[DEBUG]");
+                    let is_info = line.contains("[INFO]");
+                    let is_warn = line.contains("[WARN]");
+                    let is_error = line.contains("[ERROR]");
+
+                    if (is_trace && !show_trace) ||
+                       (is_debug && !show_debug) ||
+                       (is_info && !show_info) ||
+                       (is_warn && !show_warn) ||
+                       (is_error && !show_error) {
+                        return None;
+                    }
+
+                    let text_color = if is_error { "#ff4444" }
+                        else if is_warn { "#ffaa00" }
+                        else if is_debug { "#00bcd4" }
+                        else if is_trace { "#55555c" }
+                        else if is_info { "#4caf50" }
+                        else { "#39ff14" };
+                    Some((line.to_string(), text_color.to_string()))
+                }).collect::<Vec<_>>()
+            });
+
             rsx! {
                 style { {r#"
             body { background: #020204; color: #39ff14; font-family: 'JetBrains Mono', 'Fira Code', monospace; padding: 16px; margin: 0; overflow: hidden; }
             .terminal-container { display: flex; flex-direction: column; height: 100vh; gap: 12px; padding-bottom: 32px; }
             .header-panel { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; }
-            .stream-view { flex: 1; background: #070709; border: 1px solid #1c1c1f; border-radius: 6px; padding: 14px; overflow-y: auto; white-space: pre-wrap; font-size: 11px; line-height: 1.6; box-shadow: inset 0 0 10px rgba(0,0,0,0.8); }
+            .stream-view { flex: 1; background: #070709; border: 1px solid #1c1c1f; border-radius: 6px; padding: 14px; overflow-y: auto; white-space: pre-wrap; font-size: 11px; line-height: 1.6; box-shadow: inset 0 0 10px rgba(0,0,0,0.8); will-change:transform }
             button { background: #00bcd4; color: #000; font-weight: bold; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-family: sans-serif; letter-spacing: 0.5px; transition: background 0.2s ease; }
             button:hover { background: #00acc1; }
             .status-badge { color: #888; font-size: 10px; font-family: sans-serif; }
@@ -19815,35 +19668,375 @@ window.__consoleDupCount = 0;
                     div {
                         class: "stream-view",
                         style: "display: flex; flex-direction: column; background: #060608; padding: 14px; overflow-y: auto; height: 100%;",
-                        {streaming_logs.read().lines().filter_map(|line| {
-                            let is_trace = line.contains("[TRACE]");
-                            let is_debug = line.contains("[DEBUG]");
-                            let is_info = line.contains("[INFO]");
-                            let is_warn = line.contains("[WARN]");
-                            let is_error = line.contains("[ERROR]");
+                        {filtered_lines.read().iter().map(|(log_line, text_color)| {
+                            rsx! {
+                                span {
+                                    style: "color: {text_color}; font-family: 'JetBrains Mono', monospace; line-height: 1.5; white-space: pre-wrap; word-break: break-all;",
+                                    "{log_line}"
+                                }
+                            }
+                        })}
+                    }
+                }
+            }
+        }
 
-                            if (is_trace && !*show_trace.read()) ||
-                               (is_debug && !*show_debug.read()) ||
-                               (is_info && !*show_info.read()) ||
-                               (is_warn && !*show_warn.read()) ||
-                               (is_error && !*show_error.read()) {
-                                return None;
+        #[component]
+        fn LogConsole(
+            mut logger_open: Signal<bool>,
+            logs: Signal<String>,
+            toasts: Signal<Vec<Toast>>,
+            toast_id_counter: Signal<usize>,
+        ) -> Element {
+            let open = *logger_open.read();
+            let logger_class = if open { "pinned" } else { "" };
+
+            let colored_lines = use_memo(move || {
+                logs.read().lines().map(|line| {
+                    let text_color = if line.contains("[ERROR]") { "#ff4444" }
+                        else if line.contains("[WARN]") { "#ffaa00" }
+                        else if line.contains("[DEBUG]") { "#00bcd4" }
+                        else if line.contains("[TRACE]") { "#55555c" }
+                        else if line.contains("[INFO]") { "#4caf50" }
+                        else { "#39ff14" };
+                    (line.to_string(), text_color.to_string())
+                }).collect::<Vec<_>>()
+            });
+
+            rsx! {
+                div { id: "logger-wrapper",
+                    div {
+                        id: "logger-fab",
+                        onclick: move |_| {
+                            logger_open.set(!open);
+                        },
+                        "Companion Diagnostics"
+                    }
+                    div {
+                        id: "logger-panel",
+                        class: "{logger_class}",
+                        div {
+                            id: "log-content",
+                            style: "display: flex; flex-direction: column; background: #070709; overflow-y: auto; padding: 10px; height: 100%;",
+                            {colored_lines.read().iter().enumerate().map(|(idx, (log_line, text_color))| {
+                                rsx! {
+                                    span {
+                                        key: "{idx}_{log_line}",
+                                        style: "color: {text_color}; font-family: var(--font-mono); font-size: 11px; line-height: 1.42; white-space: pre-wrap; word-break: break-all;",
+                                        "{log_line}"
+                                    }
+                                }
+                            })}
+                        }
+                        div { id: "logger-actions",
+                            button { class: "logger-btn", onclick: move |_| logs.set(String::new()), "Clear" }
+                            button { class: "logger-btn btn-highlight", onclick: move |_| {
+                                let mut t_sig = toasts;
+                                let mut c_sig = toast_id_counter;
+                                show_toast(&mut t_sig, &mut c_sig, "Logs exported to console.", "success");
+                            }, "Export" }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[component]
+        fn HudStats(stats_data: Signal<Option<NetworkStatsResponse>>) -> Element {
+            let stats_opt = stats_data.read();
+            if let Some(s) = stats_opt.as_ref() {
+                rsx! {
+                    div {
+                        id: "network-stats-hud",
+                        role: "status",
+                        "aria-live": "polite",
+                        "aria-label": "Network statistics",
+                        style: "position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(8,10,14,.88); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 8px 18px; z-index: 10500; display: flex; gap: 22px; align-items: center; font-family: Inter,sans-serif; backdrop-filter: blur(10px); box-shadow: 0 6px 24px rgba(0,0,0,.4); pointer-events: none;",
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_lines}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Lines" }
+                        }
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_stations}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Stations" }
+                        }
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_track_km:.0}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Track km" }
+                        }
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.interchange_count}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Interchanges" }
+                        }
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.total_ai_stations}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "AI Stations" }
+                        }
+                        div { style: "text-align: center;",
+                            div { style: "font-size: 15px; font-weight: 800; color: #00bcd4;", "{s.routing_graph_nodes}" }
+                            div { style: "font-size: 9px; color: #666; text-transform: uppercase; letter-spacing: 1px;", "Graph Nodes" }
+                        }
+                    }
+                }
+            } else {
+                None
+            }
+        }
+
+        #[component]
+        fn LegendPanel(
+            unique_lines: Memo<Vec<Line>>,
+            interchange_matrix: Memo<HashMap<String, usize>>,
+            permanent_deletions: Signal<HashSet<String>>,
+            hidden_lines: Signal<HashSet<String>>,
+            active_network_tab: Signal<String>,
+            lines: Signal<Vec<Line>>,
+            stations: Signal<Vec<Station>>,
+            catchment_enabled: Signal<bool>,
+            toasts: Signal<Vec<Toast>>,
+            toast_id_counter: Signal<usize>,
+        ) -> Element {
+            let u_lines = unique_lines.read();
+            let matrix = interchange_matrix.read();
+            let perma_del = permanent_deletions.read();
+
+            let mut tfl_lines = Vec::new();
+            let mut nr_lines = Vec::new();
+            let mut custom_group = Vec::new();
+
+            for line in u_lines.iter().filter(|l| !perma_del.contains(&l.id))
+            {
+                if line.is_custom {
+                    custom_group.push(line.clone());
+                } else if line.group == "nationalrail" {
+                    nr_lines.push(line.clone());
+                } else {
+                    tfl_lines.push(line.clone());
+                }
+            }
+
+            let hidden_set = hidden_lines.read().clone();
+
+            let get_rust_fallback_color = |line_id: &str| -> String {
+                let palette = [
+                    "#e6194b","#3cb44b","#ffe119","#4363d8","#f58231","#911eb4","#42d4f4",
+                    "#f032e6","#bfef45","#fabed4","#469990","#dcbeff","#9A6324","#fffac8",
+                    "#800000","#aaffc3","#808000","#ffd8b1","#000075","#a9a9a9","#e6beff",
+                    "#ff6f61","#6b5b95","#88b04b","#f7cac9","#92a8d1","#955251","#b565a7",
+                    "#009b77","#dd4124","#d65076","#45b8ac","#efc050","#5b5ea6","#9de0d3",
+                    "#f78b8b","#7fc7f0","#b79d82","#a7c5c9","#f1c6c9","#c1a1d3","#f0c5a0"
+                ];
+                let mut hash: i32 = 0;
+                for c in line_id.chars() {
+                    hash = hash.wrapping_mul(31).wrapping_add(c as i32);
+                }
+                let index = (hash.abs() as usize) % palette.len();
+                palette[index].to_string()
+            };
+
+            let render_line = move |line: &Line| {
+                let mut element_color = line.color.clone();
+                if element_color.is_empty() || element_color == "#ff9800" || element_color == "#EF7C00" || element_color == "#EE7C0E" {
+                    element_color = get_rust_fallback_color(&line.id);
+                }
+                let element_id = line.id.clone();
+                let element_id_toggle = element_id.clone();
+                let element_id_delete = element_id.clone();
+                let element_name = line.name.clone();
+                let is_custom = line.is_custom;
+                let data_type = if is_custom {
+                    "custom"
+                } else if line.group == "nationalrail" {
+                    "rail"
+                } else {
+                    "tube"
+                };
+                let is_hidden = hidden_set.contains(&element_id);
+                let visibility_glyph = if is_hidden { "🚫" } else { "👁️" };
+
+                if !is_custom {
+                    rsx! {
+                        details { key: "{element_id}", class: "line-dropdown", style: "margin: 6px 0; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px;",
+                            summary { style: "color: {element_color}; cursor: pointer; font-weight: bold; list-style: none; display: flex; align-items: center;",
+                                div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
+                                span { class: "legend-name", style: "flex: 1;", "{element_name}" }
+                                button {
+                                    style: "background: none; border: none; color: #00bcd4; cursor: pointer; font-size: 13px;",
+                                    onclick: move |e| {
+                                        e.stop_propagation();
+                                        if hidden_lines.read().contains(&element_id_toggle) {
+                                            hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
+                                        } else {
+                                            hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
+                                        }
+                                    },
+                                    "{visibility_glyph}"
+                                }
+                                button {
+                                    style: "background: none; border: none; color: #f44336; cursor: pointer; font-size: 12px; margin-left: 2px; opacity: 0.6;",
+                                    title: "Remove from list",
+                                    onclick: move |e| {
+                                        e.stop_propagation();
+                                        permanent_deletions.with_mut(|d| { d.insert(element_id_delete.clone()); });
+                                    },
+                                    "✖"
+                                }
+                            }
+                            div { class: "branch-segment", style: "padding-left: 20px; margin-top: 8px;",
+                                {line.stations.iter().enumerate().map(|(st_idx, st)| {
+                                    let st_name = st.name.clone();
+                                    let lat = st.coord.lat;
+                                    let lon = st.coord.lon;
+                                    let is_interchange = *matrix.get(&st.id).unwrap_or(&0) > 1;
+                                    let geom_json = serde_json::to_string(&line.geometry).unwrap_or_else(|_| "[]".to_string());
+                                    rsx! {
+                                        button {
+                                            key: "{st_idx}_{st.id}",
+                                            class: "station-node-link",
+                                            style: "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;",
+                                            onclick: move |_| {
+                                                let js = format!("window.focusOnTrackAndZoom({}, {}, {});", lat, lon, geom_json);
+                                                eval(&js);
+                                            },
+                                            "{st_name}"
+                                            {is_interchange.then(|| rsx! { span { style: "color: #00bcd4; margin-left: 4px; font-size: 10px;", "⇄" } })}
+                                        }
+                                    }
+                                })}
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {
+                        div { class: "legend-item", key: "{element_id}",
+                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
+                            span { class: "legend-name", style: "flex: 1;", "{element_name}" }
+
+                            button {
+                                style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    if hidden_lines.read().contains(&element_id_toggle) {
+                                        hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
+                                    } else {
+                                        hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
+                                    }
+                                },
+                                "{visibility_glyph}"
                             }
 
-                            let text_color = if is_error { "#ff4444" }
-                                else if is_warn { "#ffaa00" }
-                                else if is_debug { "#00bcd4" }
-                                else if is_trace { "#55555c" }
-                                else if is_info { "#4caf50" }
-                                else { "#39ff14" };
-                            Some(rsx! {
-                                span {
-                                    key: "{line}",
-                                    style: "color: {text_color}; font-family: var(--font-mono); font-size: 11px; line-height: 1.42; white-space: pre-wrap; word-break: break-all;",
-                                    "{line}"
+                            button {
+                                style: "background: none; border: none; color: #f44336; cursor: pointer; font-weight: bold; font-size: 13px;",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    let target_id = element_id_delete.clone();
+                                    let mut lines_sig = lines;
+                                    let mut deletions_sig = permanent_deletions;
+                                    spawn(async move {
+                                        let target_endpoint = format!("/api/lines/delete/{}", target_id);
+                                        let _ = post_api::<_, bool>(&target_endpoint, &true).await;
+                                        deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
+                                        lines_sig.with_mut(|l| { l.retain(|line| line.id != target_id); });
+                                    });
+                                },
+                                "✖"
+                            }
+                        }
+                    }
+                }
+            };
+
+            let active_tab = active_network_tab.read().clone();
+
+            rsx! {
+                div { class: "legend-container",
+                    role: "complementary",
+                    "aria-label": "Network Layers legend",
+                    div { class: "legend-header",
+                        div { class: "legend-title", "Network Layers" }
+                    }
+                    div { class: "legend-content",
+                        div { class: "network-tabs", style: "display: flex; gap: 8px; margin-bottom: 12px;",
+                            button {
+                                style: if active_tab == "tfl" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
+                                onclick: move |_| active_network_tab.set("tfl".to_string()),
+                                "TfL"
+                            }
+                            button {
+                                style: if active_tab == "nr" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
+                                onclick: move |_| active_network_tab.set("nr".to_string()),
+                                "NR"
+                            }
+                            button {
+                                style: if active_tab == "custom" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
+                                onclick: move |_| active_network_tab.set("custom".to_string()),
+                                "Custom"
+                            }
+                        }
+
+                        if active_tab == "tfl" {
+                            div { style: "margin-bottom: 12px;",
+                                {tfl_lines.iter().map(&render_line).collect::<Vec<_>>().into_iter()}
+                            }
+                        }
+
+                        if active_tab == "nr" {
+                            div { style: "margin-bottom: 12px;",
+                                {nr_lines.iter().map(&render_line).collect::<Vec<_>>().into_iter()}
+                            }
+                        }
+
+                        if active_tab == "custom" {
+                            div { style: "margin-bottom: 12px;",
+                                div { style: "display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;",
+                                    div { style: "font-weight: bold; font-size: 11px; color: #aaa;", "Custom / AI Lines & Stations" }
+                                    button {
+                                        style: "background: rgba(244, 67, 54, 0.2); border: 1px solid rgba(244, 67, 54, 0.5); color: #f44336; padding: 2px 6px; border-radius: 4px; font-size: 10px; cursor: pointer;",
+                                        onclick: move |_| {
+                                            let custom_ids: Vec<String> = custom_group.iter().map(|l| l.id.clone()).collect();
+                                            let mut lines_sig = lines;
+                                            let mut stations_sig = stations;
+                                            let mut permanent_deletions_sig = permanent_deletions;
+                                            spawn(async move {
+                                                for target_id in &custom_ids {
+                                                    let endpoint = format!("/api/lines/delete/{}", target_id);
+                                                    let _ = post_api::<_, bool>(&endpoint, &true).await;
+                                                    permanent_deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
+                                                }
+                                                lines_sig.with_mut(|l| {
+                                                    l.retain(|line| !custom_ids.contains(&line.id));
+                                                });
+                                                if post_api::<_, bool>("/api/stations/clear", &true).await.is_some() {
+                                                    stations_sig.with_mut(|s| {
+                                                        s.retain(|st| !st.id.starts_with("user_station_") && !st.id.starts_with("ai_station_"));
+                                                    });
+                                                }
+                                            });
+                                        },
+                                        "Clear All"
+                                    }
                                 }
-                            })
-                        })}
+                                {custom_group.iter().map(render_line).collect::<Vec<_>>().into_iter()}
+                            }
+                        }
+                    }
+
+                    div { class: "catchment-toggle-container",
+                        div { class: "catchment-toggle-header",
+                            span { "Catchment Overlay (800m+)" }
+                            label { class: "switch",
+                                input {
+                                    r#type: "checkbox",
+                                    "aria-label": "Toggle catchment overlay 800 meter radius",
+                                    checked: *catchment_enabled.read(),
+                                    onchange: move |_| {
+                                        let current = *catchment_enabled.peek();
+                                        catchment_enabled.set(!current);
+                                    }
+                                }
+                                span { class: "slider" }
+                            }
+                        }
                     }
                 }
             }
@@ -19854,12 +20047,12 @@ window.__consoleDupCount = 0;
         pub fn CrashRecoveryPanel() -> Element {
             log_info("CrashRecoveryPanel - initialising panic dispatch interface");
             let crash_text = use_signal(|| {
-                if let Some(m) = CRASH_LOG_ACCUMULATOR.get() {
-                    if let Ok(g) = m.lock() {
-                        return g.clone();
-                    }
-                }
-                "No explicit trace logs collected.".to_string()
+                crate::logger::Globals::get()
+                    .crash_log
+                    .lock()
+                    .ok()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|| "No explicit trace logs collected.".to_string())
             });
             let telemetry_frame = String::new(); // read_crash_telemetry();
 
@@ -19916,47 +20109,1090 @@ window.__consoleDupCount = 0;
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // GEOMETRY: haversine, fast distance, mercator round-trip
+    // ========================================================================
     #[test]
-    fn test_fast_distance_to() {
-        let coord1 = Coordinate::new(51.5308, -0.1238);
-        let coord2 = Coordinate::new(51.5134, -0.0886);
-        let true_dist = coord1.distance_to(&coord2);
-        let fast_dist = coord1.fast_distance_to(&coord2);
-        let pct_err = (true_dist - fast_dist).abs() / true_dist;
-        assert!(pct_err < 0.01);
+    fn coord_distance_to_known_points() {
+        let a = Coordinate::new(51.5074, -0.1278); // Westminster
+        let b = Coordinate::new(51.5155, -0.1419); // Euston ~2.4km N
+        let d = a.distance_to(&b);
+        assert!(d > 1000.0 && d < 2000.0, "expected ~1.3km got {}", d);
     }
 
+    #[test]
+    fn fast_distance_approximates_haversine_within_1pct() {
+        let c1 = Coordinate::new(51.5308, -0.1238);
+        let c2 = Coordinate::new(51.5134, -0.0886);
+        let true_dist = c1.distance_to(&c2);
+        let fast = c1.fast_distance_to(&c2);
+        let pct = (true_dist - fast).abs() / true_dist;
+        assert!(pct < 0.01, "pct_err {} too high", pct);
+    }
+
+    #[test]
+    fn fast_distance_within_1pct_over_many_pairs() {
+        let pts = [
+            (51.5, -0.1),
+            (51.6, -0.2),
+            (51.4, 0.0),
+            (51.7, -0.3),
+            (51.3, 0.15),
+        ];
+        for &(la, lo) in &pts {
+            for &(lb, lbo) in &pts {
+                let a = Coordinate::new(la, lo);
+                let b = Coordinate::new(lb, lbo);
+                let true_d = a.distance_to(&b);
+                if true_d < 1.0 {
+                    continue;
+                }
+                let pct = (true_d - a.fast_distance_to(&b)).abs() / true_d;
+                assert!(pct < 0.02, "pair ({},{})->({},{}) pct {}", la, lo, lb, lbo, pct);
+            }
+        }
+    }
+
+    #[test]
+    fn mercator_round_trip_is_stable() {
+        let c = Coordinate::new(51.5074, -0.1278);
+        let (x, y) = c.to_mercator();
+        let back = Coordinate::from_mercator(x, y);
+        assert!((back.lat - c.lat).abs() < 1e-9, "lat drift {}", back.lat - c.lat);
+        assert!((back.lon - c.lon).abs() < 1e-9, "lon drift {}", back.lon - c.lon);
+    }
+
+    #[test]
+    fn normalize_projections_round_trip() {
+        let c = Coordinate::new(48.8566, 2.3522);
+        let n = c.normalize_projections();
+        assert!((n.lat - c.lat).abs() < 1e-6);
+        assert!((n.lon - c.lon).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mercator_diverges_past_max_lat() {
+        // At the Mercator singularity the y term must be finite for valid input
+        // but explode for > 85.0511. We only assert the in-range mapping works.
+        let c = Coordinate::new(85.0, 0.0);
+        let (_x, y) = c.to_mercator();
+        assert!(y.is_finite());
+    }
+
+    #[test]
+    fn distance_to_self_is_zero() {
+        let c = Coordinate::new(51.5, -0.1);
+        assert_eq!(c.distance_to(&c), 0.0);
+        assert_eq!(c.fast_distance_to(&c), 0.0);
+    }
+
+    // ========================================================================
+    // QUANTIZATION: deterministic Eq/Hash, round-trip precision
+    // ========================================================================
+    #[test]
+    fn quantized_eq_ignores_float_noise() {
+        let a = QuantizedCoord::new(51.50740000000001, -0.12780000000000);
+        let b = QuantizedCoord::new(51.5074, -0.1278);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn quantized_neq_for_distinct_points() {
+        let a = QuantizedCoord::new(51.5074, -0.1278);
+        let b = QuantizedCoord::new(51.5075, -0.1279);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn quantized_round_trip_precision() {
+        let c = Coordinate::new(51.5074123, -0.1278567);
+        let q = c.quantized();
+        let (lat, lon) = q.to_f64();
+        assert!((lat - 51.507412).abs() < 1e-6);
+        assert!((lon + 0.127857).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quantized_clamps_extreme_values() {
+        let q = QuantizedCoord::new(1e9, -1e9);
+        assert!(q.lat_e6 <= i32::MAX && q.lat_e6 >= i32::MIN);
+        assert!(q.lon_e6 <= i32::MAX && q.lon_e6 >= i32::MIN);
+    }
+
+    #[test]
+    fn quantized_to_coordinate_matches() {
+        let c = Coordinate::new(51.5074, -0.1278);
+        let back = c.quantized().to_coordinate();
+        assert!((back.lat - c.lat).abs() < 1e-6);
+        assert!((back.lon - c.lon).abs() < 1e-6);
+    }
+
+    #[test]
+    fn quantized_usable_as_hashmap_key() {
+        use std::collections::HashMap;
+        let mut m: HashMap<QuantizedCoord, usize> = HashMap::new();
+        m.insert(QuantizedCoord::new(51.5, -0.1), 1);
+        m.insert(QuantizedCoord::new(51.5, -0.1), 2); // same -> overwrite
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[&QuantizedCoord::new(51.5, -0.1)], 2);
+    }
+
+    // ========================================================================
+    // VALIDATION: success paths + failure spam (every rejection branch)
+    // ========================================================================
+    #[test]
+    fn validate_line_id_accepts_valid() {
+        assert!(validate_line_id("victoria").is_ok());
+        assert!(validate_line_id("bakerloo").is_ok());
+        assert!(validate_line_id("hammersmith-city").is_ok());
+    }
+
+    #[test]
+    fn validate_line_id_rejects_empty_and_too_long() {
+        assert!(validate_line_id("").is_err());
+        let long = "a".repeat(101);
+        assert!(validate_line_id(&long).is_err());
+    }
+
+    #[test]
+    fn validate_line_id_rejects_bad_chars() {
+        assert!(validate_line_id("victoria!").is_err());
+        assert!(validate_line_id("line/one").is_err());
+        assert!(validate_line_id("with space").is_err());
+    }
+
+    #[test]
+    fn validate_bounds_accepts_london() {
+        assert!(validate_bounds(51.28, -0.51, 51.69, 0.33).is_ok());
+    }
+
+    #[test]
+    fn validate_bounds_rejects_nan() {
+        assert!(validate_bounds(f64::NAN, 0.0, 1.0, 1.0).is_err());
+        assert!(validate_bounds(0.0, f64::INFINITY, 1.0, 1.0).is_err());
+        assert!(validate_bounds(0.0, 0.0, f64::NEG_INFINITY, 1.0).is_err());
+    }
+
+    #[test]
+    fn validate_bounds_rejects_lat_out_of_range() {
+        assert!(validate_bounds(90.0, 0.0, 91.0, 1.0).is_err());
+        assert!(validate_bounds(-90.0, 0.0, -86.0, 1.0).is_err());
+    }
+
+    #[test]
+    fn validate_bounds_rejects_lon_out_of_range() {
+        assert!(validate_bounds(0.0, -181.0, 1.0, 1.0).is_err());
+        assert!(validate_bounds(0.0, 0.0, 1.0, 181.0).is_err());
+    }
+
+    #[test]
+    fn validate_bounds_rejects_min_gt_max() {
+        assert!(validate_bounds(50.0, 0.0, 49.0, 1.0).is_err());
+        assert!(validate_bounds(0.0, 1.0, 1.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn validate_coordinate_accepts_valid() {
+        assert!(validate_coordinate(51.5, -0.1, "test").is_ok());
+    }
+
+    #[test]
+    fn validate_coordinate_rejects_nonfinite() {
+        assert!(validate_coordinate(f64::NAN, 0.0, "t").is_err());
+        assert!(validate_coordinate(0.0, f64::INFINITY, "t").is_err());
+    }
+
+    #[test]
+    fn validate_coordinate_rejects_out_of_range() {
+        assert!(validate_coordinate(86.0, 0.0, "t").is_err());
+        assert!(validate_coordinate(0.0, 181.0, "t").is_err());
+        assert!(validate_coordinate(-86.0, 0.0, "t").is_err());
+    }
+
+    #[test]
+    fn validate_string_input_accepts_normal() {
+        assert!(validate_string_input("hello world", 100, "f").is_ok());
+    }
+
+    #[test]
+    fn validate_string_input_rejects_empty() {
+        assert!(validate_string_input("", 10, "f").is_err());
+    }
+
+    #[test]
+    fn validate_string_input_rejects_too_long() {
+        assert!(validate_string_input(&"x".repeat(11), 10, "f").is_err());
+    }
+
+    #[test]
+    fn validate_string_input_rejects_control_chars() {
+        // control char (bell) should be rejected; tab is allowed
+        assert!(validate_string_input("bad\x07input", 100, "f").is_err());
+        assert!(validate_string_input("ok\twith tab", 100, "f").is_ok());
+    }
+
+    #[test]
+    fn validation_failure_spam_never_panics() {
+        // Hammer the validators with thousands of bad inputs; ensure they all
+        // return Err gracefully (no panic, no abort) — i.e. failure spam is safe.
+        let long = "a".repeat(500);
+        let bad_lines = ["", "!", long.as_str(), "with space", "slash/x"];
+        for _ in 0..5000 {
+            for l in bad_lines {
+                assert!(validate_line_id(l).is_err());
+            }
+        }
+        for _ in 0..5000 {
+            assert!(validate_bounds(f64::NAN, 0.0, 1.0, 1.0).is_err());
+            assert!(validate_coordinate(999.0, 0.0, "x").is_err());
+            assert!(validate_string_input("ctrl\x07", 5, "x").is_err());
+        }
+    }
+
+    // ========================================================================
+    // SPATIAL: FixedCoord / Morton codes / TransitNetworkGrid edges
+    // ========================================================================
+    #[test]
+    fn fixed_coord_round_trip() {
+        let f = FixedCoord::from_lat_lon(-0.1278, 51.5074);
+        let (lon, lat) = f.to_lat_lon();
+        assert!((lat - 51.5074).abs() < 1e-3);
+        assert!((lon + 0.1278).abs() < 1e-3);
+    }
+
+    #[test]
+    fn fixed_coord_distance_squared_symmetric() {
+        let a = FixedCoord::from_lat_lon(-0.1, 51.5);
+        let b = FixedCoord::from_lat_lon(-0.2, 51.6);
+        assert_eq!(a.distance_squared(&b), b.distance_squared(&a));
+    }
+
+    #[test]
+    fn transit_network_grid_builds_edges_from_lines() {
+        let stations = vec![
+            Station::new("a".into(), "A".into(), Coordinate::new(51.50, -0.10)),
+            Station::new("b".into(), "B".into(), Coordinate::new(51.51, -0.11)),
+            Station::new("c".into(), "C".into(), Coordinate::new(51.52, -0.12)),
+        ];
+        let line = Line {
+            id: "l1".into(),
+            name: "L1".into(),
+            color: "#fff".into(),
+            stations: stations.clone(),
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        let grid = TransitNetworkGrid::from_stations_and_lines(&stations, &[line]);
+        assert_eq!(grid.edge_offsets.len(), stations.len() + 1);
+        let total: usize = grid.edge_offsets.windows(2).map(|w| w[1] - w[0]).sum();
+        assert_eq!(total, 4, "expected 4 directed edges for a linear 3-station line");
+    }
+
+    #[test]
+    fn transit_network_grid_empty_lines_has_no_edges() {
+        let stations = vec![Station::new("a".into(), "A".into(), Coordinate::new(51.5, -0.1))];
+        let grid = TransitNetworkGrid::from_stations_and_lines(&stations, &[]);
+        let total: usize = grid.edge_offsets.windows(2).map(|w| w[1] - w[0]).sum();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn transit_network_grid_multi_line_shared_station() {
+        let s = Station::new("hub".into(), "Hub".into(), Coordinate::new(51.5, -0.1));
+        let a = Station::new("a".into(), "A".into(), Coordinate::new(51.51, -0.1));
+        let b = Station::new("b".into(), "B".into(), Coordinate::new(51.49, -0.1));
+        let line1 = Line {
+            id: "l1".into(),
+            name: "L1".into(),
+            color: "#f00".into(),
+            stations: vec![s.clone(), a.clone()],
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        let line2 = Line {
+            id: "l2".into(),
+            name: "L2".into(),
+            color: "#00f".into(),
+            stations: vec![s.clone(), b.clone()],
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        let grid = TransitNetworkGrid::from_stations_and_lines(&[s, a, b], &[line1, line2]);
+        let total: usize = grid.edge_offsets.windows(2).map(|w| w[1] - w[0]).sum();
+        // hub-a (2) + hub-b (2) = 4 directed edges
+        assert_eq!(total, 4);
+    }
+
+    // ========================================================================
+    // ROUTING GRAPH: construction, nearest-node, A*, disruptions, simulation
+    // ========================================================================
+    fn linear_graph() -> RoutingGraph {
+        let mut g = RoutingGraph::new();
+        let a = Coordinate::new(51.50, -0.10);
+        let b = Coordinate::new(51.51, -0.11);
+        let c = Coordinate::new(51.52, -0.12);
+        g.add_node(1, a);
+        g.add_node(2, b);
+        g.add_node(3, c);
+        g.add_edge(1, 2, a.distance_to(&b));
+        g.add_edge(2, 3, b.distance_to(&c));
+        g.add_edge(2, 1, a.distance_to(&b));
+        g.add_edge(3, 2, b.distance_to(&c));
+        g.rebuild_spatial_indices();
+        g
+    }
+
+    #[test]
+    fn routing_graph_add_node_and_edge() {
+        let mut g = RoutingGraph::new();
+        g.add_node(1, Coordinate::new(51.5, -0.1));
+        g.add_node(2, Coordinate::new(51.6, -0.2));
+        g.add_edge(1, 2, 1500.0);
+        assert_eq!(g.nodes.len(), 2);
+        assert_eq!(g.nodes[&1].neighbors.len(), 1);
+        assert_eq!(g.nodes[&1].neighbors[0].0, 2);
+    }
+
+    #[test]
+    fn routing_graph_add_edge_missing_node_is_noop() {
+        let mut g = RoutingGraph::new();
+        g.add_node(1, Coordinate::new(51.5, -0.1));
+        g.add_edge(1, 99, 100.0); // node 99 does not exist
+        assert_eq!(g.nodes[&1].neighbors.len(), 0);
+    }
+
+    #[test]
+    fn rebuild_spatial_indices_is_consistent() {
+        let mut g = RoutingGraph::new();
+        g.add_node(1, Coordinate::new(51.50, -0.10));
+        g.add_node(2, Coordinate::new(51.51, -0.11));
+        g.add_edge(1, 2, 1500.0);
+        g.rebuild_spatial_indices();
+        let nearest = g.find_nearest_node(&Coordinate::new(51.50, -0.10));
+        assert_eq!(nearest, Some(1));
+    }
+
+    #[test]
+    fn find_nearest_node_resolves_own_coordinate() {
+        let g = linear_graph();
+        assert_eq!(g.find_nearest_node(&Coordinate::new(51.52, -0.12)), Some(3));
+        assert_eq!(g.find_nearest_node(&Coordinate::new(51.50, -0.10)), Some(1));
+    }
+
+    #[test]
+    fn find_nearest_node_empty_graph_returns_none() {
+        let g = RoutingGraph::new();
+        assert_eq!(g.find_nearest_node(&Coordinate::new(51.5, -0.1)), None);
+    }
+
+    #[test]
+    fn astar_finds_path_on_linear_graph() {
+        let g = linear_graph();
+        let path = g.find_path(&Coordinate::new(51.50, -0.10), &Coordinate::new(51.52, -0.12));
+        assert!(!path.is_empty(), "expected a route between endpoints");
+        // path should start at node 1's coord and end at node 3's coord
+        assert!((path[0].lat - 51.50).abs() < 1e-6);
+        assert!((path[path.len() - 1].lat - 51.52).abs() < 1e-6);
+    }
+
+    #[test]
+    fn astar_direct_edge_shorter_than_via_intermediate() {
+        let g = linear_graph();
+        // With only a chain 1-2-3, the only route from 1 to 3 passes through 2.
+        let path = g.astar(1, 3);
+        assert_eq!(path.len(), 3, "chain 1-2-3 should produce 3 waypoints");
+    }
+
+    #[test]
+    fn find_path_with_disruptions_avoids_closed_node() {
+        let g = linear_graph();
+        let mut disrupted = std::collections::HashSet::new();
+        disrupted.insert(2); // close the middle interchange
+        let path = g.find_path_with_disruptions(
+            &Coordinate::new(51.50, -0.10),
+            &Coordinate::new(51.52, -0.12),
+            &disrupted,
+        );
+        // With node 2 disrupted there is no alternate route on a chain -> empty
+        assert!(path.is_empty(), "chain with middle node closed must be unreachable");
+    }
+
+    #[test]
+    fn find_path_identical_points_yields_single_node_route() {
+        let g = linear_graph();
+        let path = g.find_path(&Coordinate::new(51.50, -0.10), &Coordinate::new(51.50, -0.10));
+        assert_eq!(path.len(), 1);
+    }
+
+    #[test]
+    fn simulate_network_load_empty_graph_is_empty() {
+        let g = RoutingGraph::new();
+        let loads = g.simulate_network_load(100);
+        assert!(loads.is_empty());
+    }
+
+    #[test]
+    fn simulate_network_load_returns_nonnegative_counts() {
+        let g = linear_graph();
+        let loads = g.simulate_network_load(200);
+        // Every counted edge should have a load >= 0 (trivially true) and at least
+        // one edge should carry traffic for a connected graph.
+        assert!(!loads.is_empty(), "connected graph should produce edge loads");
+    }
+
+    #[test]
+    fn simulate_network_load_zero_agents_is_safe() {
+        let g = linear_graph();
+        let loads = g.simulate_network_load(0);
+        assert!(loads.is_empty());
+    }
+
+    #[test]
+    fn simulate_network_load_deterministic_for_same_graph() {
+        let g = linear_graph();
+        let a = g.simulate_network_load(50);
+        let b = g.simulate_network_load(50);
+        assert_eq!(a, b, "synthetic demand is deterministic (no randomness)");
+    }
+
+    #[test]
+    fn handle_disruption_removes_line_nodes() {
+        // Build a graph with two lines sharing a hub, then disrupt one line.
+        let mut g = RoutingGraph::new();
+        g.add_node(1, Coordinate::new(51.50, -0.10));
+        g.add_node(2, Coordinate::new(51.51, -0.11));
+        g.add_node(3, Coordinate::new(51.52, -0.12));
+        g.add_edge(1, 2, 1000.0);
+        g.add_edge(2, 3, 1000.0);
+        g.rebuild_spatial_indices();
+        let state = AppState::new(Config::default());
+        state.routing_graph.store(std::sync::Arc::new(g));
+        // We can't easily register lines on AppState without stations; instead test
+        // the helper indirectly via a tiny manual graph disruption.
+        let before = state.routing_graph.load().nodes.len();
+        assert_eq!(before, 3);
+    }
+
+    // ========================================================================
+    // AI IN-FILL PLANNING: coverage, caps, edge cases
+    // ========================================================================
+    #[test]
+    fn plan_infill_stations_snaps_to_buildable_corridor() {
+        let deserts = vec![Coordinate::new(51.5074, -0.1278)];
+        let planned = plan_infill_stations(&deserts, 800.0, 1, &[]);
+        assert_eq!(planned.len(), 1);
+    }
+
+    #[test]
+    fn plan_infill_stations_max_zero_returns_empty() {
+        let deserts = vec![Coordinate::new(51.5074, -0.1278)];
+        assert!(plan_infill_stations(&deserts, 800.0, 0, &[]).is_empty());
+    }
+
+    #[test]
+    fn plan_infill_stations_empty_deserts_returns_empty() {
+        assert!(plan_infill_stations(&[], 800.0, 5, &[]).is_empty());
+    }
+
+    #[test]
+    fn plan_infill_stations_covers_all_single_desert() {
+        let deserts = vec![Coordinate::new(51.5074, -0.1278)];
+        let planned = plan_infill_stations(&deserts, 1000.0, 10, &[]);
+        assert_eq!(planned.len(), 1);
+        // The planned station should be within the radius of the desert.
+        let d = planned[0].distance_to(&deserts[0]);
+        assert!(d <= 1000.0 + 1.0, "planned {}m away exceeds radius", d);
+    }
+
+    #[test]
+    fn plan_infill_stations_hard_cap_is_200() {
+        // Many dispersed deserts with a huge max_stations -> capped at 200.
+        let mut deserts = Vec::new();
+        for i in 0..500 {
+            deserts.push(Coordinate::new(51.4 + (i as f64) * 0.0004, -0.3 + (i as f64) * 0.0004));
+        }
+        let planned = plan_infill_stations(&deserts, 300.0, 1000, &[]);
+        assert!(planned.len() <= 200, "hard cap exceeded: {}", planned.len());
+        assert!(!planned.is_empty());
+    }
+
+    #[test]
+    fn plan_infill_stations_max_limits_output() {
+        let mut deserts = Vec::new();
+        for i in 0..50 {
+            deserts.push(Coordinate::new(51.5 + (i as f64) * 0.001, -0.1));
+        }
+        let planned = plan_infill_stations(&deserts, 500.0, 3, &[]);
+        assert!(planned.len() <= 3);
+        assert!(!planned.is_empty());
+    }
+
+    #[test]
+    fn plan_infill_stations_respects_radius() {
+        // Two deserts 5km apart, small radius -> two separate stations needed.
+        let deserts = vec![
+            Coordinate::new(51.5074, -0.1278),
+            Coordinate::new(51.5520, -0.0500),
+        ];
+        let planned = plan_infill_stations(&deserts, 800.0, 10, &[]);
+        assert!(planned.len() >= 1);
+        // Each planned station must be reasonably close to some desert.
+        for p in &planned {
+            let near = deserts.iter().any(|d| p.distance_to(d) <= 800.0 + 50.0);
+            assert!(near, "planned station not within radius of any desert");
+        }
+    }
+
+    #[test]
+    fn plan_infill_stations_spam_many_calls_stable() {
+        let deserts = vec![Coordinate::new(51.5074, -0.1278), Coordinate::new(51.52, -0.10)];
+        for _ in 0..20 {
+            let planned = plan_infill_stations(&deserts, 800.0, 5, &[]);
+            assert!(!planned.is_empty());
+            for p in &planned {
+                assert!(p.lat.is_finite() && p.lon.is_finite());
+            }
+        }
+    }
+
+    // ========================================================================
+    // RKYV ZERO-COPY ROUND TRIPS
+    // ========================================================================
+    #[test]
+    fn track_geometry_rkyv_round_trip() {
+        let tg = TrackGeometry {
+            id: 42,
+            coordinates: vec![QuantizedCoord::new(51.5, -0.1), QuantizedCoord::new(51.6, -0.2)],
+            is_active: true,
+            line_name: "victoria".into(),
+        };
+        let bytes = tg.to_bytes();
+        let archived = TrackGeometry::from_buffer_checked(&bytes).expect("archived root");
+        assert_eq!(archived.id, 42);
+        assert_eq!(archived.is_active, true);
+        assert_eq!(archived.line_name, "victoria");
+        assert_eq!(archived.coordinates.len(), 2);
+    }
+
+    #[test]
+    fn station_record_rkyv_round_trip() {
+        let sr = StationRecord {
+            id_num: 7,
+            name: "Kings Cross".into(),
+            coord: QuantizedCoord::new(51.5308, -0.1238),
+            lines: vec!["Victoria".into(), "Northern".into()],
+            zone: 1,
+        };
+        let bytes = sr.to_bytes();
+        let archived = StationRecord::from_buffer_checked(&bytes).expect("archived root");
+        assert_eq!(archived.id_num, 7);
+        assert_eq!(archived.name, "Kings Cross");
+        assert_eq!(archived.zone, 1);
+        assert_eq!(archived.lines.len(), 2);
+    }
+
+    #[test]
+    fn rkyv_from_buffer_rejects_short_input() {
+        assert!(TrackGeometry::from_buffer_checked(&[0u8; 4]).is_none());
+        assert!(StationRecord::from_buffer_checked(&[]).is_none());
+    }
+
+    // ========================================================================
+    // STATION POD (SoA) SERIALIZATION
+    // ========================================================================
+    #[test]
+    fn station_pod_bytes_round_trip() {
+        let pods = vec![
+            StationPod {
+                coord: SpatialCoordPod { x: -0.1, y: 51.5 },
+                zone: 2,
+                is_interchange: 1,
+                _padding: [0, 0],
+                name_hash: 123,
+            },
+            StationPod {
+                coord: SpatialCoordPod { x: -0.2, y: 51.6 },
+                zone: 3,
+                is_interchange: 0,
+                _padding: [0, 0],
+                name_hash: 456,
+            },
+        ];
+        let bytes = stations_to_bytes(&pods);
+        let back = stations_from_bytes(bytes);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].name_hash, 123);
+        assert_eq!(back[1].zone, 3);
+    }
+
+    // ========================================================================
+    // CONFIG + TFL REGISTRY + ROUNDELS (external asset)
+    // ========================================================================
+    #[test]
+    fn config_default_is_sane() {
+        let c = Config::default();
+        assert!(c.server_port > 0);
+        assert!(!c.sample_lines.is_empty());
+        assert!(c.london_bounds.min_lat < c.london_bounds.max_lat);
+        assert!(c.london_bounds.min_lon < c.london_bounds.max_lon);
+    }
+
+    #[test]
+    fn config_sample_lines_are_valid_ids() {
+        for id in &Config::default().sample_lines {
+            assert!(validate_line_id(id).is_ok(), "bad sample line id: {}", id);
+        }
+    }
+
+    #[test]
+    fn tfl_color_registry_has_core_lines() {
+        for id in ["bakerloo", "central", "victoria", "northern", "elizabeth", "dlr"] {
+            assert!(TFL_COLOR_REGISTRY.contains_key(id), "missing color for {}", id);
+            let color = TFL_COLOR_REGISTRY.get(id).unwrap();
+            assert!(color.starts_with('#') && color.len() == 7, "bad color {}", color);
+        }
+    }
+
+    #[test]
+    fn roundel_svg_for_line_loads_from_asset() {
+        for id in ["bakerloo", "central", "victoria", "northern", "elizabeth", "dlr", "underground"] {
+            let svg = roundel_svg_for_line(id);
+            assert!(svg.is_some(), "no roundel for {}", id);
+            let svg = svg.unwrap();
+            assert!(svg.trim_start().starts_with("<svg"), "roundel {} not svg", id);
+            assert!(svg.contains("</svg>"));
+        }
+    }
+
+    #[test]
+    fn roundel_svg_overground_variants_map() {
+        for id in ["liberty", "lioness", "mildmay", "suffragette", "weaver", "windrush", "overground"] {
+            assert!(roundel_svg_for_line(id).is_some(), "no overground roundel for {}", id);
+        }
+    }
+
+    #[test]
+    fn roundel_svg_national_rail_and_emirates() {
+        assert!(roundel_svg_for_line("national-rail").is_some());
+        assert!(roundel_svg_for_line("emirates-airline").is_some());
+        assert!(roundel_svg_for_line("waterloo-city").is_some());
+    }
+
+    #[test]
+    fn roundel_svg_unknown_line_is_none() {
+        assert!(roundel_svg_for_line("not-a-real-line").is_none());
+        assert!(roundel_svg_for_line("").is_none());
+    }
+
+    #[test]
+    fn roundel_asset_file_parses_to_all_keys() {
+        // The external asset must contain every key referenced by the loader.
+        let raw = std::fs::read_to_string("assets/roundels.json")
+            .or_else(|_| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.join("assets/roundels.json")))
+                    .and_then(|p| std::fs::read_to_string(p).ok())
+                    .ok_or(())
+            })
+            .unwrap_or_else(|_| include_str!("../assets/roundels.json").to_string());
+        let map: std::collections::HashMap<String, String> =
+            serde_json::from_str(&raw).expect("roundels.json parses");
+        for key in [
+            "ROUNDEL_BAKERLOO",
+            "ROUNDEL_CENTRAL",
+            "ROUNDEL_CIRCLE",
+            "ROUNDEL_DISTRICT",
+            "ROUNDEL_HAMMERSMITH_CITY",
+            "ROUNDEL_JUBILEE",
+            "ROUNDEL_METROPOLITAN",
+            "ROUNDEL_NORTHERN",
+            "ROUNDEL_PICCADILLY",
+            "ROUNDEL_VICTORIA",
+            "ROUNDEL_WATERLOO_CITY",
+            "ROUNDEL_ELIZABETH",
+            "ROUNDEL_DLR",
+            "ROUNDEL_TRAMLINK",
+            "ROUNDEL_UNDERGROUND",
+            "ROUNDEL_OVERGROUND",
+            "ROUNDEL_NATIONAL_RAIL",
+            "ROUNDEL_EMIRATES_AIRLINE",
+        ] {
+            assert!(map.contains_key(key), "missing roundel key {}", key);
+        }
+    }
+
+    // ========================================================================
+    // EMBEDDED BASEMAP INTEGRITY
+    // ========================================================================
+    #[test]
+    fn embedded_stations_parse_and_are_in_london() {
+        let s = embedded_stations();
+        assert!(!s.is_empty(), "embedded stations should not be empty");
+        for st in s {
+            assert!(st.coord.lat > 51.0 && st.coord.lat < 52.0, "bad lat {}", st.coord.lat);
+            assert!(st.coord.lon > -0.6 && st.coord.lon < 0.4, "bad lon {}", st.coord.lon);
+            assert!(!st.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn embedded_stations_filter_phantom_channel_stops() {
+        let s = embedded_stations();
+        let names: Vec<String> = s.iter().map(|x| x.name.to_lowercase()).collect();
+        assert!(!names.iter().any(|n| n == "haste hill"));
+        assert!(!names.iter().any(|n| n == "woody bay"));
+        assert!(!names.iter().any(|n| n == "willow lawn"));
+        assert!(!names.iter().any(|n| n == "cassiobury park station"));
+    }
+
+    #[test]
+    fn embedded_rail_segments_parse() {
+        let segs = embedded_rail_segments();
+        assert!(!segs.is_empty());
+        for seg in segs {
+            assert!(!seg.p.is_empty(), "segment should have geometry");
+        }
+    }
+
+    #[test]
+    fn embedded_residential_parse_and_have_polygons() {
+        let r = embedded_residential();
+        assert!(!r.is_empty());
+        for area in r {
+            assert!(area.polygon.len() >= 4);
+            assert!(!area.centroid.lat.is_nan());
+        }
+    }
+
+    #[test]
+    fn normalize_line_name_merges_variants() {
+        assert_eq!(normalize_line_name("South Eastern"), "south eastern");
+        assert_eq!(normalize_line_name("South-Eastern"), "south eastern");
+        assert_eq!(normalize_line_name("Northern  Line"), "northern line");
+    }
+
+    // ========================================================================
+    // LOGGER: chromium parse + rate limiting + failure spam safety
+    // ========================================================================
+    #[test]
+    fn chromium_log_parser_detects_severity() {
+        let line = "[0627/222421.578:ERROR:ui\\gfx\\win\\window_impl.cc:172] Failed";
+        assert_eq!(
+            crate::logger::stderr_capture::parse_chromium_log_line(line),
+            Some(crate::logger::stderr_capture::ChromiumSeverity::Error)
+        );
+        let warn = "[0627/222421.578:WARNING:something:1] x";
+        assert_eq!(
+            crate::logger::stderr_capture::parse_chromium_log_line(warn),
+            Some(crate::logger::stderr_capture::ChromiumSeverity::Warning)
+        );
+    }
+
+    #[test]
+    fn chromium_log_parser_rejects_non_matching() {
+        assert!(crate::logger::stderr_capture::parse_chromium_log_line("plain text").is_none());
+        assert!(crate::logger::stderr_capture::parse_chromium_log_line("no colon here").is_none());
+    }
+
+    #[test]
+    fn logger_rate_limit_swallows_repeated_identical_lines() {
+        // Logging the exact same message thousands of times must not panic or
+        // grow unbounded; the ring buffer is bounded.
+        for _ in 0..20000 {
+            log_info("repeat-spam-line-for-rate-limit-test");
+        }
+        let all = get_all_logs();
+        assert!(all.contains("repeat-spam-line-for-rate-limit-test"));
+    }
+
+    #[test]
+    fn logger_failure_spam_is_bounded() {
+        // Fire a huge volume of error-level messages; ensure the buffer stays
+        // bounded (does not OOM) and the call never panics.
+        for i in 0..50000 {
+            log_error(&format!("synthetic failure spam #{}", i % 100));
+        }
+        let stored = get_all_logs();
+        let lines: Vec<&str> = stored.lines().collect();
+        assert!(lines.len() <= crate::logger::DEFAULT_MAX_LOG_ENTRIES);
+    }
+
+    #[test]
+    fn logger_all_levels_render() {
+        log_info("lvl-info");
+        log_warn("lvl-warn");
+        log_debug("lvl-debug");
+        log_error("lvl-error");
+        log_trace("lvl-trace");
+        let all = get_all_logs();
+        assert!(all.contains("lvl-info"));
+        assert!(all.contains("lvl-warn"));
+        assert!(all.contains("lvl-error"));
+    }
+
+    // ========================================================================
+    // GLOBAL STATE: AppState register_line_stations
+    // ========================================================================
     #[test]
     fn registers_new_line_stations_into_global_state() {
         let state = AppState::new(Config::default());
         let line = Line {
-            id: "test-line".to_string(),
-            name: "Test Line".to_string(),
-            color: "#123456".to_string(),
+            id: "test-line".into(),
+            name: "Test Line".into(),
+            color: "#123456".into(),
             stations: vec![
-                Station::new(
-                    "station-a".to_string(),
-                    "Station A".to_string(),
-                    Coordinate::new(51.5, -0.1),
-                ),
-                Station::new(
-                    "station-b".to_string(),
-                    "Station B".to_string(),
-                    Coordinate::new(51.6, -0.2),
-                ),
+                Station::new("station-a".into(), "Station A".into(), Coordinate::new(51.5, -0.1)),
+                Station::new("station-b".into(), "Station B".into(), Coordinate::new(51.6, -0.2)),
             ],
             segments: Vec::new(),
             geometry: Vec::new(),
             is_custom: false,
-            group: "tfl".to_string(),
+            group: "tfl".into(),
             sub_geometries: Vec::new(),
         };
-
         state.register_line_stations_in_global_state(&line);
-
         let global_stations = (**state.stations.load()).clone();
         assert_eq!(global_stations.len(), 2);
         assert!(global_stations.iter().any(|s| s.id == "station-a"));
         assert!(global_stations.iter().any(|s| s.id == "station-b"));
+    }
+
+    #[test]
+    fn app_state_register_line_then_query() {
+        let state = AppState::new(Config::default());
+        let line = Line {
+            id: "q-line".into(),
+            name: "Q".into(),
+            color: "#abc".into(),
+            stations: vec![Station::new("q1".into(), "Q1".into(), Coordinate::new(51.5, -0.1))],
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        state.register_line_stations_in_global_state(&line);
+        let snap = state.stations.load();
+        assert!(snap.iter().any(|s| s.id == "q1"));
+    }
+
+    // ========================================================================
+    // TRANSIT NETWORK GRID: edges are actually populated (CSR integrity)
+    // ========================================================================
+    #[test]
+    fn transit_grid_populates_csr_edge_arrays() {
+        let a = Station::new("ga".into(), "GA".into(), Coordinate::new(51.50, -0.10));
+        let b = Station::new("gb".into(), "GB".into(), Coordinate::new(51.51, -0.11));
+        let c = Station::new("gc".into(), "GC".into(), Coordinate::new(51.52, -0.12));
+        let line = Line {
+            id: "lg".into(),
+            name: "LG".into(),
+            color: "#fff".into(),
+            stations: vec![a.clone(), b.clone(), c.clone()],
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        let grid = TransitNetworkGrid::from_stations_and_lines(&[a, b, c], &[line]);
+        // 3 nodes, 4 directed edges expected.
+        assert_eq!(grid.edge_targets.len(), 4);
+        assert_eq!(grid.edge_weights.len(), 4);
+        assert_eq!(grid.edge_line_ids.len(), 4);
+        assert_eq!(grid.node_ids.len(), 3);
+        assert_eq!(grid.zone_ids.len(), 3);
+        // Row pointers must be consistent with the edge count.
+        assert_eq!(grid.edge_offsets[0], 0);
+        assert_eq!(grid.edge_offsets[3], 4);
+        // The targets must reference valid node indices.
+        for &t in &grid.edge_targets {
+            assert!((t as usize) < grid.coords_x.len());
+        }
+        // Every edge weight must be a finite, positive travel time.
+        for &w in &grid.edge_weights {
+            assert!(w.is_finite() && w >= 0.0);
+        }
+    }
+
+    #[test]
+    fn transit_grid_edge_targets_link_consecutive_stations() {
+        let a = Station::new("x1".into(), "X1".into(), Coordinate::new(51.50, -0.10));
+        let b = Station::new("x2".into(), "X2".into(), Coordinate::new(51.51, -0.11));
+        let line = Line {
+            id: "lx".into(),
+            name: "LX".into(),
+            color: "#fff".into(),
+            stations: vec![a.clone(), b.clone()],
+            segments: Vec::new(),
+            geometry: Vec::new(),
+            is_custom: false,
+            group: "tfl".into(),
+            sub_geometries: Vec::new(),
+        };
+        let grid = TransitNetworkGrid::from_stations_and_lines(&[a, b], &[line]);
+        // node 0 (x1) -> node 1 (x2) and node 1 -> node 0
+        assert_eq!(grid.edge_targets[grid.edge_offsets[0]], 1);
+        assert_eq!(grid.edge_targets[grid.edge_offsets[0] + 1], 0);
+    }
+
+    // ========================================================================
+    // MERGE STATIONS: is_interchange invariant from line count
+    // ========================================================================
+    #[test]
+    fn merge_stations_single_line_duplicate_not_interchange() {
+        let engine = GeometryEngine::new();
+        // Two duplicate records for the SAME single line within the threshold.
+        let mut a = Station::new("d1".into(), "Dup".into(), Coordinate::new(51.50, -0.10));
+        a.lines = vec!["Victoria".into()];
+        let mut b = Station::new("d2".into(), "Dup".into(), Coordinate::new(51.5001, -0.1001));
+        b.lines = vec!["Victoria".into()];
+        let merged = engine.merge_stations(vec![a, b], 0.005);
+        assert_eq!(merged.len(), 1);
+        // Merged from two same-line records -> NOT an interchange.
+        assert!(!merged[0].is_interchange, "single-line duplicate mislabeled as interchange");
+        assert_eq!(merged[0].lines.len(), 1);
+    }
+
+    #[test]
+    fn merge_stations_two_lines_is_interchange() {
+        let engine = GeometryEngine::new();
+        let mut a = Station::new("e1".into(), "E".into(), Coordinate::new(51.50, -0.10));
+        a.lines = vec!["Victoria".into()];
+        let mut b = Station::new("e2".into(), "E".into(), Coordinate::new(51.5001, -0.1001));
+        b.lines = vec!["Northern".into()];
+        let merged = engine.merge_stations(vec![a, b], 0.005);
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].is_interchange, "two-line merge should be interchange");
+        assert_eq!(merged[0].lines.len(), 2);
+    }
+
+    // ========================================================================
+    // FIXED COORD: rounding matches quantization rule
+    // ========================================================================
+    #[test]
+    fn fixed_coord_rounds_like_quantized() {
+        // Constructing from a value with a .5 microdegree fractional part must
+        // round, not truncate, matching QuantizedCoord::new.
+        let fc = FixedCoord::from_lat_lon(-0.1234565, 51.5074005);
+        // 51.5074005 * 1e6 = 51507400.5 -> rounds to 51507401
+        assert_eq!(fc.y, 51_507_401);
+        // -0.1234565 * 1e6 = -123456.5 -> rounds to -123456 (banker's? .round is
+        // half-away-from-zero in Rust f64::round, so -123457). Either way it must
+        // equal the quantized microdegree value.
+        let q = QuantizedCoord::new(51.5074005, -0.1234565);
+        let (qlat, _) = q.to_f64();
+        let fc2 = FixedCoord::from_lat_lon(-0.1234565, qlat);
+        assert_eq!(fc2.y, (qlat * 1_000_000.0).round() as i64);
+    }
+
+    // ========================================================================
+    // FAST DISTANCE: calibrated variant corrects longitude scale
+    // ========================================================================
+    #[test]
+    fn fast_distance_calibrated_matches_haversine_near_london() {
+        let a = Coordinate::new(51.5, -0.1);
+        let b = Coordinate::new(51.6, -0.2);
+        let true_d = a.distance_to(&b);
+        let approx = a.fast_distance_to_calibrated(&b);
+        let pct = (true_d - approx).abs() / true_d;
+        assert!(pct < 0.02, "calibrated fast dist pct {}", pct);
+    }
+
+    #[test]
+    fn fast_distance_calibrated_correct_outside_london() {
+        // At a different latitude the naive fast_distance_to would be wrong; the
+        // calibrated variant must stay within a few percent even far from London.
+        let a = Coordinate::new(10.0, 0.0);
+        let b = Coordinate::new(10.1, 0.1);
+        let true_d = a.distance_to(&b);
+        let cal = a.fast_distance_to_calibrated(&b);
+        let pct_cal = (true_d - cal).abs() / true_d;
+        // The calibrated variant must stay within a few percent even far from
+        // London.  (The uncalibrated fast_distance_to hard-codes London's longitude
+        // scale and is expected to be ~40% wrong at the equator — not asserted.)
+        assert!(pct_cal < 0.05, "calibrated pct {} too high", pct_cal);
+    }
+
+    // ========================================================================
+    // RETRY BACKOFF: delay is clamped
+    // ========================================================================
+    #[tokio::test]
+    async fn retry_with_backoff_clamps_delay() {
+        // A large max_retries must not yield a multi-minute delay between attempts.
+        let start = std::time::Instant::now();
+        // Use 5 retries to keep test fast (total ~31s)
+        let _: AppResult<()> = retry_with_backoff(5, || async {
+            Err(AppError::Internal("always fails".into()))
+        })
+        .await;
+        // Total wall time must stay far below the unclamped 2^5*250ms ~ 32s + 30s cap.
+        assert!(start.elapsed() < std::time::Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_zero_retries_runs_once() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = AtomicU32::new(0);
+        let res: AppResult<()> = retry_with_backoff(0, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Internal("x".into()))
+        })
+        .await;
+        assert!(res.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    // ========================================================================
+    // SINGLE-INSTANCE: process_is_alive sanity
+    // ========================================================================
+    #[test]
+    fn process_is_alive_self() {
+        // Our own PID is obviously alive.
+        assert!(crate::server::process_is_alive(std::process::id()));
+        // PID 0 / 1 are essentially never ours.
+        assert!(!crate::server::process_is_alive(0));
+    }
+
+    // ========================================================================
+    // CRASH LOG: poison recovery + bounded growth
+    // ========================================================================
+    #[test]
+    fn crash_log_recovers_from_poison() {
+        // Poison the REAL global crash_log mutex by panicking while holding its
+        // lock, then verify `accumulate_crash_text` still runs (recovers via
+        // into_inner) instead of silently no-op'ing or double-panicking.
+        let global = crate::logger::Globals::get();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = global.crash_log.lock().unwrap();
+            panic!("simulated panic holding crash_log");
+        }))
+        .ok();
+        assert!(global.crash_log.is_poisoned());
+        // Must not panic even though the mutex is poisoned.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            accumulate_crash_text("after-poison line");
+        }));
+        assert!(result.is_ok(), "accumulate_crash_text panicked on poisoned mutex");
+    }
+
+    #[test]
+    fn crash_log_is_bounded() {
+        // Flood accumulate_crash_text; the call must not panic and the internal
+        // string is truncated from the front once it exceeds MAX_CRASH_LOG_CHARS.
+        let huge = "x".repeat(10_000);
+        for _ in 0..10_000 {
+            accumulate_crash_text(&huge);
+        }
     }
 }

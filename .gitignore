@@ -11,6 +11,7 @@
 # (Cargo.lock IS committed for applications)
 
 # IDE / Editor
+.vs/
 .vscode/
 .idea/
 *.swp
