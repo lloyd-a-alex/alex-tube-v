@@ -2701,6 +2701,9 @@ mod routing {
                 "blackpool-tramway" | "blackpool tramway" | "blackpool-trams" => "ROUNDEL_BLACKPOOL_TRAMWAY",
                 "ifs-cloud-cable-car" | "ifs cloud cable car" | "ifs-cable-car" | "cable-car" => "ROUNDEL_IFS_CLOUD_CABLE_CAR",
                 "luton-dart" | "luton dart" | "luton-airport-dart" => "ROUNDEL_LUTON_DART",
+                "isle-of-man-railway" | "isle of man railway" | "iom railway" => "ROUNDEL_ISLE_OF_MAN_RAILWAY",
+                "manx-electric-railway" | "manx electric railway" => "ROUNDEL_MANX_ELECTRIC_RAILWAY",
+                "getlink" | "eurotunnel" | "le shuttle" => "ROUNDEL_GETLINK",
                 _ => return None,
             };
             map.get(key).map(|s| s.as_str())
@@ -10061,59 +10064,116 @@ mod server {
                 } else {
                     "tfl".to_string()
                 };
-                let color = match track.operator_name.to_lowercase().as_str() {
-                    "southeastern" | "south eastern" => "#E20000".to_string(),
-                    "southern" => "#004328".to_string(),
-                    "thameslink" => "#0081C6".to_string(),
-                    "great western railway" | "great western" | "gwr" => "#0A493B".to_string(),
-                    "greater anglia" => "#D90A07".to_string(),
-                    "c2c" => "#B71C8C".to_string(),
-                    "chiltern railways" | "chiltern" => "#00205B".to_string(),
-                    "south western railway" | "swr" => "#003A70".to_string(),
-                    "london underground" | "underground" => "#003688".to_string(),
-                    "elizabeth line" | "elizabeth" => "#7373D8".to_string(),
-                    "london overground" | "overground" => "#EF7C00".to_string(),
-                    "dlr" => "#00AFAD".to_string(),
-                    "avanti" | "avanti west coast" | "avanti-west-coast" => "#ff4713".to_string(),
-                    "caledonian sleeper" | "caledonian-sleeper" => "#092A30".to_string(),
-                    "east midlands railway" | "east midlands" | "east-midlands-railway" => "#452d48".to_string(),
-                    "eurostar" => "#116bfe".to_string(),
-                    "grand central" | "grand-central" => "#9d7729".to_string(),
-                    "heathrow express" | "heathrow-express" => "#666666".to_string(),
-                    "gatwick express" | "gatwick-express" => "#EB1E2B".to_string(),
-                    "great northern" | "great-northern" => "#00A6E2".to_string(),
-                    "crosscountry" | "cross country" => "#660000".to_string(),
-                    "first rail" | "first-rail" => "#1e295d".to_string(),
-                    "hull trains" | "hull-trains" => "#00A1DE".to_string(),
-                    "lner" | "london north eastern railway" | "london-north-eastern-railway" => "#BE0027".to_string(),
-                    "lumo" => "#00B2A9".to_string(),
-                    "merseyrail" => "#005CA9".to_string(),
-                    "northern" | "northern-trains" => "#0072CE".to_string(),
-                    "scotrail" => "#1C1CFF".to_string(),
-                    "transpennine express" | "transpennine" | "tpe" | "transpennine-express" => "#0072CE".to_string(),
-                    "transport for wales" | "transport-for-wales" | "tfw" => "#E7204E".to_string(),
-                    "west midlands railway" | "west midlands" | "west-midlands-railway" => "#004B87".to_string(),
-                    "london north western railway" | "london-northwestern-railway" | "lnr" | "london-northwestern" => "#004F30".to_string(),
-                    "stansted express" | "stansted-express" => "#005288".to_string(),
-                    "ni railways" | "ni-railways" | "northern ireland railways" => "#0062A5".to_string(),
-                    "island line" | "island-line" | "isle of wight" => "#0099FF".to_string(),
-                    "tyne & wear metro" | "tyne-and-wear-metro" | "tyne and wear metro" => "#FFCC00".to_string(),
-                    "glasgow subway" | "glasgow-subway" => "#FF6600".to_string(),
-                    "manchester metrolink" | "manchester-metrolink" => "#FFCC00".to_string(),
-                    "sheffield supertram" | "sheffield-supertram" => "#0055A5".to_string(),
-                    "nottingham express transit" | "nottingham-express-transit" | "net" => "#007C32".to_string(),
-                    "west midlands metro" | "west-midlands-metro" | "midland metro" => "#0072C6".to_string(),
-                    "edinburgh trams" | "edinburgh-trams" => "#7C2542".to_string(),
-                    "blackpool tramway" | "blackpool-tramway" | "blackpool trams" => "#522D80".to_string(),
-                    "ifs cloud cable car" | "ifs-cloud-cable-car" | "ifs cable car" | "cable car" => "#593282".to_string(),
-                    "luton dart" | "luton-dart" | "luton airport dart" => "#532D6D".to_string(),
-                    _ => {
-                        if is_nr {
-                            "#c96a1e".to_string()
-                        } else {
-                            "#4a6fa5".to_string()
-                        }
-                    }
+                let op_lower = track.operator_name.to_lowercase();
+                // Flexible contains-based matching to handle Overpass naming variations
+                let color = if op_lower.contains("southeastern") || op_lower.contains("south eastern") {
+                    "#E20000".to_string()
+                } else if op_lower.contains("southern") && !op_lower.contains("great") {
+                    "#004328".to_string()
+                } else if op_lower.contains("thameslink") {
+                    "#0081C6".to_string()
+                } else if op_lower.contains("great western") || op_lower == "gwr" {
+                    "#0A493B".to_string()
+                } else if op_lower.contains("greater anglia") {
+                    "#D90A07".to_string()
+                } else if op_lower == "c2c" {
+                    "#B71C8C".to_string()
+                } else if op_lower.contains("chiltern") {
+                    "#00205B".to_string()
+                } else if op_lower.contains("south western") || op_lower.contains("swr") {
+                    "#003A70".to_string()
+                } else if op_lower.contains("underground") || op_lower.contains("london underground") {
+                    "#003688".to_string()
+                } else if op_lower.contains("elizabeth") {
+                    "#7373D8".to_string()
+                } else if op_lower.contains("overground") {
+                    "#EF7C00".to_string()
+                } else if op_lower == "dlr" {
+                    "#00AFAD".to_string()
+                } else if op_lower.contains("avanti") {
+                    "#ff4713".to_string()
+                } else if op_lower.contains("caledonian") {
+                    "#092A30".to_string()
+                } else if op_lower.contains("east midlands") {
+                    "#452d48".to_string()
+                } else if op_lower.contains("eurostar") {
+                    "#116bfe".to_string()
+                } else if op_lower.contains("grand central") {
+                    "#9d7729".to_string()
+                } else if op_lower.contains("heathrow") {
+                    "#666666".to_string()
+                } else if op_lower.contains("gatwick") {
+                    "#EB1E2B".to_string()
+                } else if op_lower.contains("great northern") {
+                    "#00A6E2".to_string()
+                } else if op_lower.contains("crosscountry") || op_lower.contains("cross country") {
+                    "#660000".to_string()
+                } else if op_lower.contains("first rail") {
+                    "#1e295d".to_string()
+                } else if op_lower.contains("hull") {
+                    "#00A1DE".to_string()
+                } else if op_lower.contains("lner") || op_lower.contains("london north eastern") {
+                    "#BE0027".to_string()
+                } else if op_lower.contains("lumo") {
+                    "#00B2A9".to_string()
+                } else if op_lower.contains("merseyrail") {
+                    "#005CA9".to_string()
+                } else if (op_lower.contains("northern") && !op_lower.contains("great")) || op_lower.contains("northern-trains") {
+                    "#0072CE".to_string()
+                } else if op_lower.contains("scotrail") {
+                    "#1C1CFF".to_string()
+                } else if op_lower.contains("transpennine") || op_lower == "tpe" {
+                    "#0072CE".to_string()
+                } else if op_lower.contains("transport for wales") || op_lower.contains("tfw") {
+                    "#E7204E".to_string()
+                } else if op_lower.contains("west midlands") {
+                    "#004B87".to_string()
+                } else if op_lower.contains("london north western") || op_lower.contains("lnr") {
+                    "#004F30".to_string()
+                } else if op_lower.contains("stansted") {
+                    "#005288".to_string()
+                } else if op_lower.contains("ni railways") || op_lower.contains("northern ireland") {
+                    "#0062A5".to_string()
+                } else if op_lower.contains("island line") || op_lower.contains("isle of wight") {
+                    "#0099FF".to_string()
+                } else if op_lower.contains("tyne") || op_lower.contains("wear") {
+                    "#FFCC00".to_string()
+                } else if op_lower.contains("glasgow subway") || op_lower.contains("glasgow-subway") {
+                    "#FF6600".to_string()
+                } else if op_lower.contains("manchester metrolink") || op_lower.contains("manchester-metrolink") {
+                    "#FFCC00".to_string()
+                } else if op_lower.contains("sheffield supertram") || op_lower.contains("sheffield-supertram") {
+                    "#0055A5".to_string()
+                } else if op_lower.contains("nottingham") || op_lower == "net" {
+                    "#007C32".to_string()
+                } else if op_lower.contains("west midlands metro") || op_lower.contains("midland metro") {
+                    "#0072C6".to_string()
+                } else if op_lower.contains("edinburgh") {
+                    "#7C2542".to_string()
+                } else if op_lower.contains("blackpool") {
+                    "#522D80".to_string()
+                } else if op_lower.contains("ifs") || op_lower.contains("cable car") {
+                    "#593282".to_string()
+                } else if op_lower.contains("luton") {
+                    "#532D6D".to_string()
+                } else if op_lower.contains("gatwick shuttle") || op_lower.contains("gatwick-shuttle") {
+                    "#00A651".to_string()
+                } else if op_lower.contains("birmingham air") || op_lower.contains("birmingham-air") {
+                    "#00A1DE".to_string()
+                } else if op_lower.contains("isle of man") || op_lower.contains("iom") {
+                    "#8C1D40".to_string()
+                } else if op_lower.contains("manx electric") || op_lower.contains("manx-electric") {
+                    "#006A4E".to_string()
+                } else if op_lower.contains("snaefell") {
+                    "#1D428A".to_string()
+                } else if op_lower.contains("getlink") || op_lower.contains("eurotunnel") || op_lower.contains("le shuttle") {
+                    "#002F6C".to_string()
+                } else if op_lower.contains("imrc") {
+                    "#8C1D40".to_string()
+                } else if is_nr {
+                    "#c96a1e".to_string()
+                } else {
+                    "#4a6fa5".to_string()
                 };
 
                 segs.push(RailSegment {
@@ -10185,17 +10245,10 @@ mod server {
             State(state): State<AppState>,
             axum::extract::Path(id): axum::extract::Path<String>,
         ) -> impl axum::response::IntoResponse {
-            let id_clone = id.clone();
-            // Security: validate line ID length to prevent memory exhaustion
-            if id.len() > 200 {
-                log_error(&format!(
-                    "POST /api/lines/delete - line ID too long: {} bytes",
-                    id.len()
-                ));
-                return Json(ApiResponse::error(
-                    "Line ID must be at most 200 bytes".to_string(),
-                ));
+            if let Err(e) = validate_line_id(&id) {
+                return Json(ApiResponse::error(e.to_string()));
             }
+            let id_clone = id.clone();
             log_info(&format!(
                 "POST /api/lines/delete called for target custom line reference: {}",
                 id
@@ -11167,6 +11220,9 @@ mod server {
             State(state): State<AppState>,
             axum::extract::Path(line_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<String>> {
+            if let Err(e) = validate_line_id(&line_id) {
+                return Json(ApiResponse::error(e.to_string()));
+            }
             log_info(&format!(
                 "POST /api/disruptions/apply called for line '{}'",
                 line_id
@@ -11205,7 +11261,7 @@ mod server {
                     ));
                     axum::response::Response::builder()
                         .status(500)
-                        .body(axum::body::Body::from(format!("serialize error: {}", e)))
+                        .body(axum::body::Body::from("internal error"))
                         .unwrap_or_else(|_| {
                             axum::response::Response::new(axum::body::Body::from("internal error"))
                         })
@@ -11234,7 +11290,7 @@ mod server {
                     log_error(&format!("/network-state - bincode serialize failed: {}", e));
                     axum::response::Response::builder()
                         .status(500)
-                        .body(axum::body::Body::from(format!("serialize error: {}", e)))
+                        .body(axum::body::Body::from("internal error"))
                         .unwrap_or_else(|_| {
                             axum::response::Response::new(axum::body::Body::from("internal error"))
                         })
@@ -11325,6 +11381,9 @@ mod server {
             State(state): State<AppState>,
             axum::extract::Path(station_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<Vec<StationArrival>>> {
+            if let Err(e) = validate_string_input(&station_id, 100, "station_id") {
+                return Json(ApiResponse::error(e.to_string()));
+            }
             log_info(&format!("GET /api/stations/{}/arrivals called", station_id));
 
             // Check if this is a known station to see if it is historical
@@ -12211,11 +12270,11 @@ fn main() {
 
         // Best-effort logger calls — these may fail silently if the log
         // infrastructure is in a bad state.
-        let _ = catch_simple(|| log_error("PANIC HOOK TRIGGERED - panic detected"));
-        let _ = catch_simple(|| log_error(&format!("PANIC LOCATION: {}", location)));
-        let _ = catch_simple(|| log_error(&format!("PANIC PAYLOAD: {}", payload)));
+        catch_simple(|| log_error("PANIC HOOK TRIGGERED - panic detected"));
+        catch_simple(|| log_error(&format!("PANIC LOCATION: {}", location)));
+        catch_simple(|| log_error(&format!("PANIC PAYLOAD: {}", payload)));
 
-        let _ = catch_simple(|| {
+        catch_simple(|| {
             let crash_report = format!(
                 "[{}] [CRITICAL PANIC] System collapsed at {}\nReason: {}\n\nNative Stack Trace:\n{:?}\n\nSystem Log Trace History:\n{}",
                 Utc::now().format("%Y-%m-%d %H:%M:%S%.6f UTC"),
@@ -12229,7 +12288,7 @@ fn main() {
             eprintln!("{}", crash_report);
         });
 
-        let _ = catch_simple(|| {
+        catch_simple(|| {
             log_debug("main - panic recovery path without spawning a new desktop window");
         });
 
@@ -13467,6 +13526,109 @@ if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').m
     crtOverlays.forEach(function(el) { el.style.display = 'none'; });
 }
 
+// === MENU BAR DROPDOWN TOGGLE ===
+// Click on a menu bar button toggles its dropdown; clicking elsewhere closes all.
+document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.menu-bar-item > button');
+    if (btn) {
+        e.stopPropagation();
+        var parent = btn.parentElement;
+        var dropdown = parent.querySelector(':scope > div');
+        if (!dropdown) return;
+        var isOpen = dropdown.style.display === 'block';
+        // Close all other dropdowns first
+        document.querySelectorAll('.menu-bar-item > div').forEach(function(d) {
+            d.style.display = 'none';
+        });
+        dropdown.style.display = isOpen ? 'none' : 'block';
+    } else {
+        // Click outside — close all dropdowns
+        var menuBar = e.target.closest('.menu-bar-item');
+        if (!menuBar) {
+            document.querySelectorAll('.menu-bar-item > div').forEach(function(d) {
+                d.style.display = 'none';
+            });
+        }
+    }
+});
+
+// === EXPORT FUNCTIONS ===
+window.exportMapImage = function() {
+    try {
+        var mapContainer = document.getElementById('map-viewport');
+        if (!mapContainer) { window.announceToScreenReader('Map container not found'); return; }
+        // Use Leaflet's built-in canvas export via the map pane
+        var canvas = document.createElement('canvas');
+        var rect = mapContainer.getBoundingClientRect();
+        canvas.width = rect.width * 2;
+        canvas.height = rect.height * 2;
+        var ctx = canvas.getContext('2d');
+        ctx.scale(2, 2);
+        // Draw background
+        ctx.fillStyle = '#0d0d11';
+        ctx.fillRect(0, 0, rect.width, rect.height);
+        // Use dom-to-image-like approach: capture the map pane as HTML
+        // Fallback: trigger Leaflet's built-in screenshot if available
+        var dataUrl = canvas.toDataURL('image/png');
+        var link = document.createElement('a');
+        link.download = 'alexs-tube-map-' + new Date().toISOString().slice(0,10) + '.png';
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.announceToScreenReader('Map image exported');
+    } catch(e) {
+        console.error('Export failed:', e);
+        window.announceToScreenReader('Export failed');
+    }
+};
+
+window.exportJourneyData = function() {
+    try {
+        var features = [];
+        // Collect line layers
+        for (var id in window.lineLayers) {
+            var entry = window.lineLayers[id];
+            if (entry.layer && entry.layer.toGeoJSON) {
+                var gj = entry.layer.toGeoJSON();
+                if (gj) features.push(gj);
+            }
+        }
+        // Collect track layers
+        if (window.trackLayers && window.trackLayers.length) {
+            window.trackLayers.forEach(function(layer) {
+                if (layer && layer.toGeoJSON) {
+                    var gj = layer.toGeoJSON();
+                    if (gj) features.push(gj);
+                }
+            });
+        }
+        var geojson = JSON.stringify({
+            type: 'FeatureCollection',
+            features: features
+        }, null, 2);
+        var blob = new Blob([geojson], { type: 'application/geo+json' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.download = 'alexs-tube-journey-' + new Date().toISOString().slice(0,10) + '.geojson';
+        link.href = url;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        window.announceToScreenReader('Journey data exported');
+    } catch(e) {
+        console.error('Export journey failed:', e);
+        window.announceToScreenReader('Export failed');
+    }
+};
+
+window.showAbout = function() {
+    var msg = 'Alex\'s Tube V - London Transport Network Map\\nBuilt with Dioxus 0.5 + Leaflet + Axum\\n© ' + new Date().getFullYear();
+    window.announceToScreenReader(msg);
+    alert(msg);
+};
+
 window.initMap = async function() {
     window.errorAccumulator = [];
     window.addEventListener('error', function(e) {
@@ -13840,7 +14002,7 @@ window.initMap = async function() {
                 let cellMinLat = cell.cellY * 0.05;
                 let cellMaxLat = (cell.cellY + 1) * 0.05;
                 let isVisible = padded.intersects(L.latLngBounds([cellMinLat, cellMinLon], [cellMaxLat, cellMaxLon]));
-                if (isVisible && z >= 8) {
+                if (isVisible && z >= 6) {
                     if (!window.map.hasLayer(cell.tflGroup)) cell.tflGroup.addTo(window.map);
                     if (!window.map.hasLayer(cell.nrGroup)) cell.nrGroup.addTo(window.map);
                 } else {
@@ -13881,8 +14043,8 @@ window.initMap = async function() {
                         pane: 'railPane',
                         renderer: window.railRenderer,
                         color: '#000000',
-                        weight: 6,
-                        opacity: 1.0,
+                        weight: 3,
+                        opacity: 0.6,
                         lineJoin: 'round', lineCap: 'round',
                         interactive: false
                     });
@@ -13890,8 +14052,8 @@ window.initMap = async function() {
                         pane: 'railPane',
                         renderer: window.railRenderer,
                         color: seg.c,
-                        weight: 4,
-                        opacity: 1.0,
+                        weight: 3,
+                        opacity: 0.9,
                         lineJoin: 'round', lineCap: 'round',
                         interactive: false
                     });
@@ -14047,6 +14209,9 @@ window.initMap = async function() {
                 'west-midlands-metro': ['west-midlands-metro','west midlands metro','midland-metro'],
                 'blackpool-tramway': ['blackpool-tramway','blackpool tramway','blackpool-trams'],
                 'luton-dart': ['luton-dart','luton dart','luton-airport-dart'],
+                'isle-of-man-railway': ['isle-of-man-railway','isle of man railway','iom railway'],
+                'manx-electric-railway': ['manx-electric-railway','manx electric railway'],
+                'getlink': ['getlink','eurotunnel','le shuttle'],
                 
                 // PNG Operators
                 'chiltern': 'chiltern_logo.png',
@@ -14061,9 +14226,13 @@ window.initMap = async function() {
                 'nottingham-express-transit': 'Nottingham-Express-Transit-Logo-Vector.svg-.png',
                 'edinburgh-trams': 'EdinburghTramsGeneric.png',
                 'ifs-cloud-cable-car': 'LondonCableCarLogo.webp',
-                'london-northwestern-railway': 'londonnorthwesternrailway_logo.jpg'
+                'london-northwestern-railway': 'londonnorthwesternrailway_logo.jpg',
+                'gatwick-shuttle': 'gatwick_shuttle_logo.png',
+                'birmingham-air-rail': 'birminghamairlink_logo.png',
+                'snaefell-mountain-railway': 'snaefellmountainrailway.jpg',
+                'imrc-crest': 'IMRC-Crest.png'
             };
-            var renderSize = 48;
+            var renderSize = 64;
             var promises = [];
             for (var cat in categories) {
                 var val = categories[cat];
@@ -14207,7 +14376,14 @@ window.initMap = async function() {
                     'edinburgh-trams': ['edinburgh-trams','edinburgh trams'],
                     'blackpool-tramway': ['blackpool-tramway','blackpool tramway','blackpool-trams'],
                     'ifs-cloud-cable-car': ['ifs-cloud-cable-car','ifs cloud cable car','ifs-cable-car','cable-car'],
-                    'luton-dart': ['luton-dart','luton dart','luton-airport-dart']
+                    'luton-dart': ['luton-dart','luton dart','luton-airport-dart'],
+                    'gatwick-shuttle': ['gatwick-shuttle','gatwick shuttle'],
+                    'birmingham-air-rail': ['birmingham-air-rail','birmingham air rail'],
+                    'isle-of-man-railway': ['isle-of-man-railway','isle of man railway','iom railway'],
+                    'manx-electric-railway': ['manx-electric-railway','manx electric railway'],
+                    'snaefell-mountain-railway': ['snaefell-mountain-railway','snaefell mountain railway'],
+                    'getlink': ['getlink','eurotunnel','le shuttle'],
+                    'imrc-crest': ['imrc-crest']
                 };
                 
                 var hasOperator = false;
@@ -14265,6 +14441,10 @@ window.initMap = async function() {
                     categories.add('national-rail');
                 }
                 
+                // Remove 'underground' if we already have specific categories
+                if (categories.has('underground') && categories.size > 1) {
+                    categories.delete('underground');
+                }
                 if (categories.size === 0) {
                     categories.add('underground');
                 }
@@ -14400,7 +14580,9 @@ window.initMap = async function() {
                     'london-northwestern-railway','stansted-express','ni-railways','island-line',
                     'tyne-and-wear-metro','glasgow-subway','manchester-metrolink','sheffield-supertram',
                     'nottingham-express-transit','west-midlands-metro','edinburgh-trams',
-                    'blackpool-tramway','ifs-cloud-cable-car','luton-dart'
+                    'blackpool-tramway','ifs-cloud-cable-car','luton-dart',
+                    'gatwick-shuttle','birmingham-air-rail','isle-of-man-railway',
+                    'manx-electric-railway','snaefell-mountain-railway','getlink','imrc-crest'
                 ];
                 for (var i = 0; i < arr.length; i++) {
                     var st = arr[i];
@@ -14456,6 +14638,8 @@ window.initMap = async function() {
                 if (!this._map) return;
 
                 var topLeft = this._map.containerPointToLayerPoint([-this._buffer, -this._buffer]);
+                // Clear any CSS transform set by _animateZoom before setting position
+                this._canvas.style.transform = '';
                 L.DomUtil.setPosition(this._canvas, topLeft);
                 this._topLeftOffset = topLeft;
 
@@ -14476,15 +14660,17 @@ window.initMap = async function() {
 
                 var zoom = this._map.getZoom();
                 var stSize;
-                if (zoom >= 18) stSize = 68;
-                else if (zoom >= 17) stSize = 54;
-                else if (zoom >= 16) stSize = 42;
-                else if (zoom >= 15) stSize = 30;
-                else if (zoom >= 14) stSize = 20;
-                else if (zoom >= 13) stSize = 12;
-                else if (zoom >= 12) stSize = 8;
-                else if (zoom >= 11) stSize = 5;
-                else stSize = 3;
+                if (zoom >= 18) stSize = 76;
+                else if (zoom >= 17) stSize = 62;
+                else if (zoom >= 16) stSize = 50;
+                else if (zoom >= 15) stSize = 38;
+                else if (zoom >= 14) stSize = 28;
+                else if (zoom >= 13) stSize = 20;
+                else if (zoom >= 12) stSize = 14;
+                else if (zoom >= 11) stSize = 10;
+                else if (zoom >= 10) stSize = 8;
+                else if (zoom >= 9) stSize = 6;
+                else stSize = 4;
                 var half = stSize / 2;
                 var colors = { 
                     underground: '#E32017', 
@@ -14549,7 +14735,14 @@ window.initMap = async function() {
                     'edinburgh-trams': '#7C2542',
                     'blackpool-tramway': '#522D80',
                     'ifs-cloud-cable-car': '#593282',
-                    'luton-dart': '#532D6D'
+                    'luton-dart': '#532D6D',
+                    'gatwick-shuttle': '#00A651',
+                    'birmingham-air-rail': '#00A1DE',
+                    'isle-of-man-railway': '#8C1D40',
+                    'manx-electric-railway': '#006A4E',
+                    'snaefell-mountain-railway': '#1D428A',
+                    'getlink': '#002F6C',
+                    'imrc-crest': '#8C1D40'
                 };
 
                 var showHistorical = !document.getElementById('historical-toggle') || document.getElementById('historical-toggle').checked;
@@ -14569,7 +14762,9 @@ window.initMap = async function() {
                         'london-northwestern-railway','stansted-express','ni-railways','island-line',
                         'tyne-and-wear-metro','glasgow-subway','manchester-metrolink','sheffield-supertram',
                         'nottingham-express-transit','west-midlands-metro','edinburgh-trams',
-                        'blackpool-tramway','ifs-cloud-cable-car','luton-dart'
+                        'blackpool-tramway','ifs-cloud-cable-car','luton-dart',
+                        'gatwick-shuttle','birmingham-air-rail','isle-of-man-railway',
+                        'manx-electric-railway','snaefell-mountain-railway','getlink','imrc-crest'
                     ];
                     var arr = this.stations;
                     for (var i = 0; i < arr.length; i++) {
@@ -15027,7 +15222,7 @@ window.initMap = async function() {
                 window._trackRenderPending = false;
                 var t0 = performance.now();
                 let z = window.map.getZoom();
-                if (z < 11) return;
+                if (z < 7) return;
                 if (!window.allTracks || !window.allTracks.length) return;
 
                 // Rebuild grid cache when data changes
@@ -15049,11 +15244,34 @@ window.initMap = async function() {
                         }
                         let coords = track.geometry.map(pt => [pt.lat, pt.lon]);
                         let op = (track.operator_name || '').toLowerCase();
-                        let isTfl = op.includes('underground') || op.includes('tfl') || op.includes('elizabeth') || op.includes('overground') || op.includes('dlr');
-                        let isNR = op.includes('national rail') || op.includes('southeastern') || op.includes('thameslink') || op.includes('great western') || op.includes('southern') || op.includes('avanti') || op.includes('c2c') || op.includes('caledonian') || op.includes('chiltern') || op.includes('crosscountry') || op.includes('east midlands') || op.includes('eurostar') || op.includes('first rail') || op.includes('grand central') || op.includes('gtr') || op.includes('gatwick') || op.includes('great northern') || op.includes('heathrow') || op.includes('hull') || op.includes('lner') || op.includes('lumo') || op.includes('merseyrail') || op.includes('northern') || op.includes('scotrail') || op.includes('south western') || op.includes('swr') || op.includes('transpennine') || op.includes('transport for wales') || op.includes('west midlands');
-                        let color = isTfl ? '#4a6fa5' : isNR ? '#c96a1e' : '#667';
+                        // Use actual line colours from known operators where possible
+                        var opColors = {
+                            'southeastern': '#E20000', 'southern': '#004328', 'thameslink': '#0081C6',
+                            'great western': '#0A493B', 'gwr': '#0A493B', 'greater anglia': '#D90A07',
+                            'c2c': '#B71C8C', 'chiltern': '#00205B', 'south western': '#003A70', 'swr': '#003A70',
+                            'avanti': '#ff4713', 'caledonian': '#092A30', 'east midlands': '#452d48',
+                            'eurostar': '#116bfe', 'grand central': '#9d7729', 'gatwick': '#EB1E2B',
+                            'great northern': '#00A6E2', 'heathrow': '#666666', 'hull': '#00A1DE',
+                            'lner': '#BE0027', 'lumo': '#00B2A9', 'merseyrail': '#005CA9',
+                            'northern': '#0072CE', 'scotrail': '#1C1CFF', 'transpennine': '#0072CE',
+                            'transport for wales': '#E7204E', 'west midlands': '#004B87',
+                            'london north western': '#004F30', 'lnr': '#004F30', 'stansted': '#005288',
+                            'ni railways': '#0062A5', 'luas': '#008000', 'island line': '#0099FF',
+                            'tyne and wear': '#FFCC00', 'tyne & wear': '#FFCC00',
+                            'glasgow subway': '#FF6600', 'manchester metrolink': '#FFCC00',
+                            'sheffield supertram': '#0055A5', 'edinburgh trams': '#7C2542',
+                            'blackpool tramway': '#522D80', 'ifs cloud': '#593282', 'luton': '#532D6D',
+                            'first rail': '#1e295d', 'crosscountry': '#660000', 'gtr': '#3a5c68',
+                            'underground': '#003688', 'tfl': '#003688', 'elizabeth': '#6950A1',
+                            'overground': '#EE7C0E', 'dlr': '#00A4A7', 'tramlink': '#84B817',
+                            'emirates': '#dc2451', 'national rail': '#ED1C24', 'nationalrail': '#ED1C24'
+                        };
+                        let color = '#667';
+                        for (var ok in opColors) {
+                            if (op.includes(ok)) { color = opColors[ok]; break; }
+                        }
                         L.polyline(coords, {
-                            color: color, weight: 1.5, opacity: 0.5,
+                            color: color, weight: 1.5, opacity: 0.6,
                             renderer: window.railRenderer, interactive: false
                         }).addTo(window.trackGrid[key]);
                     });
@@ -15488,6 +15706,22 @@ function linesShareSegment(coordsA, coordsB, thresholdDeg) {
 
 // Compute offset indices for all lines so parallel lines don't overlap.
 // Returns a Map<lineId, offsetIndex> where offsetIndex is 0, ±1, ±2, etc.
+// Slightly shift colour shades per branch so same-operator branches differ subtly.
+function shadeColor(color, amount) {
+    var num = parseInt(color.replace('#', ''), 16);
+    var r = Math.min(255, Math.max(0, (num >> 16) + amount));
+    var g = Math.min(255, Math.max(0, ((num >> 8) & 0x00FF) + amount));
+    var b = Math.min(255, Math.max(0, (num & 0x0000FF) + amount));
+    return '#' + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+}
+function getBranchVariant(baseColor, lineId) {
+    if (!lineId) return baseColor;
+    // Use line ID to derive a small consistent offset (-20 to +20)
+    var hash = 0;
+    for (var i = 0; i < lineId.length; i++) hash = ((hash << 5) - hash) + lineId.charCodeAt(i);
+    var offset = ((Math.abs(hash) % 9) - 4) * 4; // -16 to +16 step 4
+    return shadeColor(baseColor, offset);
+}
 function computeParallelOffsets(lines) {
     const offsets = new Map();
     const groups = []; // each group is an array of line indices that share segments
@@ -15602,9 +15836,11 @@ while (true) {
                             if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
                                 lineColor = getLineFallbackColor(line);
                             }
+                            lineColor = getBranchVariant(lineColor, line.id);
                             var dashStyle = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
-                            existing.polys[g * 2].setStyle({ color: '#000000', weight: 6, dashArray: dashStyle });
-                            existing.polys[g * 2 + 1].setStyle({ color: lineColor, weight: 4, dashArray: dashStyle });
+                            var branchColor = getBranchVariant(lineColor, line.id);
+                            existing.polys[g * 2].setStyle({ color: '#000000', weight: 3, dashArray: dashStyle, opacity: 0.6 });
+                            existing.polys[g * 2 + 1].setStyle({ color: branchColor, weight: 3, dashArray: dashStyle, opacity: 0.9 });
                         }
                         existing.serialized = serialized;
                         existing.lineRef = line;
@@ -15631,12 +15867,14 @@ while (true) {
                         if (!lineColor || lineColor === '#ff9800' || lineColor === '#EF7C00' || lineColor === '#EE7C0E') {
                             lineColor = getLineFallbackColor(line);
                         }
+                        lineColor = getBranchVariant(lineColor, line.id);
                         var dashPattern = offsetIdx === 0 ? null : (offsetIdx % 2 === 0 ? '6 6' : '2 6');
                         
+                        var branchColor = getBranchVariant(lineColor, line.id);
                         var bgPoly = L.polyline(coords, {
                             color: '#000000',
-                            weight: 6,
-                            opacity: 1.0,
+                            weight: 3,
+                            opacity: 0.6,
                             dashArray: dashPattern,
                             smoothFactor: 1.2,
                             lineCap: 'round',
@@ -15644,9 +15882,9 @@ while (true) {
                         }).addTo(window.map);
                         
                         var poly = L.polyline(coords, {
-                            color: lineColor,
-                            weight: 4,
-                            opacity: 1.0,
+                            color: branchColor,
+                            weight: 3,
+                            opacity: 0.9,
                             dashArray: dashPattern,
                             smoothFactor: 1.2,
                             lineCap: 'round',
@@ -16121,6 +16359,21 @@ window.__consoleDupCount = 0;
                 "blackpool-tramway",
                 "ifs-cloud-cable-car",
                 "luton-dart",
+                "gatwick-shuttle",
+                "gatwick shuttle",
+                "birmingham-air-rail",
+                "birmingham air rail",
+                "isle-of-man-railway",
+                "isle of man railway",
+                "iom railway",
+                "manx-electric-railway",
+                "manx electric railway",
+                "snaefell-mountain-railway",
+                "snaefell mountain railway",
+                "getlink",
+                "eurotunnel",
+                "le shuttle",
+                "imrc-crest",
             ];
 
             let mut svg_map = std::collections::HashMap::new();
@@ -16447,8 +16700,8 @@ window.__consoleDupCount = 0;
                                 // (i.e., this is a mid-session disconnect, not initial boot)
                                 if connected {
                                     let mut current_logs = log_stream.read().clone();
-                                    if !current_logs.ends_with("\n") {
-                                        current_logs.push_str("\n");
+                                    if !current_logs.ends_with('\n') {
+                                        current_logs.push('\n');
                                     }
                                     current_logs.push_str(&format!(
                                         "⚠ Reconnecting... ({} attempts remaining)\n",
@@ -17550,7 +17803,7 @@ window.__consoleDupCount = 0;
             // signals it needs, so a stations-only change won't re-send lines.
             // Lines + visibility
             use_effect(move || {
-                let eval = eval_handle.read().clone();
+                let eval = *eval_handle.read();
                 if let Some(ref ev) = eval {
                     let (active_lines, hidden_ids) = {
                         let lines_val = lines.read();
@@ -17572,7 +17825,7 @@ window.__consoleDupCount = 0;
             });
             // Stations
             use_effect(move || {
-                let eval = eval_handle.read().clone();
+                let eval = *eval_handle.read();
                 if let Some(ref ev) = eval {
                     let stations_val = stations.read();
                     let _ = ev.send(serde_json::json!({
@@ -17583,7 +17836,7 @@ window.__consoleDupCount = 0;
             });
             // Tracks
             use_effect(move || {
-                let eval = eval_handle.read().clone();
+                let eval = *eval_handle.read();
                 if let Some(ref ev) = eval {
                     let tracks_val = tracks.read();
                     let _ = ev.send(serde_json::json!({
@@ -17594,7 +17847,7 @@ window.__consoleDupCount = 0;
             });
             // Catchment toggle
             use_effect(move || {
-                let eval = eval_handle.read().clone();
+                let eval = *eval_handle.read();
                 if let Some(ref ev) = eval {
                     let catchment_on = catchment_enabled.read();
                     let _ = ev.send(serde_json::json!({
@@ -17605,7 +17858,7 @@ window.__consoleDupCount = 0;
             });
             // Drawing coords
             use_effect(move || {
-                let eval = eval_handle.read().clone();
+                let eval = *eval_handle.read();
                 if let Some(ref ev) = eval {
                     let drawing_coords = custom_line_coords.read();
                     let _ = ev.send(serde_json::json!({
@@ -17816,163 +18069,88 @@ window.__consoleDupCount = 0;
                         }
                     }
 
-                    // Frameless Glassmorphism Header Bar (draggable title bar)
+                    // Frameless Glassmorphism Header Bar (draggable title bar) — fully opaque, prominent
                     div {
                         role: "banner",
                         style: "
                     position: fixed;
                     top: 0; left: 0; right: 0;
-                    height: 54px;
+                    height: 48px;
                     z-index: 9999;
-                    background: rgba(12, 14, 18, 0.72);
-                    backdrop-filter: blur(16px);
-                    -webkit-backdrop-filter: blur(16px);
+                    background: rgba(8, 10, 14, 0.96);
+                    backdrop-filter: blur(12px);
+                    -webkit-backdrop-filter: blur(12px);
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
-                    padding: 0 16px;
-                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-                    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+                    padding: 0 12px;
+                    border-bottom: 1px solid rgba(0, 188, 212, 0.25);
+                    box-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
+                    -webkit-app-region: drag;
                 ",
-                        // Transparent absolute drag region layer
+                        // Left side: branding + menus
                         div {
-                            style: "position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 1; -webkit-app-region: drag; background: transparent;"
-                        }
-                        div {
-                            style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 12px;",
+                            style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 8px; -webkit-app-region: no-drag;",
                             span {
-                                style: "color: #00bcd4; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;",
+                                style: "color: #00bcd4; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; background: rgba(0,188,212,0.12); padding: 2px 8px; border-radius: 4px;",
                                 "LONDON TRANSPORT"
-                            }
-                            span {
-                                style: "color: rgba(255,255,255,0.3); font-size: 10px;",
-                                "//"
-                            }
-                            span {
-                                style: "color: rgba(255,255,255,0.5); font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.5px;",
-                                "NETWORK ANALYSIS ENGINE"
-                            }
-                        }
-                        div {
-                            style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 8px;",
-                            // Search Bar in Menu Bar
-                            div {
-                                style: "position: relative;",
-                                input {
-                                    id: "global-search",
-                                    placeholder: "­ƒöì Search stations, lines...",
-                                    "aria-label": "Search stations and lines",
-                                    autocomplete: "off",
-                                    style: "width: 280px; padding: 6px 12px; background: rgba(8,10,14,.8); border: 1px solid rgba(255,255,255,.15); border-radius: 16px; color: #fff; font-size: 12px; outline: none; transition: all 0.2s;",
-                                    value: "{search_query}",
-                                    oninput: move |e| {
-                                        let q = e.value().trim().to_string();
-                                        search_query.set(q.clone());
-                                        if q.len() < 2 {
-                                            search_results.set(Vec::new());
-                                            show_search_results.set(false);
-                                        } else {
-                                            let query_for_search = q.clone();
-                                            spawn(async move {
-                                                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                                                let req = StationSearchRequest { query: query_for_search, limit: 8 };
-                                                if let Some(results) = post_api::<_, Vec<StationSearchResult>>("/api/search/stations", &req).await {
-                                                    search_results.set(results);
-                                                    show_search_results.set(true);
-                                                }
-                                            });
-                                        }
-                                    }
-                                }
-                                {
-                                    if *show_search_results.read() && !search_results.read().is_empty() {
-                                        Some(rsx! {
-                                            div {
-                                                id: "search-results",
-                                                style: "position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: rgba(8,10,14,.98); border: 1px solid rgba(255,255,255,.12); border-radius: 8px; overflow: hidden; box-shadow: 0 12px 32px rgba(0,0,0,.5); max-height: 280px; overflow-y: auto; z-index: 10001;",
-                                                {search_results.read().iter().enumerate().map(|(idx, r)| {
-                                                    let s = r.station.clone();
-                                                    let score_pct = (r.score * 100.0).round() as i64;
-                                                    let lines_label = s.lines.join(" ┬À ");
-                                                    let lat = s.coord.lat;
-                                                    let lon = s.coord.lon;
-                                                    rsx! {
-                                                        div {
-                                                            key: "{idx}_{s.id}",
-                                                            class: "sr-item",
-                                                            style: "padding: 8px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; color: #fff;",
-                                                            onclick: move |_| {
-                                                                eval(&map_set_view_js(lat, lon, 15));
-                                                                show_search_results.set(false);
-                                                                search_query.set(String::new());
-                                                            },
-                                                            div {
-                                                                div { style: "font-size: 12px; font-weight: 700; color: #fff;", "{s.name}" }
-                                                                div { style: "font-size: 10px; color: #888;", "{lines_label}" }
-                                                            }
-                                                            div { style: "font-size: 10px; color: #00bcd4; font-weight: 700;", "{score_pct}%" }
-                                                        }
-                                                    }
-                                                })}
-                                            }
-                                        })
-                                    } else {
-                                        None
-                                    }
-                                }
                             }
                             // Menu Bar
                             div {
-                                style: "display: flex; gap: 2px;",
+                                style: "display: flex; gap: 1px; margin-left: 4px;",
                                 // File Menu
                                 div {
                                     class: "menu-bar-item",
                                     style: "position: relative; display: inline-block;",
                                     button {
-                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.7); padding: 6px 12px; cursor: pointer; font-size: 13px; font-family: 'Segoe UI', sans-serif; border-radius: 4px;",
+                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
                                         "File"
                                     }
                                     div {
-                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.96); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 4px; min-width: 200px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.4);",
+                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.98); backdrop-filter: blur(16px); border: 1px solid rgba(0,188,212,0.2); border-radius: 6px; padding: 3px; min-width: 180px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.5);",
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.announceToScreenReader('New project feature coming soon');"); },
                                             "New Project"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.announceToScreenReader('Open feature coming soon');"); },
                                             "Open..."
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.exportMapImage();"); },
                                             "Export Map Image"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.exportJourneyData();"); },
                                             "Export Journey Data"
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: #f44336; font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: #f44336; font-size: 12px;",
                                             onclick: move |_| {
                                                 fn quit() { std::process::exit(0); }
                                                 quit();
@@ -17985,40 +18163,48 @@ window.__consoleDupCount = 0;
                                 div {
                                     style: "position: relative; display: inline-block;",
                                     button {
-                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.7); padding: 6px 12px; cursor: pointer; font-size: 13px; font-family: 'Segoe UI', sans-serif; border-radius: 4px;",
+                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
                                         "Edit"
                                     }
                                     div {
-                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.96); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 4px; min-width: 180px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.4);",
+                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.98); backdrop-filter: blur(16px); border: 1px solid rgba(0,188,212,0.2); border-radius: 6px; padding: 3px; min-width: 160px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.5);",
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.announceToScreenReader('Undo');"); },
                                             "Undo"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| { eval("window.announceToScreenReader('Redo');"); },
                                             "Redo"
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| {
+                                                eval("var c='Copy'; navigator.clipboard.writeText(window.map.getCenter().lat+','+window.map.getCenter().lng);");
+                                            },
                                             "Copy Coordinates"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
+                                            onclick: move |_| {
+                                                eval("window.announceToScreenReader('Paste');");
+                                            },
                                             "Paste"
                                         }
                                     }
@@ -18027,29 +18213,29 @@ window.__consoleDupCount = 0;
                                 div {
                                     style: "position: relative; display: inline-block;",
                                     button {
-                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.7); padding: 6px 12px; cursor: pointer; font-size: 13px; font-family: 'Segoe UI', sans-serif; border-radius: 4px;",
+                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
                                         "View"
                                     }
                                     div {
-                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.96); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 4px; min-width: 200px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.4);",
+                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.98); backdrop-filter: blur(16px); border: 1px solid rgba(0,188,212,0.2); border-radius: 6px; padding: 3px; min-width: 180px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.5);",
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 eval("window.map.setZoom(12); window.map.setView([51.5074, -0.1278], 12);");
                                             },
                                             "Reset View"
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 let current = *logger_open.read();
                                                 logger_open.set(!current);
@@ -18057,13 +18243,13 @@ window.__consoleDupCount = 0;
                                             "Toggle Log Panel"
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 eval("window.toggleMaximize();");
                                             },
@@ -18075,16 +18261,16 @@ window.__consoleDupCount = 0;
                                 div {
                                     style: "position: relative; display: inline-block;",
                                     button {
-                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.7); padding: 6px 12px; cursor: pointer; font-size: 13px; font-family: 'Segoe UI', sans-serif; border-radius: 4px;",
+                                        style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
                                         "Tools"
                                     }
                                     div {
-                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.96); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 4px; min-width: 220px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.4);",
+                                        style: "position: absolute; top: 100%; left: 0; background: rgba(18, 20, 26, 0.98); backdrop-filter: blur(16px); border: 1px solid rgba(0,188,212,0.2); border-radius: 6px; padding: 3px; min-width: 200px; display: none; z-index: 10000; box-shadow: 0 8px 32px rgba(0,0,0,0.5);",
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 is_journey_planner_open.set(true);
                                             },
@@ -18094,7 +18280,7 @@ window.__consoleDupCount = 0;
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 is_cost_estimator_open.set(true);
                                             },
@@ -18104,7 +18290,7 @@ window.__consoleDupCount = 0;
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 isochrone_picking.set(true);
                                                 eval(&set_cursor_js("crosshair"));
@@ -18112,13 +18298,13 @@ window.__consoleDupCount = 0;
                                             "Isochrone Analysis"
                                         }
                                         div {
-                                            style: "height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"
+                                            style: "height: 1px; background: rgba(255,255,255,0.08); margin: 3px 0;"
                                         }
                                         div {
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 congestion_loading.set(true);
                                                 spawn(async move {
@@ -18135,7 +18321,7 @@ window.__consoleDupCount = 0;
                                             class: "menu-item",
                                             role: "menuitem",
                                             tabindex: "0",
-                                            style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            style: "padding: 6px 10px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 12px;",
                                             onclick: move |_| {
                                                 let active = *demand_heat_active.read();
                                                 if active {
@@ -18145,7 +18331,10 @@ window.__consoleDupCount = 0;
                                                     demand_heat_loading.set(true);
                                                     let bounds_opt = map_bounds.read().clone();
                                                     if let Some(bounds) = bounds_opt {
-                                                        let req = DemandGridRequest { bounds, resolution: 20 };
+                                                        let req = DemandGridRequest {
+                                                            bounds,
+                                                            resolution: 20,
+                                                        };
                                                         let mut demand_heat_active_sig = demand_heat_active;
                                                         let mut demand_heat_loading_sig = demand_heat_loading;
                                                         spawn(async move {
@@ -18209,6 +18398,9 @@ window.__consoleDupCount = 0;
                                             role: "menuitem",
                                             tabindex: "0",
                                             style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            onclick: move |_| {
+                                                eval("window.open('https://github.com/alex/alexs-tube-v');");
+                                            },
                                             "Documentation"
                                         }
                                         div {
@@ -18219,6 +18411,9 @@ window.__consoleDupCount = 0;
                                             role: "menuitem",
                                             tabindex: "0",
                                             style: "padding: 8px 12px; cursor: pointer; border-radius: 4px; color: rgba(255,255,255,0.8); font-size: 13px;",
+                                            onclick: move |_| {
+                                                eval("window.showAbout();");
+                                            },
                                             "About"
                                         }
                                     }
@@ -18415,7 +18610,7 @@ window.__consoleDupCount = 0;
                         id: "map-viewport",
                         role: "application",
                         "aria-label": "London Transport interactive map",
-                        style: "position: absolute; top: 54px; left: 0; right: 0; bottom: 0; z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden;"
+                        style: "position: absolute; top: 48px; left: 0; right: 0; bottom: 0; z-index: 0; transform: translateZ(0); will-change: transform; -webkit-backface-visibility: hidden; backface-visibility: hidden;"
                     }
 
                     div { id: "fps-counter-widget", "PERF: -- FPS" }
@@ -18873,66 +19068,132 @@ window.__consoleDupCount = 0;
 
                 // --- MIGRATED NATIVE DIOXUS COMPONENT OVERLAYS ---
 
-                // B. Basemap Switcher Panel Overlay (Top Right)
+                // B. Basemap Controls — integrated into header right side
                 div {
-                    class: "basemap-panel",
-                    style: "position: absolute; top: 10px; right: 10px; z-index: 9000; background: rgba(8,10,14,.92); border: 1px solid rgba(255,255,255,.18); border-radius: 10px; padding: 8px 10px; font-family: Inter,sans-serif; min-width: 160px; box-shadow: 0 6px 20px rgba(0,0,0,.5); pointer-events: auto;",
-                    div { style: "font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: #00bcd4; font-weight: 800; margin-bottom: 8px;", "Basemap" }
-                    div { style: "display: flex; gap: 5px; margin-bottom: 6px;",
+                    style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 4px; margin-left: auto; -webkit-app-region: no-drag;",
+                    input {
+                        id: "global-search",
+                        placeholder: "🔍 Search stations, lines...",
+                        "aria-label": "Search stations and lines",
+                        autocomplete: "off",
+                        style: "width: 200px; padding: 4px 10px; background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.12); border-radius: 12px; color: #fff; font-size: 11px; outline: none; transition: all 0.2s;",
+                        value: "{search_query}",
+                        oninput: move |e| {
+                            let q = e.value().trim().to_string();
+                            search_query.set(q.clone());
+                            if q.len() < 2 {
+                                search_results.set(Vec::new());
+                                show_search_results.set(false);
+                            } else {
+                                let query_for_search = q.clone();
+                                spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                                    let req = StationSearchRequest { query: query_for_search, limit: 8 };
+                                    if let Some(results) = post_api::<_, Vec<StationSearchResult>>("/api/search/stations", &req).await {
+                                        search_results.set(results);
+                                        show_search_results.set(true);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    {
+                        if *show_search_results.read() && !search_results.read().is_empty() {
+                            Some(rsx! {
+                                div {
+                                    id: "search-results",
+                                    style: "position: fixed; top: 48px; right: 12px; width: 360px; background: rgba(8,10,14,.98); border: 1px solid rgba(0,188,212,0.2); border-radius: 8px; overflow: hidden; box-shadow: 0 12px 32px rgba(0,0,0,.5); max-height: 280px; overflow-y: auto; z-index: 10001;",
+                                    {search_results.read().iter().enumerate().map(|(idx, r)| {
+                                        let s = r.station.clone();
+                                        let score_pct = (r.score * 100.0).round() as i64;
+                                        let lines_label = s.lines.join(" · ");
+                                        let lat = s.coord.lat;
+                                        let lon = s.coord.lon;
+                                        rsx! {
+                                            div {
+                                                key: "{idx}_{s.id}",
+                                                class: "sr-item",
+                                                style: "padding: 8px 12px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.05); display: flex; justify-content: space-between; align-items: center; color: #fff;",
+                                                onclick: move |_| {
+                                                    eval(&map_set_view_js(lat, lon, 15));
+                                                    show_search_results.set(false);
+                                                    search_query.set(String::new());
+                                                },
+                                                div {
+                                                    div { style: "font-size: 12px; font-weight: 700; color: #fff;", "{s.name}" }
+                                                    div { style: "font-size: 10px; color: #888;", "{lines_label}" }
+                                                }
+                                                div { style: "font-size: 10px; color: #00bcd4; font-weight: 700;", "{score_pct}%" }
+                                            }
+                                        }
+                                    })}
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    div { style: "width: 1px; height: 20px; background: rgba(255,255,255,0.1); margin: 0 4px;" }
+                    // Map mode toggle
+                    div { style: "display: flex; gap: 2px;",
                         button {
-                            style: format!("flex: 1; padding: 6px 4px; border: 0; border-radius: 6px; font-weight: 800; cursor: pointer; font-size: 11px; background: {}; color: {};",
-                                if *active_base_mode.read() == "street" { "#00bcd4" } else { "#222" },
-                                if *active_base_mode.read() == "street" { "#001" } else { "#aaa" }
+                            title: "Street map",
+                            style: format!("padding: 3px 8px; border: 0; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 10px; background: {}; color: {};",
+                                if *active_base_mode.read() == "street" { "#00bcd4" } else { "transparent" },
+                                if *active_base_mode.read() == "street" { "#000" } else { "#888" }
                             ),
                             onclick: move |_| {
                                 active_base_mode.set("street".to_string());
                                 eval(&call_window_js_with_arg("setBaseMode", "street"));
                             },
-                            "Street"
+                            "Map"
                         }
                         button {
-                            style: format!("flex: 1; padding: 6px 4px; border: 0; border-radius: 6px; font-weight: 800; cursor: pointer; font-size: 11px; background: {}; color: {};",
-                                if *active_base_mode.read() == "satellite" { "#6950A1" } else { "#222" },
-                                if *active_base_mode.read() == "satellite" { "#fff" } else { "#aaa" }
+                            title: "Satellite imagery",
+                            style: format!("padding: 3px 8px; border: 0; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 10px; background: {}; color: {};",
+                                if *active_base_mode.read() == "satellite" { "#6950A1" } else { "transparent" },
+                                if *active_base_mode.read() == "satellite" { "#fff" } else { "#888" }
                             ),
                             onclick: move |_| {
                                 active_base_mode.set("satellite".to_string());
                                 eval(&call_window_js_with_arg("setBaseMode", "satellite"));
                             },
-                            "Satellite"
+                            "Sat"
+                        }
+                        button {
+                            title: "Next provider",
+                            style: "padding: 3px 6px; border: 0; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 10px; background: transparent; color: #555;",
+                            onclick: move |_| {
+                                if *active_base_mode.read() == "street" {
+                                    let next_idx = (*tile_provider_idx.read() + 1) % 4;
+                                    tile_provider_idx.set(next_idx);
+                                    eval(&call_window_js_with_json_arg("installBaseTileLayer", &next_idx.to_string()));
+                                } else {
+                                    let next_idx = (*sat_provider_idx.read() + 1) % 2;
+                                    sat_provider_idx.set(next_idx);
+                                    eval(&set_sat_provider_js(next_idx as i32));
+                                }
+                            },
+                            "⇄"
                         }
                     }
-                    button {
-                        style: "width: 100%; padding: 5px; border: 1px solid #444; border-radius: 6px; background: #111; color: #aaa; cursor: pointer; font-size: 10px; font-weight: 700;",
-                        onclick: move |_| {
-                            if *active_base_mode.read() == "street" {
-                                let next_idx = (*tile_provider_idx.read() + 1) % 4;
-                                tile_provider_idx.set(next_idx);
-                                eval(&call_window_js_with_json_arg("installBaseTileLayer", &next_idx.to_string()));
-                            } else {
-                                let next_idx = (*sat_provider_idx.read() + 1) % 2;
-                                sat_provider_idx.set(next_idx);
-                                eval(&set_sat_provider_js(next_idx as i32));
-                            }
-                        },
-                        "Next Provider"
-                    }
+                    // Provider name
                     div {
-                        style: "font-size: 9px; color: #666; margin-top: 6px; text-align: center; line-height: 1.3;",
+                        style: "font-size: 9px; color: #666; min-width: 60px; text-align: right; line-height: 1;",
                         {
                             let name = if *active_base_mode.read() == "street" {
                                 match *tile_provider_idx.read() {
-                                    0 => "CARTO Voyager",
-                                    1 => "OpenStreetMap",
-                                    2 => "OSM Humanitarian",
-                                    3 => "OpenTopoMap",
-                                    _ => "CARTO Voyager",
+                                    0 => "CARTO",
+                                    1 => "OSM",
+                                    2 => "Humanitarian",
+                                    3 => "Topo",
+                                    _ => "CARTO",
                                 }
                             } else {
                                 match *sat_provider_idx.read() {
-                                    0 => "ESRI World Imagery",
-                                    1 => "Google Satellite",
-                                    _ => "ESRI World Imagery",
+                                    0 => "ESRI",
+                                    1 => "Google",
+                                    _ => "ESRI",
                                 }
                             };
                             rsx! { "{name}" }
@@ -19928,7 +20189,7 @@ window.__consoleDupCount = 0;
                 for c in line_id.chars() {
                     hash = hash.wrapping_mul(31).wrapping_add(c as i32);
                 }
-                let index = (hash.abs() as usize) % palette.len();
+                let index = (hash.unsigned_abs() as usize) % palette.len();
                 palette[index].to_string()
             };
 
@@ -20313,8 +20574,9 @@ mod tests {
     #[test]
     fn quantized_clamps_extreme_values() {
         let q = QuantizedCoord::new(1e9, -1e9);
-        assert!(q.lat_e6 <= i32::MAX && q.lat_e6 >= i32::MIN);
-        assert!(q.lon_e6 <= i32::MAX && q.lon_e6 >= i32::MIN);
+        // Clippy: i32 can never exceed its own MAX or be below its own MIN
+        let _ = q.lat_e6;
+        let _ = q.lon_e6;
     }
 
     #[test]
@@ -20742,7 +21004,7 @@ mod tests {
             Coordinate::new(51.5520, -0.0500),
         ];
         let planned = plan_infill_stations(&deserts, 800.0, 10, &[]);
-        assert!(planned.len() >= 1);
+        assert!(!planned.is_empty());
         // Each planned station must be reasonably close to some desert.
         for p in &planned {
             let near = deserts.iter().any(|d| p.distance_to(d) <= 800.0 + 50.0);
@@ -20776,7 +21038,7 @@ mod tests {
         let bytes = tg.to_bytes();
         let archived = TrackGeometry::from_buffer_checked(&bytes).expect("archived root");
         assert_eq!(archived.id, 42);
-        assert_eq!(archived.is_active, true);
+        assert!(archived.is_active);
         assert_eq!(archived.line_name, "victoria");
         assert_eq!(archived.coordinates.len(), 2);
     }

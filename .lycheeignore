@@ -1,0 +1,13 @@
+# Ignore localhost links
+http://localhost*
+# Ignore private network addresses
+http://10.*
+http://192.168.*
+http://172.16.*
+# Ignore internal links
+https://github.com/alex/alexs-tube-v/*
+# Ignore example links
+https://example.com
+http://example.com
+# Ignore common CDN placeholders
+https://cdn.example.com

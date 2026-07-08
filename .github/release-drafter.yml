@@ -1,0 +1,54 @@
+name-template: "v$RESOLVED_VERSION 🌈"
+tag-template: "v$RESOLVED_VERSION"
+categories:
+  - title: "🚀 Features"
+    semver-increment: minor
+    when:
+      labels:
+        - "feature"
+        - "enhancement"
+  - title: "🐛 Bug Fixes"
+    when:
+      labels:
+        - "fix"
+        - "bugfix"
+        - "bug"
+  - title: "🧰 Maintenance"
+    when:
+      label: "chore"
+  - title: "⬆️ Dependencies"
+    collapse-after: 3
+    when:
+      label: "dependencies"
+  - type: "pre-exclude"
+    when:
+      label: "skip-changelog"
+  - type: "version-resolver"
+    semver-increment: "major"
+    when:
+      label: "major"
+  - type: "version-resolver"
+    semver-increment: "patch"
+change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
+change-title-escapes: '\<*_&'
+template: |
+  ## Changes
+
+  $CHANGES
+
+autolabeler:
+  - label: "chore"
+    files:
+      - "*.md"
+    branch:
+      - '/docs{0,1}\/.+/'
+  - label: "bug"
+    branch:
+      - '/fix\/.+/'
+    title:
+      - "/fix/i"
+  - label: "enhancement"
+    branch:
+      - '/feature\/.+/'
+    body:
+      - "/JIRA-[0-9]{1,4}/"

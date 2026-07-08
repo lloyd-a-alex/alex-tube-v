@@ -1,4 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use std::hint::black_box;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 // We need to import from the main crate binary. Since this is a bench for a
 // binary (not a library), we replicate the core data structures inline for

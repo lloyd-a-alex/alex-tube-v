@@ -1,0 +1,38 @@
+{
+  "projectName": "alexs-tube-v",
+  "projectOwner": "alex",
+  "repoType": "github",
+  "repoHost": "https://github.com",
+  "files": [
+    "README.md"
+  ],
+  "imageSize": 100,
+  "commit": true,
+  "commitConvention": "angular",
+  "contributors": [],
+  "contributorsPerLine": 7,
+  "badgeTemplate": "[![All Contributors](https://img.shields.io/badge/all_contributors-{contributors}-orange.svg?style=flat-square)](#contributors)",
+  "contributorTemplate": "<a href=\"{profile}\"><img src=\"{avatar}\" width=\"{size}\" /><br />{name}</a>",
+  "types": {
+    "code": "💻 Code",
+    "doc": "📖 Documentation",
+    "design": "🎨 Design",
+    "ideas": "🤔 Ideas",
+    "infra": "🚇 Infrastructure",
+    "maintenance": "🚧 Maintenance",
+    "bug": "🐛 Bug reports",
+    "review": "👀 Review",
+    "translation": "🌍 Translation",
+    "test": "⚠️ Testing",
+    "question": "💬 Question",
+    "talk": "📢 Talks",
+    "tool": "🔧 Tool",
+    "plugin": "🔌 Plugin",
+    "security": "🛡️ Security",
+    "financial": "💵 Financial",
+    "content": "🖋 Content",
+    "data": "🔣 Data",
+    "projectManagement": "📆 Project Management",
+    "userTesting": "📓 User Testing"
+  }
+}
