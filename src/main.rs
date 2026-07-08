@@ -2687,6 +2687,20 @@ mod routing {
                 "tpe" | "transpennine" | "transpennine-express" => "ROUNDEL_TRANSPENNINE",
                 "transport-for-wales" | "tfw" | "transport for wales" => "ROUNDEL_TRANSPORT_FOR_WALES",
                 "west-midlands-railway" | "west-midlands" | "west midlands railway" | "west midlands" => "ROUNDEL_WEST_MIDLANDS_RAILWAY",
+                "london-northwestern-railway" | "lnr" | "london-northwestern" => "ROUNDEL_LONDON_NORTHWESTERN_RAILWAY",
+                "stansted-express" => "ROUNDEL_STANSTED_EXPRESS",
+                "ni-railways" | "ni railways" | "northern-ireland-railways" => "ROUNDEL_NI_RAILWAYS",
+                "island-line" | "isle-of-wight" | "island line" => "ROUNDEL_ISLAND_LINE",
+                "tyne-and-wear-metro" | "tyne & wear metro" | "tyne and wear metro" => "ROUNDEL_TYNE_AND_WEAR_METRO",
+                "glasgow-subway" | "glasgow subway" => "ROUNDEL_GLASGOW_SUBWAY",
+                "manchester-metrolink" | "manchester metrolink" => "ROUNDEL_MANCHESTER_METROLINK",
+                "sheffield-supertram" | "sheffield supertram" => "ROUNDEL_SHEFFIELD_SUPERTRAM",
+                "nottingham-express-transit" | "nottingham express transit" | "net" => "ROUNDEL_NOTTINGHAM_EXPRESS_TRANSIT",
+                "west-midlands-metro" | "west midlands metro" | "midland-metro" => "ROUNDEL_WEST_MIDLANDS_METRO",
+                "edinburgh-trams" | "edinburgh trams" => "ROUNDEL_EDINBURGH_TRAMS",
+                "blackpool-tramway" | "blackpool tramway" | "blackpool-trams" => "ROUNDEL_BLACKPOOL_TRAMWAY",
+                "ifs-cloud-cable-car" | "ifs cloud cable car" | "ifs-cable-car" | "cable-car" => "ROUNDEL_IFS_CLOUD_CABLE_CAR",
+                "luton-dart" | "luton dart" | "luton-airport-dart" => "ROUNDEL_LUTON_DART",
                 _ => return None,
             };
             map.get(key).map(|s| s.as_str())
@@ -10079,6 +10093,20 @@ mod server {
                     "transpennine express" | "transpennine" | "tpe" | "transpennine-express" => "#0072CE".to_string(),
                     "transport for wales" | "transport-for-wales" | "tfw" => "#E7204E".to_string(),
                     "west midlands railway" | "west midlands" | "west-midlands-railway" => "#004B87".to_string(),
+                    "london north western railway" | "london-northwestern-railway" | "lnr" | "london-northwestern" => "#004F30".to_string(),
+                    "stansted express" | "stansted-express" => "#005288".to_string(),
+                    "ni railways" | "ni-railways" | "northern ireland railways" => "#0062A5".to_string(),
+                    "island line" | "island-line" | "isle of wight" => "#0099FF".to_string(),
+                    "tyne & wear metro" | "tyne-and-wear-metro" | "tyne and wear metro" => "#FFCC00".to_string(),
+                    "glasgow subway" | "glasgow-subway" => "#FF6600".to_string(),
+                    "manchester metrolink" | "manchester-metrolink" => "#FFCC00".to_string(),
+                    "sheffield supertram" | "sheffield-supertram" => "#0055A5".to_string(),
+                    "nottingham express transit" | "nottingham-express-transit" | "net" => "#007C32".to_string(),
+                    "west midlands metro" | "west-midlands-metro" | "midland metro" => "#0072C6".to_string(),
+                    "edinburgh trams" | "edinburgh-trams" => "#7C2542".to_string(),
+                    "blackpool tramway" | "blackpool-tramway" | "blackpool trams" => "#522D80".to_string(),
+                    "ifs cloud cable car" | "ifs-cloud-cable-car" | "ifs cable car" | "cable car" => "#593282".to_string(),
+                    "luton dart" | "luton-dart" | "luton airport dart" => "#532D6D".to_string(),
                     _ => {
                         if is_nr {
                             "#c96a1e".to_string()
@@ -14008,6 +14036,18 @@ window.initMap = async function() {
                 'transport-for-wales': ['transport-for-wales','tfw','transport for wales'],
                 'west-midlands-railway': ['west-midlands-railway','west-midlands','west midlands railway'],
                 
+                // New SVG Operators
+                'london-northwestern-railway': ['london-northwestern-railway','lnr','london-northwestern'],
+                'stansted-express': ['stansted-express'],
+                'ni-railways': ['ni-railways','ni railways','northern-ireland-railways'],
+                'island-line': ['island-line','island line','isle-of-wight'],
+                'tyne-and-wear-metro': ['tyne-and-wear-metro','tyne & wear metro','tyne and wear metro'],
+                'glasgow-subway': ['glasgow-subway','glasgow subway'],
+                'manchester-metrolink': ['manchester-metrolink','manchester metrolink'],
+                'west-midlands-metro': ['west-midlands-metro','west midlands metro','midland-metro'],
+                'blackpool-tramway': ['blackpool-tramway','blackpool tramway','blackpool-trams'],
+                'luton-dart': ['luton-dart','luton dart','luton-airport-dart'],
+                
                 // PNG Operators
                 'chiltern': 'chiltern_logo.png',
                 'crosscountry': 'crosscountry_logo.png',
@@ -14016,7 +14056,12 @@ window.initMap = async function() {
                 'gatwick-express': 'gatwickexpress_logo.png',
                 'great-northern': 'greatnorthern_logo.png',
                 'southern': 'southern_logo.png',
-                'thameslink': 'thameslink_logo.png'
+                'thameslink': 'thameslink_logo.png',
+                'sheffield-supertram': 'sheffieldsupertram.png',
+                'nottingham-express-transit': 'Nottingham-Express-Transit-Logo-Vector.svg-.png',
+                'edinburgh-trams': 'EdinburghTramsGeneric.png',
+                'ifs-cloud-cable-car': 'LondonCableCarLogo.webp',
+                'london-northwestern-railway': 'londonnorthwesternrailway_logo.jpg'
             };
             var renderSize = 48;
             var promises = [];
@@ -14148,7 +14193,21 @@ window.initMap = async function() {
                     'thameslink': ['thameslink'],
                     'tpe': ['tpe','transpennine','transpennine-express','transpennine express'],
                     'transport-for-wales': ['transport-for-wales','tfw','transport for wales'],
-                    'west-midlands-railway': ['west-midlands-railway','west-midlands','west midlands railway','west midlands']
+                    'west-midlands-railway': ['west-midlands-railway','west-midlands','west midlands railway','west midlands'],
+                    'london-northwestern-railway': ['london-northwestern-railway','lnr','london-northwestern','london north western'],
+                    'stansted-express': ['stansted-express','stansted express'],
+                    'ni-railways': ['ni-railways','ni railways','northern-ireland-railways'],
+                    'island-line': ['island-line','island line','isle-of-wight'],
+                    'tyne-and-wear-metro': ['tyne-and-wear-metro','tyne & wear metro','tyne and wear metro'],
+                    'glasgow-subway': ['glasgow-subway','glasgow subway'],
+                    'manchester-metrolink': ['manchester-metrolink','manchester metrolink'],
+                    'sheffield-supertram': ['sheffield-supertram','sheffield supertram'],
+                    'nottingham-express-transit': ['nottingham-express-transit','nottingham express transit','net'],
+                    'west-midlands-metro': ['west-midlands-metro','west midlands metro','midland-metro'],
+                    'edinburgh-trams': ['edinburgh-trams','edinburgh trams'],
+                    'blackpool-tramway': ['blackpool-tramway','blackpool tramway','blackpool-trams'],
+                    'ifs-cloud-cable-car': ['ifs-cloud-cable-car','ifs cloud cable car','ifs-cable-car','cable-car'],
+                    'luton-dart': ['luton-dart','luton dart','luton-airport-dart']
                 };
                 
                 var hasOperator = false;
@@ -14337,7 +14396,11 @@ window.initMap = async function() {
                     'eurostar','first-rail','grand-central','gwr','greater-anglia','gtr',
                     'gatwick-express','great-northern','southern','thameslink','heathrow-express',
                     'hull-trains','lner','lumo','merseyrail','northern','scotrail','southeastern',
-                    'southwestern-railway','tpe','transport-for-wales','west-midlands-railway'
+                    'southwestern-railway','tpe','transport-for-wales','west-midlands-railway',
+                    'london-northwestern-railway','stansted-express','ni-railways','island-line',
+                    'tyne-and-wear-metro','glasgow-subway','manchester-metrolink','sheffield-supertram',
+                    'nottingham-express-transit','west-midlands-metro','edinburgh-trams',
+                    'blackpool-tramway','ifs-cloud-cable-car','luton-dart'
                 ];
                 for (var i = 0; i < arr.length; i++) {
                     var st = arr[i];
@@ -14472,7 +14535,21 @@ window.initMap = async function() {
                     'southwestern-railway': '#003A70',
                     tpe: '#0072CE',
                     'transport-for-wales': '#E7204E',
-                    'west-midlands-railway': '#004B87'
+                    'west-midlands-railway': '#004B87',
+                    'london-northwestern-railway': '#004F30',
+                    'stansted-express': '#005288',
+                    'ni-railways': '#0062A5',
+                    'island-line': '#0099FF',
+                    'tyne-and-wear-metro': '#FFCC00',
+                    'glasgow-subway': '#FF6600',
+                    'manchester-metrolink': '#FFCC00',
+                    'sheffield-supertram': '#0055A5',
+                    'nottingham-express-transit': '#007C32',
+                    'west-midlands-metro': '#0072C6',
+                    'edinburgh-trams': '#7C2542',
+                    'blackpool-tramway': '#522D80',
+                    'ifs-cloud-cable-car': '#593282',
+                    'luton-dart': '#532D6D'
                 };
 
                 var showHistorical = !document.getElementById('historical-toggle') || document.getElementById('historical-toggle').checked;
@@ -14486,7 +14563,13 @@ window.initMap = async function() {
                         'overground','elizabeth','dlr','tramlink','emirates-airline','national-rail',
                         'avanti','c2c','caledonian-sleeper','chiltern','crosscountry','east-midlands',
                         'eurostar','first-rail','grand-central','gwr','greater-anglia','gtr',
-                        'gatwick-express','great-northern','southern','thameslink','heathrow-express'
+                        'gatwick-express','great-northern','southern','thameslink','heathrow-express',
+                        'hull-trains','lner','lumo','merseyrail','northern-trains','scotrail','southeastern',
+                        'southwestern-railway','tpe','transport-for-wales','west-midlands-railway',
+                        'london-northwestern-railway','stansted-express','ni-railways','island-line',
+                        'tyne-and-wear-metro','glasgow-subway','manchester-metrolink','sheffield-supertram',
+                        'nottingham-express-transit','west-midlands-metro','edinburgh-trams',
+                        'blackpool-tramway','ifs-cloud-cable-car','luton-dart'
                     ];
                     var arr = this.stations;
                     for (var i = 0; i < arr.length; i++) {
@@ -16023,6 +16106,21 @@ window.__consoleDupCount = 0;
                 "tpe",
                 "transport-for-wales",
                 "west-midlands-railway",
+                "london-northwestern-railway",
+                "lnr",
+                "stansted-express",
+                "ni-railways",
+                "island-line",
+                "tyne-and-wear-metro",
+                "glasgow-subway",
+                "manchester-metrolink",
+                "sheffield-supertram",
+                "nottingham-express-transit",
+                "west-midlands-metro",
+                "edinburgh-trams",
+                "blackpool-tramway",
+                "ifs-cloud-cable-car",
+                "luton-dart",
             ];
 
             let mut svg_map = std::collections::HashMap::new();
