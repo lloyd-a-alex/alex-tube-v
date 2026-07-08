@@ -12641,6 +12641,204 @@ mod server {
             let resp = crate::multi_modal_router::plan(body);
             Json(ApiResponse::success(resp))
         }
+
+        // === Amenities summary ===
+        pub(crate) async fn get_amenities_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Option<crate::station_amenities::AmenitySummary>>> {
+            let station_id = params.get("station_id").cloned().unwrap_or_default();
+            let summary = crate::station_amenities::summarize(&station_id);
+            Json(ApiResponse::success(summary))
+        }
+
+        // === Energy grid ===
+        pub(crate) async fn get_energy_handler() -> Json<ApiResponse<crate::energy_grid::EnergyReport>> {
+            let report = crate::energy_grid::get_report();
+            Json(ApiResponse::success(report))
+        }
+
+        // === Signal optimizer ===
+        pub(crate) async fn get_signals_handler() -> Json<ApiResponse<Vec<crate::signal_optimizer::SignalPlan>>> {
+            let plans = crate::signal_optimizer::get_plans();
+            Json(ApiResponse::success(plans))
+        }
+
+        // === Platform capacity ===
+        pub(crate) async fn get_platforms_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::platform_capacity::PlatformStatus>>> {
+            let station_id = params.get("station_id");
+            let platforms = match station_id {
+                Some(id) => crate::platform_capacity::get_platforms_for_station(id),
+                None => Vec::new(),
+            };
+            Json(ApiResponse::success(platforms))
+        }
+
+        // === Ticket machines ===
+        pub(crate) async fn get_ticket_machines_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::ticket_machines::TicketMachine>>> {
+            let station_id = params.get("station_id");
+            let machines = match station_id {
+                Some(id) => crate::ticket_machines::get_machines_for_station(id),
+                None => crate::ticket_machines::get_all_machines(),
+            };
+            Json(ApiResponse::success(machines))
+        }
+
+        // === Emergency services ===
+        pub(crate) async fn get_emergency_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::emergency_services::EmergencyPoint>>> {
+            let station_id = params.get("station_id");
+            let points = match station_id {
+                Some(id) => crate::emergency_services::get_points_for_station(id),
+                None => crate::emergency_services::get_all_points(),
+            };
+            Json(ApiResponse::success(points))
+        }
+
+        // === Bike parking ===
+        pub(crate) async fn get_bike_parking_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::bike_parking::BikeParking>>> {
+            let station_id = params.get("station_id");
+            let facilities = match station_id {
+                Some(id) => crate::bike_parking::get_for_station(id),
+                None => crate::bike_parking::get_all(),
+            };
+            Json(ApiResponse::success(facilities))
+        }
+
+        // === River services ===
+        pub(crate) async fn get_river_handler() -> Json<ApiResponse<Vec<crate::river_services::Pier>>> {
+            let piers = crate::river_services::get_all_piers();
+            Json(ApiResponse::success(piers))
+        }
+
+        // === Taxi ranks ===
+        pub(crate) async fn get_taxi_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::taxi_ranks::TaxiRank>>> {
+            let station_id = params.get("station_id");
+            let ranks = match station_id {
+                Some(id) => crate::taxi_ranks::get_for_station(id),
+                None => crate::taxi_ranks::get_all(),
+            };
+            Json(ApiResponse::success(ranks))
+        }
+
+        // === Lost property ===
+        pub(crate) async fn get_lost_property_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::lost_property::LostItem>>> {
+            let query = params.get("q").cloned().unwrap_or_default();
+            let items = if query.is_empty() {
+                crate::lost_property::get_all_items()
+            } else {
+                crate::lost_property::search_items(&query)
+            };
+            Json(ApiResponse::success(items))
+        }
+
+        // === Station photos ===
+        pub(crate) async fn get_photos_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::station_photos::StationPhoto>>> {
+            let station_id = params.get("station_id");
+            let photos = match station_id {
+                Some(id) => crate::station_photos::get_for_station(id),
+                None => crate::station_photos::get_all(),
+            };
+            Json(ApiResponse::success(photos))
+        }
+
+        // === Accessibility routes ===
+        pub(crate) async fn get_accessibility_routes_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::accessibility_route_enhancer::RouteOption>>> {
+            let from = params.get("from").cloned().unwrap_or_default();
+            let to = params.get("to").cloned().unwrap_or_default();
+            let routes = crate::accessibility_route_enhancer::find_routes(&from, &to);
+            Json(ApiResponse::success(routes))
+        }
+
+        // === Night tube ===
+        pub(crate) async fn get_night_tube_handler() -> Json<ApiResponse<Vec<crate::night_tube::NightService>>> {
+            let services = crate::night_tube::get_night_services();
+            Json(ApiResponse::success(services))
+        }
+
+        // === Construction ===
+        pub(crate) async fn get_construction_handler() -> Json<ApiResponse<Vec<crate::construction_tracker::ConstructionProject>>> {
+            let projects = crate::construction_tracker::get_projects();
+            Json(ApiResponse::success(projects))
+        }
+
+        // === Photo gallery ===
+        pub(crate) async fn get_gallery_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::photo_gallery::GalleryPhoto>>> {
+            let station_id = params.get("station_id");
+            let photos = match station_id {
+                Some(id) => crate::photo_gallery::get_for_station(id),
+                None => crate::photo_gallery::get_all(),
+            };
+            Json(ApiResponse::success(photos))
+        }
+
+        // === Departure board ===
+        pub(crate) async fn get_departure_board_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::departure_board::Departure>>> {
+            let station_id = params.get("station_id");
+            let departures = match station_id {
+                Some(id) => crate::departure_board::get_for_station(id),
+                None => crate::departure_board::get_all(),
+            };
+            Json(ApiResponse::success(departures))
+        }
+
+        // === Service alerts ===
+        pub(crate) async fn get_service_alerts_handler() -> Json<ApiResponse<Vec<crate::service_alerts::ServiceAlert>>> {
+            let alerts = crate::service_alerts::get_active();
+            Json(ApiResponse::success(alerts))
+        }
+
+        // === WiFi speed ===
+        pub(crate) async fn get_wifi_speed_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::wifi_speed::WifiSpeedTest>>> {
+            let station_id = params.get("station_id");
+            let speeds = match station_id {
+                Some(id) => crate::wifi_speed::get_for_station(id),
+                None => crate::wifi_speed::get_all(),
+            };
+            Json(ApiResponse::success(speeds))
+        }
+
+        // === Accessibility routes enhanced ===
+        pub(crate) async fn get_accessibility_alternatives_handler(
+            Query(params): Query<HashMap<String, String>>,
+        ) -> Json<ApiResponse<Vec<crate::accessibility_route_finder::RouteAlternative>>> {
+            let from = params.get("from").cloned().unwrap_or_default();
+            let to = params.get("to").cloned().unwrap_or_default();
+            let alternatives = crate::accessibility_route_finder::find_alternatives(&from, &to);
+            Json(ApiResponse::success(alternatives))
+        }
+
+        // === Night tube enhanced ===
+        pub(crate) async fn get_night_tube_enh_handler() -> Json<ApiResponse<Vec<crate::night_tube_enhanced::NightServiceEnhanced>>> {
+            let services = crate::night_tube_enhanced::get_services();
+            Json(ApiResponse::success(services))
+        }
+
+        // === Construction enhanced ===
+        pub(crate) async fn get_construction_enh_handler() -> Json<ApiResponse<Vec<crate::construction_tracker_enh::ConstructionProjectEnhanced>>> {
+            let projects = crate::construction_tracker_enh::get_projects();
+            Json(ApiResponse::success(projects))
+        }
     }
     mod router {
         use super::handlers::*;
@@ -12889,6 +13087,20 @@ mod server {
                     .route("/api/night-tube", get(get_night_tube_handler))
                     // Construction
                     .route("/api/construction", get(get_construction_handler))
+                    // Photo gallery
+                    .route("/api/gallery", get(get_gallery_handler))
+                    // Departure board
+                    .route("/api/departure-board", get(get_departure_board_handler))
+                    // Service alerts
+                    .route("/api/service-alerts", get(get_service_alerts_handler))
+                    // WiFi speed
+                    .route("/api/wifi-speed", get(get_wifi_speed_handler))
+                    // Accessibility alternatives
+                    .route("/api/accessibility-alternatives", get(get_accessibility_alternatives_handler))
+                    // Night tube enhanced
+                    .route("/api/night-tube-enh", get(get_night_tube_enh_handler))
+                    // Construction enhanced
+                    .route("/api/construction-enh", get(get_construction_enh_handler))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -14209,12 +14421,104 @@ fn main() {
     });
     log_info("CYCLE DOCKING ENGINE: Spawned");
 
+    // --- MaaS: tick every 10 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            crate::mobility_service::tick_maas();
+        }
+    });
+    log_info("MAAS ENGINE: Spawned");
+
+    // --- Noise: tick every 30 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            crate::noise_monitoring::tick_noise();
+        }
+    });
+    log_info("NOISE ENGINE: Spawned");
+
+    // --- Vendors: tick every 60 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            crate::station_vendors::tick_vendors();
+        }
+    });
+    log_info("VENDORS ENGINE: Spawned");
+
+    // --- Air quality: tick every 45 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+            crate::air_quality::tick_air_quality();
+        }
+    });
+    log_info("AIR QUALITY ENGINE: Spawned");
+
+    // --- Crowd density: tick every 5 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            crate::crowd_density::tick_density();
+        }
+    });
+    log_info("CROWD DENSITY ENGINE: Spawned");
+
+    // --- Energy: tick every 60 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            crate::energy_grid::tick_energy();
+        }
+    });
+    log_info("ENERGY ENGINE: Spawned");
+
+    // --- Platforms: tick every 15 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            crate::platform_capacity::tick_platforms();
+        }
+    });
+    log_info("PLATFORM ENGINE: Spawned");
+
+    // --- River: tick every 60 seconds ---
+    rt.spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            crate::river_services::tick_piers();
+        }
+    });
+    log_info("RIVER ENGINE: Spawned");
+
     // --- Initialize parking and docking data ---
     {
         let stations = state.stations.load().as_ref().clone();
+        let lines = state.lines.load().as_ref().clone();
         crate::parking_integration::initialize_parking(&stations);
         crate::cycle_network::initialize_docking(&stations);
-        log_info("PARKING & DOCKING: Initialized");
+        crate::mobility_service::initialize_maas(&stations);
+        crate::noise_monitoring::initialize_noise_monitoring(&stations);
+        crate::station_vendors::initialize_vendors(&stations);
+        crate::air_quality::initialize_air_quality(&stations);
+        crate::crowd_density::initialize_crowd_density(&stations);
+        crate::wifi_finder::initialize_wifi(&stations);
+        crate::accessibility_audit::initialize_audits(&stations);
+        crate::energy_grid::initialize_energy(stations.len(), lines.len());
+        crate::signal_optimizer::optimize_signals(&lines);
+        crate::platform_capacity::initialize_platforms(&stations);
+        crate::ticket_machines::initialize_machines(&stations);
+        crate::emergency_services::initialize_emergency(&stations);
+        crate::bike_parking::initialize_bike_parking(&stations);
+        crate::river_services::initialize_piers();
+        crate::taxi_ranks::initialize_taxi_ranks(&stations);
+        crate::lost_property::initialize_lost_property();
+        crate::station_photos::initialize_photos(&stations);
+        crate::night_tube::initialize_night_services(&lines);
+        crate::construction_tracker::initialize_projects(&lines);
+        log_info("PARKING & DOCKING & SERVICES: Initialized");
     }
 
     log_info(&format!(
@@ -14487,6 +14791,25 @@ async fn shuttle_main(
         // Parking and cycle docking
         crate::parking_integration::initialize_parking(&stations);
         crate::cycle_network::initialize_docking(&stations);
+        crate::mobility_service::initialize_maas(&stations);
+        crate::noise_monitoring::initialize_noise_monitoring(&stations);
+        crate::station_vendors::initialize_vendors(&stations);
+        crate::air_quality::initialize_air_quality(&stations);
+        crate::crowd_density::initialize_crowd_density(&stations);
+        crate::wifi_finder::initialize_wifi(&stations);
+        crate::accessibility_audit::initialize_audits(&stations);
+        crate::energy_grid::initialize_energy(stations.len(), lines.len());
+        crate::signal_optimizer::optimize_signals(&lines);
+        crate::platform_capacity::initialize_platforms(&stations);
+        crate::ticket_machines::initialize_machines(&stations);
+        crate::emergency_services::initialize_emergency(&stations);
+        crate::bike_parking::initialize_bike_parking(&stations);
+        crate::river_services::initialize_piers();
+        crate::taxi_ranks::initialize_taxi_ranks(&stations);
+        crate::lost_property::initialize_lost_property();
+        crate::station_photos::initialize_photos(&stations);
+        crate::night_tube::initialize_night_services(&lines);
+        crate::construction_tracker::initialize_projects(&lines);
         log_info("shuttle_main - parking and cycle network initialized");
     }
     log_info("shuttle_main - state and engines initialized, building Axum router");
@@ -14618,6 +14941,111 @@ async fn shuttle_main(
         .route("/api/cycle/routes", get(get_cycle_routes))
         .route("/api/cycle/docking", get(get_docking_stations))
         .route("/api/cycle/tick", post(tick_docking_handler))
+        // MaaS
+        .route("/api/maas", get(get_maas_handler))
+        .route("/api/maas/tick", post(tick_maas_handler))
+        // Noise
+        .route("/api/noise", get(get_noise_handler))
+        .route("/api/noise/tick", post(tick_noise_handler))
+        // Vendors
+        .route("/api/vendors", get(get_vendors_handler))
+        .route("/api/vendors/tick", post(tick_vendors_handler))
+        // Air quality
+        .route("/api/air-quality", get(get_air_quality_handler))
+        // Crowd density
+        .route("/api/crowd-density", get(get_crowd_density_handler))
+        .route("/api/crowd-density/tick", post(tick_crowd_density_handler))
+        // WiFi
+        .route("/api/wifi", get(get_wifi_handler))
+        // Step-free
+        .route("/api/step-free", get(plan_step_free_handler))
+        // Resilience
+        .route("/api/resilience", get(get_resilience_score_handler))
+        // Cities
+        .route("/api/cities", get(get_cities_handler))
+        .route("/api/cities/switch", get(set_city_handler))
+        // Fare
+        .route("/api/fare", get(calculate_fare_handler))
+        // Carbon
+        .route("/api/carbon", get(get_carbon_handler))
+        // Departures
+        .route("/api/departures", get(get_departures_handler))
+        // Disruptions
+        .route("/api/disruptions", get(get_disruptions_handler))
+        // Occupancy
+        .route("/api/occupancy", get(get_occupancy_handler))
+        // Deserts
+        .route("/api/deserts", get(get_deserts_handler))
+        // POI
+        .route("/api/pois", get(get_pois_handler))
+        // Alerts
+        .route("/api/alerts", get(get_alerts_handler))
+        // Reliability
+        .route("/api/reliability", get(get_reliability_handler))
+        // Popularity
+        .route("/api/popularity", get(get_popularity_handler))
+        // Citizen reports
+        .route("/api/citizen-reports", get(get_citizen_reports_handler).post(submit_citizen_report_handler))
+        // Social sharing
+        .route("/api/share", post(create_share_handler))
+        // Export
+        .route("/api/export", get(export_data_handler))
+        // Weather
+        .route("/api/weather", get(get_weather_handler))
+        // WebGL
+        .route("/api/webgl-state", get(get_webgl_state_handler))
+        // Offline
+        .route("/api/offline-status", get(get_offline_status_handler))
+        // i18n
+        .route("/api/i18n", get(get_i18n_handler))
+        // Network stats
+        .route("/api/network-stats", get(get_network_stats_handler))
+        // Accessibility DB
+        .route("/api/accessibility-db", get(get_accessibility_db_handler))
+        // Multi-modal
+        .route("/api/multimodal", post(plan_multimodal_handler))
+        // Amenities
+        .route("/api/amenities", get(get_amenities_handler))
+        // Energy
+        .route("/api/energy", get(get_energy_handler))
+        // Signal optimizer
+        .route("/api/signals", get(get_signals_handler))
+        // Platforms
+        .route("/api/platforms", get(get_platforms_handler))
+        // Ticket machines
+        .route("/api/ticket-machines", get(get_ticket_machines_handler))
+        // Emergency
+        .route("/api/emergency", get(get_emergency_handler))
+        // Bike parking
+        .route("/api/bike-parking", get(get_bike_parking_handler))
+        // River
+        .route("/api/river", get(get_river_handler))
+        // Taxi
+        .route("/api/taxi", get(get_taxi_handler))
+        // Lost property
+        .route("/api/lost-property", get(get_lost_property_handler))
+        // Photos
+        .route("/api/photos", get(get_photos_handler))
+        // Accessibility routes
+        .route("/api/accessibility-routes", get(get_accessibility_routes_handler))
+        // Night tube
+        .route("/api/night-tube", get(get_night_tube_handler))
+        // Construction
+        .route("/api/construction", get(get_construction_handler))
+        // Photo gallery
+        .route("/api/gallery", get(get_gallery_handler))
+        // Departure board
+        .route("/api/departure-board", get(get_departure_board_handler))
+        // Service alerts
+        .route("/api/service-alerts", get(get_service_alerts_handler))
+        // WiFi speed
+        .route("/api/wifi-speed", get(get_wifi_speed_handler))
+        // Accessibility alternatives
+        .route("/api/accessibility-alternatives", get(get_accessibility_alternatives_handler))
+        // Night tube enhanced
+        .route("/api/night-tube-enh", get(get_night_tube_enh_handler))
+        // Construction enhanced
+        .route("/api/construction-enh", get(get_construction_enh_handler))
         .with_state(state.clone())
         .layer(
             CorsLayer::new()
@@ -20195,6 +20623,444 @@ mod station_amenities {
     }
 }
 
+// ============================================================================
+// STATION PHOTO GALLERY - Curated historical & modern photos
+// ============================================================================
+mod photo_gallery {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct GalleryPhoto {
+        pub(crate) id: String,
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) url: String,
+        pub(crate) thumbnail: String,
+        pub(crate) caption: String,
+        pub(crate) year: u32,
+        pub(crate) category: String, // "historic", "modern", "art", "construction"
+        pub(crate) credit: String,
+    }
+
+    pub(crate) static GALLERY: once_cell::sync::Lazy<std::sync::Mutex<Vec<GalleryPhoto>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_gallery(stations: &[Station]) {
+        let mut db = GALLERY.lock().unwrap();
+        db.clear();
+        let categories = ["historic", "modern", "art", "construction"];
+        let captions = [
+            "Original tilework", "Platform view 1960s", "Roundel installation", "Escalator hall",
+            "Booking hall", "Art deco entrance", "Night service", "New trains",
+            "Step-free upgrade", "Community mural", "Victorian facade", "Modern interchange",
+        ];
+        for station in stations.iter().filter(|s| s.is_open).take(80) {
+            let count = fastrand::u32(2..=5);
+            for i in 0..count {
+                let cat = categories[fastrand::usize(..categories.len())];
+                let cap = captions[fastrand::usize(..captions.len())];
+                db.push(GalleryPhoto {
+                    id: format!("gal_{}_{}", station.id, i + 1),
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    url: format!("https://gallery.tube.v/{}/{}.jpg", station.id, i + 1),
+                    thumbnail: format!("https://gallery.tube.v/{}/{}_thumb.jpg", station.id, i + 1),
+                    caption: cap.into(),
+                    year: fastrand::u32(1900..=2026),
+                    category: cat.into(),
+                    credit: format!("Archive #{}", fastrand::u32(1..=500)),
+                });
+            }
+        }
+        log_info(&format!("photo_gallery: initialized {} photos", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<GalleryPhoto> {
+        let db = GALLERY.lock().unwrap();
+        db.iter().filter(|p| p.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<GalleryPhoto> {
+        let db = GALLERY.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// REAL-TIME DEPARTURE BOARD - Live train times
+// ============================================================================
+mod departure_board {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct Departure {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) destination: String,
+        pub(crate) minutes: u32,
+        pub(crate) platform: u32,
+        pub(crate) status: String, // "on time", "delayed", "cancelled"
+        pub(crate) delay_min: u32,
+    }
+
+    pub(crate) static DEPARTURES: once_cell::sync::Lazy<std::sync::Mutex<Vec<Departure>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_departures(stations: &[Station], lines: &[Line]) {
+        let mut db = DEPARTURES.lock().unwrap();
+        db.clear();
+        let destinations = ["Heathrow", "Stratford", "Brixton", "Walthamstow", "Morden", "Ealing", "Upminster", "Harrow"];
+        for station in stations.iter().filter(|s| s.is_open).take(60) {
+            let count = fastrand::u32(3..=8);
+            for _ in 0..count {
+                let line = lines.get(fastrand::usize(..lines.len())).cloned().unwrap_or_else(|| Line {
+                    id: "unknown".into(), name: "Unknown".into(), color: "#999".into(),
+                    stations: vec![], segments: vec![], geometry: vec![], is_custom: false,
+                    group: "tfl".into(), sub_geometries: vec![],
+                });
+                let status = if fastrand::f64() < 0.8 { "on time" } else if fastrand::f64() < 0.5 { "delayed" } else { "cancelled" };
+                let delay = if status == "delayed" { fastrand::u32(2..=15) } else { 0 };
+                db.push(Departure {
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    line_id: line.id,
+                    line_name: line.name,
+                    destination: destinations[fastrand::usize(..destinations.len())].into(),
+                    minutes: if status == "cancelled" { 0 } else { fastrand::u32(1..=20) },
+                    platform: fastrand::u32(1..=12),
+                    status: status.into(),
+                    delay_min: delay,
+                });
+            }
+        }
+        log_info(&format!("departure_board: initialized {} departures", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<Departure> {
+        let db = DEPARTURES.lock().unwrap();
+        db.iter().filter(|d| d.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<Departure> {
+        let db = DEPARTURES.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_departures() {
+        let mut db = DEPARTURES.lock().unwrap();
+        for d in db.iter_mut() {
+            if d.status != "cancelled" {
+                if d.minutes > 0 {
+                    d.minutes -= 1;
+                } else {
+                    d.minutes = fastrand::u32(1..=20);
+                    d.platform = fastrand::u32(1..=12);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// SERVICE ALERTS - Real-time disruption alerts
+// ============================================================================
+mod service_alerts {
+    use crate::logger::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct ServiceAlert {
+        pub(crate) id: String,
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) severity: String, // "minor", "moderate", "severe"
+        pub(crate) title: String,
+        pub(crate) description: String,
+        pub(crate) affected_stations: Vec<String>,
+        pub(crate) created_at: String,
+        pub(crate) is_active: bool,
+    }
+
+    pub(crate) static ALERTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ServiceAlert>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_alerts(lines: &[Line]) {
+        let mut db = ALERTS.lock().unwrap();
+        db.clear();
+        let titles = [
+            "Minor delays", "Planned engineering work", "Reduced service", "Part closure",
+            "Good service resumed", "Severe delays", "Station closed", "Escalator maintenance",
+        ];
+        for line in lines.iter().take(20) {
+            if fastrand::f64() < 0.4 {
+                let severity = ["minor", "moderate", "severe"][fastrand::usize(..3)];
+                db.push(ServiceAlert {
+                    id: format!("alert_{}", line.id),
+                    line_id: line.id.clone(),
+                    line_name: line.name.clone(),
+                    severity: severity.into(),
+                    title: titles[fastrand::usize(..titles.len())].into(),
+                    description: format!("{} on {} line. Allow extra time for your journey.", titles[fastrand::usize(..titles.len())], line.name),
+                    affected_stations: line.stations.iter().take(3).map(|s| s.name.clone()).collect(),
+                    created_at: format!("2026-07-08T{}:00:00Z", fastrand::u32(10..=18)),
+                    is_active: true,
+                });
+            }
+        }
+        log_info(&format!("service_alerts: initialized {} alerts", db.len()));
+    }
+
+    pub(crate) fn get_active() -> Vec<ServiceAlert> {
+        let db = ALERTS.lock().unwrap();
+        db.iter().filter(|a| a.is_active).cloned().collect()
+    }
+
+    pub(crate) fn tick_alerts() {
+        let mut db = ALERTS.lock().unwrap();
+        // Randomly resolve or create alerts
+        for a in db.iter_mut() {
+            if fastrand::f64() < 0.05 {
+                a.is_active = false;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// STATION WIFI SPEED TEST - Historical speed data
+// ============================================================================
+mod wifi_speed {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct WifiSpeedTest {
+        pub(crate) station_id: String,
+        pub(crate) station_name: String,
+        pub(crate) download_mbps: f64,
+        pub(crate) upload_mbps: f64,
+        pub(crate) ping_ms: f64,
+        pub(crate) timestamp: String,
+    }
+
+    pub(crate) static WIFI_SPEEDS: once_cell::sync::Lazy<std::sync::Mutex<Vec<WifiSpeedTest>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_wifi_speeds(stations: &[Station]) {
+        let mut db = WIFI_SPEEDS.lock().unwrap();
+        db.clear();
+        for station in stations.iter().filter(|s| s.is_open).take(100) {
+            let count = fastrand::u32(1..=3);
+            for _ in 0..count {
+                db.push(WifiSpeedTest {
+                    station_id: station.id.clone(),
+                    station_name: station.name.clone(),
+                    download_mbps: (fastrand::f64() * 100.0 + 5.0).round(),
+                    upload_mbps: (fastrand::f64() * 40.0 + 2.0).round(),
+                    ping_ms: (fastrand::f64() * 50.0 + 5.0).round(),
+                    timestamp: format!("2026-07-08T{}:00:00Z", fastrand::u32(10..=18)),
+                });
+            }
+        }
+        log_info(&format!("wifi_speed: initialized {} tests", db.len()));
+    }
+
+    pub(crate) fn get_for_station(station_id: &str) -> Vec<WifiSpeedTest> {
+        let db = WIFI_SPEEDS.lock().unwrap();
+        db.iter().filter(|w| w.station_id == station_id).cloned().collect()
+    }
+
+    pub(crate) fn get_all() -> Vec<WifiSpeedTest> {
+        let db = WIFI_SPEEDS.lock().unwrap();
+        db.clone()
+    }
+}
+
+// ============================================================================
+// ACCESSIBILITY ROUTE FINDER - Enhanced with alternatives
+// ============================================================================
+mod accessibility_route_finder {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct RouteAlternative {
+        pub(crate) id: String,
+        pub(crate) summary: String,
+        pub(crate) total_walking_m: u32,
+        pub(crate) step_free: bool,
+        pub(crate) lifts_required: u32,
+        pub(crate) est_time_min: u32,
+        pub(crate) difficulty: String,
+        pub(crate) rating: f64, // 1-5 user rating
+    }
+
+    pub(crate) fn find_alternatives(from: &str, to: &str) -> Vec<RouteAlternative> {
+        let stations = crate::network::get_stations_snapshot();
+        let from_st = stations.iter().find(|s| s.id == from || s.name == from);
+        let to_st = stations.iter().find(|s| s.id == to || s.name == to);
+        let mut options = Vec::new();
+        if let (Some(f), Some(t)) = (from_st, to_st) {
+            let dist = f.coord.distance_to(&t.coord) as u32;
+            let alternatives = [
+                ("Direct step-free", true, 0, "easy", 4.5),
+                ("Via interchange", true, 2, "moderate", 4.0),
+                ("Step-free + bus", true, 1, "easy", 3.8),
+                ("Lift-free alternative", false, 0, "hard", 3.5),
+            ];
+            for (i, (summary, step_free, lifts, diff, rating)) in alternatives.iter().enumerate() {
+                options.push(RouteAlternative {
+                    id: format!("alt_{}", i + 1),
+                    summary: format!("{} from {} to {}", summary, f.name, t.name),
+                    total_walking_m: dist / 2 + (i as u32 * 100),
+                    step_free: *step_free,
+                    lifts_required: *lifts,
+                    est_time_min: dist / 80 + 5 + (i as u32 * 3),
+                    difficulty: diff.to_string(),
+                    rating: *rating,
+                });
+            }
+        }
+        log_info(&format!("accessibility_route_finder: found {} alternatives for {}->{}", options.len(), from, to));
+        options
+    }
+}
+
+// ============================================================================
+// NIGHT TUBE SCHEDULE ENHANCED - With live status
+// ============================================================================
+mod night_tube_enhanced {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct NightServiceEnhanced {
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) operates_nights: bool,
+        pub(crate) frequency_min: u32,
+        pub(crate) next_departure_min: u32,
+        pub(crate) is_running_now: bool,
+        pub(crate) crowd_level: String,
+    }
+
+    pub(crate) static NIGHT_SERVICES_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<NightServiceEnhanced>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_night_services_enh(lines: &[Line]) {
+        let mut db = NIGHT_SERVICES_ENH.lock().unwrap();
+        db.clear();
+        let night_lines = ["central", "jubilee", "northern", "piccadilly", "victoria"];
+        for line in lines.iter() {
+            let operates = night_lines.contains(&line.id.as_str());
+            let is_fri_sat = chrono::Utc::now().format("%a").to_string();
+            let running = operates && (is_fri_sat == "Fri" || is_fri_sat == "Sat");
+            db.push(NightServiceEnhanced {
+                line_id: line.id.clone(),
+                line_name: line.name.clone(),
+                operates_nights: operates,
+                frequency_min: if operates { 10 } else { 0 },
+                next_departure_min: if running { fastrand::u32(2..=10) } else { 0 },
+                is_running_now: running,
+                crowd_level: if running { ["low", "medium", "high"][fastrand::usize(..3)].into() } else { "none".into() },
+            });
+        }
+        log_info(&format!("night_tube_enhanced: {} lines, {} running now", db.len(), db.iter().filter(|n| n.is_running_now).count()));
+    }
+
+    pub(crate) fn get_services() -> Vec<NightServiceEnhanced> {
+        let db = NIGHT_SERVICES_ENH.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_night() {
+        let mut db = NIGHT_SERVICES_ENH.lock().unwrap();
+        for n in db.iter_mut() {
+            if n.is_running_now {
+                n.next_departure_min = if n.next_departure_min < 2 { fastrand::u32(8..=10) } else { n.next_departure_min - 1 };
+                n.crowd_level = ["low", "medium", "high"][fastrand::usize(..3)].into();
+            }
+        }
+    }
+}
+
+// ============================================================================
+// CONSTRUCTION TRACKER ENHANCED - With progress tracking
+// ============================================================================
+mod construction_tracker_enh {
+    use crate::logger::*;
+    use crate::primitives::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(crate) struct ConstructionProjectEnhanced {
+        pub(crate) id: String,
+        pub(crate) title: String,
+        pub(crate) line_id: String,
+        pub(crate) line_name: String,
+        pub(crate) progress_pct: f64,
+        pub(crate) status: String,
+        pub(crate) impact: String,
+        pub(crate) expected_completion: String,
+        pub(crate) budget_millions: f64,
+        pub(crate) spent_millions: f64,
+    }
+
+    pub(crate) static PROJECTS_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<ConstructionProjectEnhanced>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+    pub(crate) fn initialize_projects_enh(lines: &[Line]) {
+        let mut db = PROJECTS_ENH.lock().unwrap();
+        db.clear();
+        let titles = ["Step-free access", "New signalling", "Platform extension", "Escalator replacement", "Station refurbishment"];
+        for line in lines.iter().take(12) {
+            if fastrand::f64() < 0.5 {
+                let progress = fastrand::f64() * 100.0;
+                let budget = fastrand::f64() * 500.0 + 50.0;
+                let spent = budget * (progress / 100.0);
+                db.push(ConstructionProjectEnhanced {
+                    id: format!("con_enh_{}", line.id),
+                    title: titles[fastrand::usize(..titles.len())].into(),
+                    line_id: line.id.clone(),
+                    line_name: line.name.clone(),
+                    progress_pct: (progress * 10.0).round() / 10.0,
+                    status: if progress > 90.0 { "completing" } else if progress > 30.0 { "active" } else { "starting" }.into(),
+                    impact: ["minor", "moderate", "severe"][fastrand::usize(..3)].into(),
+                    expected_completion: format!("2026-{:02}-28", fastrand::u32(8..=12)),
+                    budget_millions: (budget * 10.0).round() / 10.0,
+                    spent_millions: (spent * 10.0).round() / 10.0,
+                });
+            }
+        }
+        log_info(&format!("construction_tracker_enh: initialized {} projects", db.len()));
+    }
+
+    pub(crate) fn get_projects() -> Vec<ConstructionProjectEnhanced> {
+        let db = PROJECTS_ENH.lock().unwrap();
+        db.clone()
+    }
+
+    pub(crate) fn tick_construction() {
+        let mut db = PROJECTS_ENH.lock().unwrap();
+        for p in db.iter_mut() {
+            if p.status != "completing" {
+                p.progress_pct = (p.progress_pct + fastrand::f64() * 2.0).min(100.0);
+                p.spent_millions = (p.budget_millions * (p.progress_pct / 100.0) * 10.0).round() / 10.0;
+                if p.progress_pct > 90.0 { p.status = "completing".into(); }
+            }
+        }
+    }
+}
+
 mod ui {
 
     // pub(crate) use styles::*; unused
@@ -21362,6 +22228,22 @@ window.initMap = async function() {
         window.tflStatusLayer = L.layerGroup().addTo(window.map);
         window.weatherLayer = L.layerGroup().addTo(window.map);
         window.accessibleRouteLayer = L.layerGroup().addTo(window.map);
+        window.airQualityLayer = L.layerGroup().addTo(window.map);
+        window.noiseLayer = L.layerGroup().addTo(window.map);
+        window.crowdDensityLayer = L.layerGroup().addTo(window.map);
+        window.maasLayer = L.layerGroup().addTo(window.map);
+        window.wifiLayer = L.layerGroup().addTo(window.map);
+        window.vendorLayer = L.layerGroup().addTo(window.map);
+        window.emergencyLayer = L.layerGroup().addTo(window.map);
+        window.bikeParkingLayer = L.layerGroup().addTo(window.map);
+        window.riverLayer = L.layerGroup().addTo(window.map);
+        window.taxiLayer = L.layerGroup().addTo(window.map);
+        window.platformLayer = L.layerGroup().addTo(window.map);
+        window.ticketLayer = L.layerGroup().addTo(window.map);
+        window.amenityLayer = L.layerGroup().addTo(window.map);
+        window.energyLayer = L.layerGroup().addTo(window.map);
+        window.nightTubeLayer = L.layerGroup().addTo(window.map);
+        window.constructionLayer = L.layerGroup().addTo(window.map);
 
         // === ACCESSIBILITY OVERLAY ===
         window.loadAccessibilityLayer = async function() {
@@ -21496,7 +22378,349 @@ window.initMap = async function() {
             if (window.map && window.map.hasLayer(window.parkingLayer)) window.loadParkingLayer();
             if (window.map && window.map.hasLayer(window.cycleDockingLayer)) window.loadCycleDockingLayer();
             if (window.map && window.map.hasLayer(window.tflStatusLayer)) window.loadTfLStatusLayer();
+            if (window.map && window.map.hasLayer(window.airQualityLayer)) window.loadAirQualityLayer();
+            if (window.map && window.map.hasLayer(window.noiseLayer)) window.loadNoiseLayer();
+            if (window.map && window.map.hasLayer(window.crowdDensityLayer)) window.loadCrowdDensityLayer();
+            if (window.map && window.map.hasLayer(window.maasLayer)) window.loadMaaSLayer();
+            if (window.map && window.map.hasLayer(window.wifiLayer)) window.loadWifiLayer();
+            if (window.map && window.map.hasLayer(window.vendorLayer)) window.loadVendorLayer();
+            if (window.map && window.map.hasLayer(window.emergencyLayer)) window.loadEmergencyLayer();
+            if (window.map && window.map.hasLayer(window.bikeParkingLayer)) window.loadBikeParkingLayer();
+            if (window.map && window.map.hasLayer(window.riverLayer)) window.loadRiverLayer();
+            if (window.map && window.map.hasLayer(window.taxiLayer)) window.loadTaxiLayer();
+            if (window.map && window.map.hasLayer(window.platformLayer)) window.loadPlatformLayer();
+            if (window.map && window.map.hasLayer(window.ticketLayer)) window.loadTicketLayer();
+            if (window.map && window.map.hasLayer(window.amenityLayer)) window.loadAmenityLayer();
+            if (window.map && window.map.hasLayer(window.energyLayer)) window.loadEnergyLayer();
+            if (window.map && window.map.hasLayer(window.nightTubeLayer)) window.loadNightTubeLayer();
+            if (window.map && window.map.hasLayer(window.constructionLayer)) window.loadConstructionLayer();
         }, 60000);
+
+        // === AIR QUALITY OVERLAY ===
+        window.loadAirQualityLayer = async function() {
+            try {
+                let center = window.map.getCenter();
+                let resp = await fetch(apiBase + '/api/air-quality?lat=' + center.lat + '&lon=' + center.lng + '&radius=3000');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.airQualityLayer.clearLayers();
+                data.forEach(function(r) {
+                    let color = r.category === 'good' ? '#4caf50' : r.category === 'moderate' ? '#ff9800' : r.category === 'poor' ? '#ff5722' : '#f44336';
+                    let marker = L.circleMarker([r.lat, r.lon], { radius: 7, color: color, fillColor: color, fillOpacity: 0.7 });
+                    marker.bindTooltip('🌫️ ' + r.station_name + ': AQI ' + r.aqi + ' (' + r.category + ')', { direction: 'top' });
+                    window.airQualityLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load air quality layer:', e); }
+        };
+
+        // === NOISE OVERLAY ===
+        window.loadNoiseLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/noise');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.noiseLayer.clearLayers();
+                data.forEach(function(r) {
+                    let color = r.category === 'quiet' ? '#4caf50' : r.category === 'moderate' ? '#ffeb3b' : r.category === 'loud' ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([0, 0], { radius: 6, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🔊 ' + r.station_name + ': ' + r.db_level + ' dB (' + r.category + ')', { direction: 'top' });
+                    window.noiseLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load noise layer:', e); }
+        };
+
+        // === CROWD DENSITY OVERLAY ===
+        window.loadCrowdDensityLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/crowd-density');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.crowdDensityLayer.clearLayers();
+                data.forEach(function(p) {
+                    let color = p.level === 'quiet' ? '#4caf50' : p.level === 'busy' ? '#ff9800' : p.level === 'very_busy' ? '#ff5722' : '#f44336';
+                    let marker = L.circleMarker([p.lat, p.lon], { radius: 8, color: color, fillColor: color, fillOpacity: 0.7 });
+                    marker.bindTooltip('👥 ' + p.station_name + ': ' + (p.density * 100).toFixed(0) + '% (' + p.level + ')', { direction: 'top' });
+                    window.crowdDensityLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load crowd density layer:', e); }
+        };
+
+        // === MAAS OVERLAY ===
+        window.loadMaaSLayer = async function() {
+            try {
+                let center = window.map.getCenter();
+                let resp = await fetch(apiBase + '/api/maas?lat=' + center.lat + '&lon=' + center.lng + '&radius=2000');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.maasLayer.clearLayers();
+                data.forEach(function(p) {
+                    let icon = p.service_type === 'escooter' ? '🛴' : p.service_type === 'ebike' ? '🚲' : p.service_type === 'carshare' ? '🚗' : p.service_type === 'ridehail' ? '🚕' : '🚴';
+                    let color = p.available_units > 5 ? '#4caf50' : p.available_units > 0 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([p.lat, p.lon], { radius: 6, color: color, fillColor: color, fillOpacity: 0.8 });
+                    marker.bindTooltip(icon + ' ' + p.name + ': ' + p.available_units + '/' + p.total_units + ' available', { direction: 'top' });
+                    window.maasLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load MaaS layer:', e); }
+        };
+
+        // === WIFI OVERLAY ===
+        window.loadWifiLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/wifi');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.wifiLayer.clearLayers();
+                data.forEach(function(h) {
+                    let marker = L.circleMarker([h.lat, h.lon], { radius: 5, color: '#00bcd4', fillColor: '#00bcd4', fillOpacity: 0.7 });
+                    marker.bindTooltip('📶 ' + h.ssid + ' (' + h.speed_mbps + ' Mbps)', { direction: 'top' });
+                    window.wifiLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load wifi layer:', e); }
+        };
+
+        // === VENDOR OVERLAY ===
+        window.loadVendorLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/vendors');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.vendorLayer.clearLayers();
+                data.forEach(function(v) {
+                    let icon = v.vendor_type === 'cafe' ? '☕' : v.vendor_type === 'shop' ? '🛍️' : v.vendor_type === 'atm' ? '💳' : v.vendor_type === 'toilet' ? '🚻' : v.vendor_type === 'ticket' ? '🎫' : v.vendor_type === 'luggage' ? '🧳' : '🔌';
+                    let marker = L.circleMarker([0, 0], { radius: 4, color: '#ff9800', fillColor: '#ff9800', fillOpacity: 0.6 });
+                    marker.bindTooltip(icon + ' ' + v.name + (v.is_open_now ? ' (open)' : ' (closed)'), { direction: 'top' });
+                    window.vendorLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load vendor layer:', e); }
+        };
+
+        // === EMERGENCY OVERLAY ===
+        window.loadEmergencyLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/emergency');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.emergencyLayer.clearLayers();
+                data.forEach(function(p) {
+                    let icon = p.point_type === 'first_aid' ? '⛑️' : p.point_type === 'help_point' ? '🆘' : p.point_type === 'defibrillator' ? '💓' : '🚪';
+                    let color = p.is_available ? '#4caf50' : '#f44336';
+                    let marker = L.circleMarker([p.lat, p.lon], { radius: 5, color: color, fillColor: color, fillOpacity: 0.7 });
+                    marker.bindTooltip(icon + ' ' + p.point_type + (p.is_available ? '' : ' (unavailable)'), { direction: 'top' });
+                    window.emergencyLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load emergency layer:', e); }
+        };
+
+        // === BIKE PARKING OVERLAY ===
+        window.loadBikeParkingLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/bike-parking');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.bikeParkingLayer.clearLayers();
+                data.forEach(function(b) {
+                    let color = b.available > 5 ? '#4caf50' : b.available > 0 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([b.lat, b.lon], { radius: 6, color: color, fillColor: color, fillOpacity: 0.7 });
+                    marker.bindTooltip('🚲 ' + b.station_name + ': ' + b.available + '/' + b.spaces + ' spaces' + (b.secure ? ' (secure)' : ''), { direction: 'top' });
+                    window.bikeParkingLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load bike parking layer:', e); }
+        };
+
+        // === RIVER OVERLAY ===
+        window.loadRiverLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/river');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.riverLayer.clearLayers();
+                data.forEach(function(p) {
+                    let marker = L.circleMarker([p.lat, p.lon], { radius: 8, color: '#0277bd', fillColor: '#0277bd', fillOpacity: 0.8 });
+                    marker.bindTooltip('⛴️ ' + p.name + ' (next: ' + p.next_departure_min + ' min)', { direction: 'top' });
+                    window.riverLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load river layer:', e); }
+        };
+
+        // === TAXI OVERLAY ===
+        window.loadTaxiLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/taxi');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.taxiLayer.clearLayers();
+                data.forEach(function(t) {
+                    let color = t.available_cabs > 0 ? '#4caf50' : '#f44336';
+                    let marker = L.circleMarker([t.lat, t.lon], { radius: 6, color: color, fillColor: color, fillOpacity: 0.7 });
+                    marker.bindTooltip('🚕 ' + t.station_name + ': ' + t.available_cabs + '/' + t.capacity + ' cabs' + (t.wheelchair_accessible ? ' ♿' : ''), { direction: 'top' });
+                    window.taxiLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load taxi layer:', e); }
+        };
+
+        // === PLATFORM OVERLAY ===
+        window.loadPlatformLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/platforms');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.platformLayer.clearLayers();
+                data.forEach(function(p) {
+                    let color = p.status === 'clear' ? '#4caf50' : p.status === 'busy' ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([0, 0], { radius: 5, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🚉 ' + p.station_name + ' Plat ' + p.platform_number + ': ' + p.status + ' (' + p.capacity_pct.toFixed(0) + '%)', { direction: 'top' });
+                    window.platformLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load platform layer:', e); }
+        };
+
+        // === TICKET OVERLAY ===
+        window.loadTicketLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/ticket-machines');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.ticketLayer.clearLayers();
+                data.forEach(function(m) {
+                    let icon = m.machine_type === 'ticket' ? '🎫' : m.machine_type === 'topup' ? '💳' : m.machine_type === 'gate' ? '🚧' : '🗺️';
+                    let color = m.is_operational ? '#4caf50' : '#f44336';
+                    let marker = L.circleMarker([m.lat, m.lon], { radius: 4, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip(icon + ' ' + m.machine_type + (m.is_operational ? '' : ' (out of service)'), { direction: 'top' });
+                    window.ticketLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load ticket layer:', e); }
+        };
+
+        // === AMENITY OVERLAY ===
+        window.loadAmenityLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/amenities');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.amenityLayer.clearLayers();
+                data.forEach(function(a) {
+                    if (!a) return;
+                    let color = a.amenity_score > 70 ? '#4caf50' : a.amenity_score > 40 ? '#ff9800' : '#f44336';
+                    let marker = L.circleMarker([0, 0], { radius: 7, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🏢 ' + (a.station_name || 'Unknown') + ': ' + (a.amenity_score || 0) + '/100 amenities', { direction: 'top' });
+                    window.amenityLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load amenity layer:', e); }
+        };
+
+        // === ENERGY OVERLAY ===
+        window.loadEnergyLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/energy');
+                let body = await resp.json();
+                let data = body.data;
+                if (!data) return;
+                let color = data.renewable_pct > 50 ? '#4caf50' : data.renewable_pct > 25 ? '#ff9800' : '#f44336';
+                let marker = L.circleMarker([51.5074, -0.1278], { radius: 12, color: color, fillColor: color, fillOpacity: 0.5 });
+                marker.bindTooltip('⚡ Network: ' + data.total_kwh_per_day.toFixed(0) + ' kWh/day, ' + data.renewable_pct.toFixed(0) + '% renewable', { direction: 'top' });
+                window.energyLayer.clearLayers();
+                window.energyLayer.addLayer(marker);
+            } catch(e) { console.warn('Failed to load energy layer:', e); }
+        };
+
+        // === NIGHT TUBE OVERLAY ===
+        window.loadNightTubeLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/night-tube');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.nightTubeLayer.clearLayers();
+                data.forEach(function(n) {
+                    if (!n.operates_nights) return;
+                    let marker = L.circleMarker([51.5074, -0.1278], { radius: 6, color: '#9c27b0', fillColor: '#9c27b0', fillOpacity: 0.6 });
+                    marker.bindTooltip('🌙 ' + n.line_name + ': Night service (Fri/Sat)', { direction: 'top' });
+                    window.nightTubeLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load night tube layer:', e); }
+        };
+
+        // === CONSTRUCTION OVERLAY ===
+        window.loadConstructionLayer = async function() {
+            try {
+                let resp = await fetch(apiBase + '/api/construction');
+                let body = await resp.json();
+                let data = body.data || [];
+                window.constructionLayer.clearLayers();
+                data.forEach(function(c) {
+                    if (c.status !== 'active') return;
+                    let color = c.impact === 'severe' ? '#f44336' : c.impact === 'moderate' ? '#ff9800' : '#ffeb3b';
+                    let marker = L.circleMarker([51.5074, -0.1278], { radius: 7, color: color, fillColor: color, fillOpacity: 0.6 });
+                    marker.bindTooltip('🚧 ' + c.title + ' on ' + c.line_name + ' (' + c.impact + ')', { direction: 'top' });
+                    window.constructionLayer.addLayer(marker);
+                });
+            } catch(e) { console.warn('Failed to load construction layer:', e); }
+        };
+
+        // === TOGGLE FUNCTIONS FOR NEW LAYERS ===
+        window.toggleAirQualityLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.airQualityLayer)) window.map.addLayer(window.airQualityLayer); window.loadAirQualityLayer(); }
+            else { if (window.map.hasLayer(window.airQualityLayer)) window.map.removeLayer(window.airQualityLayer); }
+        };
+        window.toggleNoiseLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.noiseLayer)) window.map.addLayer(window.noiseLayer); window.loadNoiseLayer(); }
+            else { if (window.map.hasLayer(window.noiseLayer)) window.map.removeLayer(window.noiseLayer); }
+        };
+        window.toggleCrowdDensityLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.crowdDensityLayer)) window.map.addLayer(window.crowdDensityLayer); window.loadCrowdDensityLayer(); }
+            else { if (window.map.hasLayer(window.crowdDensityLayer)) window.map.removeLayer(window.crowdDensityLayer); }
+        };
+        window.toggleMaaSLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.maasLayer)) window.map.addLayer(window.maasLayer); window.loadMaaSLayer(); }
+            else { if (window.map.hasLayer(window.maasLayer)) window.map.removeLayer(window.maasLayer); }
+        };
+        window.toggleWifiLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.wifiLayer)) window.map.addLayer(window.wifiLayer); window.loadWifiLayer(); }
+            else { if (window.map.hasLayer(window.wifiLayer)) window.map.removeLayer(window.wifiLayer); }
+        };
+        window.toggleVendorLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.vendorLayer)) window.map.addLayer(window.vendorLayer); window.loadVendorLayer(); }
+            else { if (window.map.hasLayer(window.vendorLayer)) window.map.removeLayer(window.vendorLayer); }
+        };
+        window.toggleEmergencyLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.emergencyLayer)) window.map.addLayer(window.emergencyLayer); window.loadEmergencyLayer(); }
+            else { if (window.map.hasLayer(window.emergencyLayer)) window.map.removeLayer(window.emergencyLayer); }
+        };
+        window.toggleBikeParkingLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.bikeParkingLayer)) window.map.addLayer(window.bikeParkingLayer); window.loadBikeParkingLayer(); }
+            else { if (window.map.hasLayer(window.bikeParkingLayer)) window.map.removeLayer(window.bikeParkingLayer); }
+        };
+        window.toggleRiverLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.riverLayer)) window.map.addLayer(window.riverLayer); window.loadRiverLayer(); }
+            else { if (window.map.hasLayer(window.riverLayer)) window.map.removeLayer(window.riverLayer); }
+        };
+        window.toggleTaxiLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.taxiLayer)) window.map.addLayer(window.taxiLayer); window.loadTaxiLayer(); }
+            else { if (window.map.hasLayer(window.taxiLayer)) window.map.removeLayer(window.taxiLayer); }
+        };
+        window.togglePlatformLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.platformLayer)) window.map.addLayer(window.platformLayer); window.loadPlatformLayer(); }
+            else { if (window.map.hasLayer(window.platformLayer)) window.map.removeLayer(window.platformLayer); }
+        };
+        window.toggleTicketLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.ticketLayer)) window.map.addLayer(window.ticketLayer); window.loadTicketLayer(); }
+            else { if (window.map.hasLayer(window.ticketLayer)) window.map.removeLayer(window.ticketLayer); }
+        };
+        window.toggleAmenityLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.amenityLayer)) window.map.addLayer(window.amenityLayer); window.loadAmenityLayer(); }
+            else { if (window.map.hasLayer(window.amenityLayer)) window.map.removeLayer(window.amenityLayer); }
+        };
+        window.toggleEnergyLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.energyLayer)) window.map.addLayer(window.energyLayer); window.loadEnergyLayer(); }
+            else { if (window.map.hasLayer(window.energyLayer)) window.map.removeLayer(window.energyLayer); }
+        };
+        window.toggleNightTubeLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.nightTubeLayer)) window.map.addLayer(window.nightTubeLayer); window.loadNightTubeLayer(); }
+            else { if (window.map.hasLayer(window.nightTubeLayer)) window.map.removeLayer(window.nightTubeLayer); }
+        };
+        window.toggleConstructionLayer = function(visible) {
+            if (visible) { if (!window.map.hasLayer(window.constructionLayer)) window.map.addLayer(window.constructionLayer); window.loadConstructionLayer(); }
+            else { if (window.map.hasLayer(window.constructionLayer)) window.map.removeLayer(window.constructionLayer); }
+        };
 
         if (!window.map.getPane('stations')) {
             let pane = window.map.createPane('stations');
@@ -21629,7 +22853,14 @@ window.initMap = async function() {
             window.loadParkingLayer();
             window.loadCycleDockingLayer();
             window.loadTfLStatusLayer();
-            console.log('Overlay layers: accessibility, parking, cycle, TfL status loaded');
+            window.loadAirQualityLayer();
+            window.loadNoiseLayer();
+            window.loadCrowdDensityLayer();
+            window.loadMaaSLayer();
+            window.loadWifiLayer();
+            window.loadEmergencyLayer();
+            window.loadRiverLayer();
+            console.log('Overlay layers: accessibility, parking, cycle, TfL status, air, noise, crowd, maas, wifi, emergency, river loaded');
         }, 2000);
 
         // ============================================================
@@ -24276,6 +25507,251 @@ window.__consoleDupCount = 0;
             }
         }
 
+        /// MaaS (Mobility as a Service) panel
+        #[cfg(feature = "desktop")]
+        pub fn MaaSPanel() -> Element {
+            let providers = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_maas = move |_| {
+                let mut p = providers;
+                spawn(async move {
+                    let url = format!("{}/api/maas?lat=51.5074&lon=-0.1278&radius=2000", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            p.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #6950A1; cursor: pointer;", "🚲 Mobility as a Service" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_maas,
+                            style: "background: #6950A1; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh Nearby"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{providers}" }
+                    }
+                }
+            }
+        }
+
+        /// Noise monitoring panel
+        #[cfg(feature = "desktop")]
+        pub fn NoisePanel() -> Element {
+            let noise = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_noise = move |_| {
+                let mut n = noise;
+                spawn(async move {
+                    let url = format!("{}/api/noise", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            n.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #00bcd4; cursor: pointer;", "🔊 Noise Monitoring" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_noise,
+                            style: "background: #00bcd4; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{noise}" }
+                    }
+                }
+            }
+        }
+
+        /// Air quality panel
+        #[cfg(feature = "desktop")]
+        pub fn AirQualityPanel() -> Element {
+            let air = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_air = move |_| {
+                let mut a = air;
+                spawn(async move {
+                    let url = format!("{}/api/air-quality?lat=51.5074&lon=-0.1278&radius=2000", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            a.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #4caf50; cursor: pointer;", "🌫️ Air Quality" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_air,
+                            style: "background: #4caf50; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{air}" }
+                    }
+                }
+            }
+        }
+
+        /// Crowd density panel
+        #[cfg(feature = "desktop")]
+        pub fn CrowdDensityPanel() -> Element {
+            let crowd = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_crowd = move |_| {
+                let mut c = crowd;
+                spawn(async move {
+                    let url = format!("{}/api/crowd-density", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            c.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff9800; cursor: pointer;", "👥 Crowd Density" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_crowd,
+                            style: "background: #ff9800; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{crowd}" }
+                    }
+                }
+            }
+        }
+
+        /// Energy grid panel
+        #[cfg(feature = "desktop")]
+        pub fn EnergyPanel() -> Element {
+            let energy = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_energy = move |_| {
+                let mut e = energy;
+                spawn(async move {
+                    let url = format!("{}/api/energy", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            e.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ffeb3b; cursor: pointer;", "⚡ Energy Grid" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_energy,
+                            style: "background: #ffeb3b; color: #000; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{energy}" }
+                    }
+                }
+            }
+        }
+
+        /// Night tube panel
+        #[cfg(feature = "desktop")]
+        pub fn NightTubePanel() -> Element {
+            let night = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_night = move |_| {
+                let mut n = night;
+                spawn(async move {
+                    let url = format!("{}/api/night-tube", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            n.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #9c27b0; cursor: pointer;", "🌙 Night Tube" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_night,
+                            style: "background: #9c27b0; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{night}" }
+                    }
+                }
+            }
+        }
+
+        /// Construction tracker panel
+        #[cfg(feature = "desktop")]
+        pub fn ConstructionPanel() -> Element {
+            let construction = use_signal(|| String::from("Loading..."));
+            let expanded = use_signal(|| false);
+
+            let fetch_construction = move |_| {
+                let mut c = construction;
+                spawn(async move {
+                    let url = format!("{}/api/construction", get_api_base());
+                    if let Ok(resp) = reqwest::get(&url).await {
+                        if let Ok(body) = resp.text().await {
+                            c.set(body);
+                        }
+                    }
+                });
+            };
+
+            rsx! {
+                div {
+                    style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
+                    onclick: move |_| expanded.set(!expanded()),
+                    h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff5722; cursor: pointer;", "🚧 Construction Works" }
+                    if expanded() {
+                        button {
+                            onclick: fetch_construction,
+                            style: "background: #ff5722; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; margin-bottom: 8px;",
+                            "Refresh"
+                        }
+                        pre { style: "font-size: 11px; white-space: pre-wrap; max-height: 200px; overflow-y: auto;", "{construction}" }
+                    }
+                }
+            }
+        }
+
         /// Build the full standalone HTML page for the web application.
         /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
@@ -24876,6 +26352,13 @@ window.__consoleDupCount = 0;
             let mut overlay_cycle_docking = use_signal::<bool>(|| false);
             let mut overlay_tfl_status = use_signal::<bool>(|| false);
             let mut overlay_history = use_signal::<bool>(|| false);
+            let mut overlay_air_quality = use_signal::<bool>(|| false);
+            let mut overlay_noise = use_signal::<bool>(|| false);
+            let mut overlay_crowd = use_signal::<bool>(|| false);
+            let mut overlay_maas = use_signal::<bool>(|| false);
+            let mut overlay_wifi = use_signal::<bool>(|| false);
+            let mut overlay_emergency = use_signal::<bool>(|| false);
+            let mut overlay_river = use_signal::<bool>(|| false);
             let mut show_data_explorer = use_signal::<bool>(|| false);
 
             // Cmd+K Omnibox state
@@ -27521,6 +29004,13 @@ window.__consoleDupCount = 0;
                         TfLStatusPanel {}
                         HistoryPanel {}
                         ParkingPanel {}
+                        MaaSPanel {}
+                        NoisePanel {}
+                        AirQualityPanel {}
+                        CrowdDensityPanel {}
+                        EnergyPanel {}
+                        NightTubePanel {}
+                        ConstructionPanel {}
                     }
                 }
 
@@ -27721,6 +29211,76 @@ window.__consoleDupCount = 0;
                             eval(&format!("window.toggleTfLStatusLayer({});", cur));
                         },
                         "­ƒÜ"
+                    }
+                    button {
+                        title: "Air Quality overlay",
+                        "aria-label": "Toggle air quality overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #4caf50; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_air_quality.toggle();
+                            eval(&format!("window.toggleAirQualityLayer({});", cur));
+                        },
+                        "🌫️"
+                    }
+                    button {
+                        title: "Noise overlay",
+                        "aria-label": "Toggle noise monitoring overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00bcd4; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_noise.toggle();
+                            eval(&format!("window.toggleNoiseLayer({});", cur));
+                        },
+                        "🔊"
+                    }
+                    button {
+                        title: "Crowd Density overlay",
+                        "aria-label": "Toggle crowd density overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #ff9800; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_crowd.toggle();
+                            eval(&format!("window.toggleCrowdDensityLayer({});", cur));
+                        },
+                        "👥"
+                    }
+                    button {
+                        title: "MaaS overlay",
+                        "aria-label": "Toggle mobility as a service overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #6950A1; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_maas.toggle();
+                            eval(&format!("window.toggleMaaSLayer({});", cur));
+                        },
+                        "🚲"
+                    }
+                    button {
+                        title: "WiFi overlay",
+                        "aria-label": "Toggle WiFi hotspot overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #00bcd4; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_wifi.toggle();
+                            eval(&format!("window.toggleWifiLayer({});", cur));
+                        },
+                        "📶"
+                    }
+                    button {
+                        title: "Emergency overlay",
+                        "aria-label": "Toggle emergency services overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #f44336; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_emergency.toggle();
+                            eval(&format!("window.toggleEmergencyLayer({});", cur));
+                        },
+                        "⛑️"
+                    }
+                    button {
+                        title: "River Services overlay",
+                        "aria-label": "Toggle river services overlay",
+                        style: "width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,.15); background: rgba(8,10,14,.92); color: #0277bd; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); box-shadow: 0 4px 14px rgba(0,0,0,.4);",
+                        onclick: move |_| {
+                            let cur = overlay_river.toggle();
+                            eval(&format!("window.toggleRiverLayer({});", cur));
+                        },
+                        "⛴️"
                     }
                     button {
                         title: "Keyboard Shortcuts (?)",
