@@ -1,7 +1,7 @@
 // Integration tests for the core data-oriented design structures.
 // Since this is a binary crate, we replicate the core algorithms inline.
 
-use std::cmp::Ordering;
+use core::cmp::Ordering;
 use std::collections::BinaryHeap;
 
 // ── TransitNetworkGrid replica ──────────────────────────────────────────────
@@ -19,12 +19,12 @@ impl TransitNetworkGrid {
     fn get_edges(&self, node: u32) -> &[u32] {
         let s = self.edge_offsets[node as usize] as usize;
         let e = self.edge_offsets[node as usize + 1] as usize;
-        &self.edge_targets[s..e]
+        return &self.edge_targets[s..e]
     }
     fn get_edge_weights(&self, node: u32) -> &[f32] {
         let s = self.edge_offsets[node as usize] as usize;
         let e = self.edge_offsets[node as usize + 1] as usize;
-        &self.edge_weights[s..e]
+        return &self.edge_weights[s..e]
     }
 }
 
@@ -35,8 +35,8 @@ fn build_grid(n: usize) -> TransitNetworkGrid {
     let mut targets = Vec::new();
     let mut weights = Vec::new();
     for i in 0..n {
-        cx.push(-0.1 + i as f32 * 0.001);
-        cy.push(51.5 + i as f32 * 0.001);
+        cx.push((i as f32).mul_add(0.001, -0.1));
+        cy.push((i as f32).mul_add(0.001, 51.5));
         offsets.push(targets.len() as u32);
         if i > 0 {
             targets.push((i - 1) as u32);
@@ -48,7 +48,7 @@ fn build_grid(n: usize) -> TransitNetworkGrid {
         }
     }
     offsets.push(targets.len() as u32);
-    TransitNetworkGrid {
+    return TransitNetworkGrid {
         node_count: n,
         coords_x: cx,
         coords_y: cy,
@@ -66,7 +66,7 @@ fn batch_distance_squared(qx: f32, qy: f32, xs: &[f32], ys: &[f32]) -> Vec<f32> 
         .map(|(&x, &y)| {
             let dx = x - qx;
             let dy = y - qy;
-            dx * dx + dy * dy
+            dy.mul_add(dy, dx * dx)
         })
         .collect()
 }
@@ -79,7 +79,7 @@ fn find_stations_within_radius(g: &TransitNetworkGrid, qx: f32, qy: f32, r: f32)
     batch_distance_squared(qx, qy, &g.coords_x, &g.coords_y)
         .iter()
         .enumerate()
-        .filter_map(|(i, &d)| if d <= r2 { Some(i as u32) } else { None })
+        .filter_map(|(i, &d)| (d <= r2).then_some(i as u32))
         .collect()
 }
 
@@ -92,18 +92,18 @@ struct AStarNode {
 }
 impl PartialEq for AStarNode {
     fn eq(&self, o: &Self) -> bool {
-        self.f_cost == o.f_cost
+        return self.f_cost == o.f_cost
     }
 }
 impl Eq for AStarNode {}
 impl PartialOrd for AStarNode {
     fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-        Some(self.cmp(o))
+        return Some(self.cmp(o))
     }
 }
 impl Ord for AStarNode {
     fn cmp(&self, o: &Self) -> Ordering {
-        o.f_cost
+        return o.f_cost
             .partial_cmp(&self.f_cost)
             .unwrap_or(Ordering::Equal)
     }
@@ -118,7 +118,7 @@ struct RouteScratchpad {
 
 impl RouteScratchpad {
     fn new(n: usize) -> Self {
-        Self {
+        return Self {
             heap: BinaryHeap::with_capacity(256),
             g_cost: vec![f32::INFINITY; n],
             came_from: vec![usize::MAX; n],
@@ -142,7 +142,7 @@ impl RouteScratchpad {
         let h = |i: usize| -> f32 {
             let dx = g.coords_x[i] - g.coords_x[goal];
             let dy = g.coords_y[i] - g.coords_y[goal];
-            (dx * dx + dy * dy).sqrt()
+            dx.hypot(dy)
         };
         self.g_cost[start] = 0.0;
         self.heap.push(AStarNode {
@@ -182,7 +182,7 @@ impl RouteScratchpad {
                 }
             }
         }
-        Vec::new()
+        return Vec::new()
     }
 }
 

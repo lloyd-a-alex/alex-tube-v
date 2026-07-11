@@ -1,15 +1,5 @@
-# Native SIMD: compile for the build machine's exact CPU.
-# On AVX2 hardware this emits 8-wide f32 ops; on AVX-512 it widens to 16-wide.
-# This flag is only used for local `cargo build` — CI overrides it via RUSTFLAGS.
-rustflags = ["-C", "target-cpu=native", "link-arg=-fuse-ld=lld"]
-version = "0.0.0"
+[build]
+rustflags = ["-C", "target-cpu=native"]
 
-[profile.dev]
-opt-level = 1
-incremental = true
-codegen-units = 256
-debug = true
-
-# Compile dependencies with opt-level 2 for faster test execution
-[profile.dev.package."*"]
-opt-level = 2
+[target.'cfg(all())']
+rustflags = ["-C", "target-cpu=native"]
