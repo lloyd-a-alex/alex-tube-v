@@ -548,14 +548,14 @@ pub(crate) use primitives::*;
 pub(crate) use routing::*;
 pub(crate) use server::*;
 pub(crate) use spatial::*;
-#[cfg(feature = "desktop")]
-pub(crate) use ui::*;
+
 
 #[cfg(feature = "desktop")]
 fn build_console_window_configuration() -> dioxus::desktop::Config { dioxus::desktop::Config::new() }
 #[cfg(feature = "desktop")]
 fn build_desktop_window_configuration(_api_base: &str) -> dioxus::desktop::Config { dioxus::desktop::Config::new() }
 #[cfg(feature = "desktop")]
+#[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
 fn ConsoleStandaloneApp() -> dioxus::prelude::Element { rsx! { div { "Console" } } }
 #[cfg(feature = "desktop")]
 fn app() -> dioxus::prelude::Element { rsx! { div { "App" } } }
@@ -1519,6 +1519,7 @@ mod primitives {
     use std::f64::consts::PI;
 
     pub(crate) use geo::*;
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) type JourneyLeg = crate::network::JourneyLeg;
 
     pub(crate) mod geo {
@@ -2644,11 +2645,14 @@ mod routing {
         // can be edited without recompiling. The map is loaded once (lazily) from
         // disk at runtime, with a compile-time `include_str!` copy as a fallback so
         // the binary still works if the asset file is missing next to the exe.
+        #[expect(dead_code, reason = "reserved for future use")]
         static ROUNDELS_JSON_EMBEDDED: &str = include_str!("../assets/roundels.json");
 
+        #[expect(dead_code, reason = "reserved for future use")]
         static ROUNDEL_MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> =
             std::sync::OnceLock::new();
 
+        #[expect(dead_code, reason = "reserved for future use")]
         fn load_roundel_map() -> &'static std::collections::HashMap<String, String> {
             ROUNDEL_MAP.get_or_init(|| {
                 let raw = std::fs::read_to_string("assets/roundels.json")
@@ -2673,6 +2677,7 @@ mod routing {
 
         /// Returns the SVG markup for a given line's roundel, loaded from the external
         /// roundel asset map. `None` if the line has no known roundel.
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn roundel_svg_for_line(line_id: &str) -> Option<&'static str> {
             let map = load_roundel_map();
             // Map each public line id to its ROUNDEL_<NAME> key.
@@ -6302,8 +6307,8 @@ mod network {
     use crate::primitives::*;
     use crate::routing::*;
     use chrono::Utc;
-    pub(crate) fn compute_stats() -> String { String::new() }
-    pub(crate) fn get_stations_snapshot() -> String { String::new() }
+    pub(crate) fn compute_stats() -> NetworkStatsResponse { NetworkStatsResponse::default() }
+    pub(crate) fn get_stations_snapshot() -> Vec<Station> { vec![] }
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::cmp::Ordering as CmpOrdering;
@@ -6535,7 +6540,7 @@ mod network {
         pub(crate) match_type: String,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Serialize, Deserialize, Default)]
     pub(crate) struct NetworkStatsResponse {
         pub(crate) total_lines: usize,
         pub(crate) total_stations: usize,
@@ -8968,6 +8973,7 @@ mod server {
     mod handlers {
         use super::state::*;
         use crate::logger::*;
+        use crate::network::JourneyLeg;
         use crate::network::*;
         use crate::primitives::*;
         use crate::routing::*;
@@ -8981,7 +8987,6 @@ mod server {
             response::IntoResponse,
             Json,
         };
-        use axum::http::StatusCode;
         use serde::Deserialize;
         use chrono::Utc;
         use rayon::prelude::*;
@@ -12127,7 +12132,7 @@ mod server {
         // Weather
         // ========================================================================
         pub(crate) async fn get_weather_forecast(
-            State(state): State<AppState>,
+            State(_state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let weather = crate::weather_integration::WEATHER_STATE.lock().unwrap().clone();
             match weather {
@@ -12137,7 +12142,7 @@ mod server {
         }
 
         pub(crate) async fn fetch_weather_handler(
-            State(state): State<AppState>,
+            State(_state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let api_key = std::env::var("OPENWEATHER_API_KEY").unwrap_or_else(|_| "demo".into());
             let forecast = crate::weather_integration::fetch_weather(&api_key, 51.5074, -0.1278).await;
@@ -12257,7 +12262,7 @@ mod server {
             let api_key = std::env::var("TFL_API_KEY").unwrap_or_else(|_| "demo".into());
             match crate::tfl_live_integration::fetch_arrivals(&station_id, &api_key).await {
                 Ok(arrivals) => Json(ApiResponse::success(arrivals)),
-                Err(e) => Json(ApiResponse::error(&format!("TfL error: {}", e))),
+                Err(e) => Json(ApiResponse::error(format!("TfL error: {}", e))),
             }
         }
 
@@ -12526,7 +12531,7 @@ mod server {
         ) -> Json<ApiResponse<Vec<crate::occupancy_engine::OccupancyReading>>> {
             let station_id = params.get("station_id");
             let readings = match station_id {
-                Some(id) => crate::occupancy_engine::get_station_occupancy(id),
+                Some(id) => crate::occupancy_engine::get_station_occupancy(id).into_iter().collect(),
                 None => crate::occupancy_engine::get_all_occupancy(),
             };
             Json(ApiResponse::success(readings))
@@ -14452,7 +14457,7 @@ fn main() {
     log_info("REALTIME ENGINE: Spawned");
 
     // --- Parking Engine: tick every 15 seconds ---
-    let park_state = state.clone();
+    let _park_state = state.clone();
     rt.spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
@@ -14462,7 +14467,7 @@ fn main() {
     log_info("PARKING ENGINE: Spawned");
 
     // --- Cycle Docking: tick every 20 seconds ---
-    let dock_state = state.clone();
+    let _dock_state = state.clone();
     rt.spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
@@ -15189,14 +15194,10 @@ async fn shuttle_main(
 mod multi_modal_router {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::logger::*;
-    use crate::spatial::*;
     pub(crate) type MultiModalRequest = String;
     pub(crate) type MultiModalResponse = String;
     pub(crate) fn plan(_req: MultiModalRequest) -> MultiModalResponse { String::new() }
     use serde::{Deserialize, Serialize};
-    use std::collections::{HashMap, HashSet, BinaryHeap};
-    use std::cmp::Ordering;
 
     /// Travel modes supported by the multi-modal router
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -15285,7 +15286,7 @@ mod multi_modal_router {
         from: Coordinate,
         to: Coordinate,
         stations: &[Station],
-        lines: &[Line],
+        _lines: &[Line],
         preferred_modes: &[TransitMode],
         max_walk_km: f64,
     ) -> Option<MultiModalJourney> {
@@ -15376,7 +15377,7 @@ mod multi_modal_router {
                         }
 
                         legs.push(MultiModalLeg {
-                            mode: mode.clone(),
+                            mode,
                             from_coord: from_st.coord,
                             to_coord: to_st.coord,
                             distance_m: transit_dist_km * 1000.0,
@@ -15433,6 +15434,7 @@ mod multi_modal_router {
     }
 
     /// Compare two multi-modal journeys and return the recommended one.
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn compare_journeys(journeys: &[MultiModalJourney]) -> Vec<(usize, String, f64)> {
         let mut results = Vec::new();
         for (i, j) in journeys.iter().enumerate() {
@@ -15454,14 +15456,11 @@ mod multi_modal_router {
 mod realtime_integration {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::logger::*;
-    use chrono::Timelike;
     pub(crate) type Departure = String;
     pub(crate) fn get_departures(_station_id: &str) -> Vec<Departure> { vec![] }
+    use chrono::Timelike;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
     use chrono::Utc;
 
     /// A real-time vehicle position
@@ -15523,9 +15522,9 @@ mod realtime_integration {
 
                 // Simulate occupancy based on time of day
                 let hour = chrono::Utc::now().hour() as f64;
-                let occupancy = if hour >= 8.0 && hour <= 9.5 {
+                let occupancy = if (8.0..=9.5).contains(&hour) {
                     fastrand::f64() * 0.3 + 0.6 // peak: 60-90%
-                } else if hour >= 17.0 && hour <= 18.5 {
+                } else if (17.0..=18.5).contains(&hour) {
                     fastrand::f64() * 0.3 + 0.5 // evening peak: 50-80%
                 } else {
                     fastrand::f64() * 0.4 + 0.1 // off-peak: 10-50%
@@ -15588,6 +15587,7 @@ mod realtime_integration {
     }
 
     /// OpenTripPlanner integration stub — would send HTTP request to OTP server
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) async fn query_otp(
         from: Coordinate,
         to: Coordinate,
@@ -15613,16 +15613,14 @@ mod realtime_integration {
 mod occupancy_engine {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::logger::*;
-    use chrono::{Datelike, Timelike};
     pub(crate) type OccupancyReading = String;
     pub(crate) fn get_station_occupancy(_id: &str) -> Option<OccupancyReading> { None }
     pub(crate) fn get_all_occupancy() -> Vec<OccupancyReading> { vec![] }
+    use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
     use chrono::Utc;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15653,6 +15651,7 @@ mod occupancy_engine {
         once_cell::sync::Lazy::new(|| Arc::new(ArcSwap::new(Arc::new(OccupancySnapshot::empty()))));
 
     /// Historical occupancy profiles: station_id -> (hour_of_day -> average occupancy)
+    #[expect(dead_code, reason = "reserved for future use")]
     static HISTORICAL_OCCUPANCY: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, Vec<f64>>>> =
         once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
 
@@ -15688,7 +15687,7 @@ mod occupancy_engine {
             let interchange_bonus = if st.is_interchange { 0.3 } else { 0.0 };
             let noise: f64 = fastrand::f64() * 0.2 - 0.1;
             let occ = (base_demand * zone_factor + interchange_bonus + noise).clamp(0.0, 1.0);
-            let platforms = if st.is_interchange { fastrand::u32(2..6) as usize } else { 1.min(2) };
+            let platforms = if st.is_interchange { fastrand::u32(2..6) as usize } else { 1 };
             let per_platform: Vec<f64> = (0..platforms).map(|_| {
                 (occ + fastrand::f64() * 0.15 - 0.075).clamp(0.0, 1.0)
             }).collect();
@@ -15715,6 +15714,7 @@ mod occupancy_engine {
     }
 
     /// Get interpolated occupancy for a station at a given time (for historical playback)
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_historical_occupancy(station_id: &str, hour: f64) -> f64 {
         let hist = HISTORICAL_OCCUPANCY.lock().unwrap();
         if let Some(profile) = hist.get(station_id) {
@@ -15726,6 +15726,7 @@ mod occupancy_engine {
     }
 
     /// Record a real observation (called by API when TfL data arrives)
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn record_observation(station_id: &str, occupancy: f64) {
         let mut hist = HISTORICAL_OCCUPANCY.lock().unwrap();
         let entry = hist.entry(station_id.to_string()).or_insert_with(|| vec![0.3; 24]);
@@ -15744,14 +15745,10 @@ mod occupancy_engine {
 // ============================================================================
 mod disruption_simulator {
     use crate::primitives::*;
-    pub(crate) fn get_active_disruptions() -> String { String::new() }
-    use crate::logger::*;
-    use chrono::Timelike;
-    use crate::spatial::*;
+    pub(crate) fn get_active_disruptions() -> Vec<Disruption> { vec![] }
     use crate::routing::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::{HashMap, HashSet};
-    use std::sync::Arc;
+    use std::collections::HashSet;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct DisruptionSimulationResult {
@@ -15773,7 +15770,7 @@ mod disruption_simulator {
     pub(crate) fn simulate_disruption(
         lines: &[Line],
         stations: &[Station],
-        routing_graph: &RoutingGraph,
+        _routing_graph: &RoutingGraph,
         disrupted_line_id: &str,
         severity: f64,
         iterations: usize,
@@ -15812,7 +15809,7 @@ mod disruption_simulator {
 
             // For each station on the disrupted line, check connected lines
             for st_id in &directly_affected {
-                if let Some(st) = stations.iter().find(|s| &s.id == st_id) {
+                if let Some(_st) = stations.iter().find(|s| &s.id == st_id) {
                     // Find lines through this station (other than the disrupted one)
                     for other_line in lines {
                         if other_line.id == disrupted_line_id { continue; }
@@ -15884,7 +15881,6 @@ mod disruption_simulator {
 // ============================================================================
 mod demand_forecaster {
     use crate::primitives::*;
-    use crate::logger::*;
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -15893,7 +15889,9 @@ mod demand_forecaster {
     /// A single demand observation
     #[derive(Debug, Clone)]
     pub(crate) struct DemandObservation {
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) station_id: String,
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) timestamp_ms: i64,
         pub(crate) passenger_count: f64,
     }
@@ -15989,7 +15987,7 @@ mod demand_forecaster {
                 "falling"
             };
 
-            let r2 = if obs.len() > 2 {
+            let r2: f64 = if obs.len() > 2 {
                 let mean = obs.iter().map(|o| o.passenger_count).sum::<f64>() / obs.len() as f64;
                 let ss_tot: f64 = obs.iter().map(|o| (o.passenger_count - mean).powi(2)).sum();
                 let ss_res: f64 = obs.iter().enumerate().map(|(i, o)| {
@@ -16046,11 +16044,8 @@ mod demand_forecaster {
 // Exposed via /api/metrics endpoint in Prometheus text format.
 // ============================================================================
 mod metrics_collector {
-    use crate::logger::*;
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
 
     /// A single counter metric
     pub(crate) struct Counter {
@@ -16091,6 +16086,7 @@ mod metrics_collector {
                 total: AtomicU64::new(0),
             }
         }
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn observe(&self, value: f64) {
             let mut counts = self.counts.lock().unwrap();
             let idx = self.buckets.iter().position(|b| value <= *b).unwrap_or(self.buckets.len());
@@ -16201,9 +16197,8 @@ mod metrics_collector {
 //   - Walking/Cycling: 0 gCO₂/km
 // ============================================================================
 mod carbon_estimator {
-    use crate::primitives::*;
     pub(crate) type CarbonReport = f64;
-    pub(crate) fn estimate_carbon() -> CarbonReport { 0.0 }
+    pub(crate) fn estimate_carbon(_distance_km: f64, _mode: &str) -> CarbonReport { 0.0 }
     use crate::network::JourneyLeg;
     use serde::{Deserialize, Serialize};
 
@@ -16223,6 +16218,7 @@ mod carbon_estimator {
     const RAIL_G_PER_KM: f64 = 41.0;
     const BUS_G_PER_KM: f64 = 89.0;
     const CAR_G_PER_KM: f64 = 171.0;
+    #[expect(dead_code, reason = "reserved for future use")]
     const BIKE_G_PER_KM: f64 = 0.0;
     const WALK_G_PER_KM: f64 = 0.0;
 
@@ -16273,7 +16269,7 @@ mod carbon_estimator {
 mod i18n {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    pub(crate) fn get_strings() -> String { String::new() }
+    pub(crate) fn get_strings(_lang: &str) -> HashMap<String, String> { HashMap::new() }
 
     /// Supported language codes
     pub(crate) const SUPPORTED_LANGUAGES: &[&str] = &["en", "fr", "de", "es", "zh", "ja", "it", "pt"];
@@ -16340,11 +16336,9 @@ mod i18n {
 // ============================================================================
 mod poi_database {
     use crate::primitives::*;
-    use crate::spatial::*;
     use serde::{Deserialize, Serialize};
     pub(crate) type Poi = String;
     pub(crate) fn get_pois_for_station(_id: &str) -> Vec<Poi> { vec![] }
-    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct PointOfInterest {
@@ -16529,12 +16523,13 @@ mod accessibility_db {
 // Uses a base62-encoded UUID to create shareable /share/<code> endpoints.
 // ============================================================================
 mod social_sharing {
-    use crate::primitives::*;
-    use crate::logger::*;
     use serde::{Deserialize, Serialize};
+    #[derive(Serialize, Deserialize)]
     pub(crate) struct ShareRequest { pub message: String }
+    #[derive(Serialize)]
     pub(crate) struct ShareLink { pub url: String }
     pub(crate) fn create_share(_req: ShareRequest) -> ShareLink { ShareLink { url: String::new() } }
+    use crate::logger::log_info;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -16598,7 +16593,6 @@ mod social_sharing {
 mod data_exporter {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::logger::*;
     use serde::{Deserialize, Serialize};
     pub(crate) fn export(_format: &str) -> String { String::new() }
 
@@ -16648,7 +16642,7 @@ mod data_exporter {
   <graph id="G" edgedefault="undirected">
 "#);
 
-        let station_ids: std::collections::HashMap<&str, &Station> = stations.iter().map(|s| (s.id.as_str(), s)).collect();
+        let _station_ids: std::collections::HashMap<&str, &Station> = stations.iter().map(|s| (s.id.as_str(), s)).collect();
 
         for st in stations {
             xml.push_str(&format!(
@@ -16740,11 +16734,11 @@ mod data_exporter {
 // Allows switching between London, New York, Paris, Tokyo, Berlin, Sydney
 // ============================================================================
 mod city_config {
-    use crate::primitives::*;
-    use crate::logger::*;
+    use crate::logger::{log_error, log_info};
     use serde::{Deserialize, Serialize};
     pub(crate) type CityInfo = String;
     pub(crate) fn get_all_cities() -> Vec<CityInfo> { vec![] }
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn switch_city(_id: &str) {} 
     use std::sync::Mutex;
 
@@ -16842,10 +16836,8 @@ mod city_config {
 // Displayed as markers on the map with moderation queue.
 // ============================================================================
 mod citizen_reports {
-    use crate::primitives::*;
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16919,6 +16911,7 @@ mod citizen_reports {
         }
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn resolve_report(id: &str) -> bool {
         let mut db = REPORTS.lock().unwrap();
         if let Some(report) = db.iter_mut().find(|r| r.id == id) {
@@ -16935,15 +16928,17 @@ mod citizen_reports {
 // Runs a periodic check against disruptions and user preferences.
 // ============================================================================
 mod smart_alerts {
-    use crate::primitives::*;
-    use crate::logger::*;
+    use crate::primitives::Disruption;
     use serde::{Deserialize, Serialize};
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) type SmartAlert = String;
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_active_alerts() -> Vec<SmartAlert> { vec![] }
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) struct AlertPreference {
         pub(crate) user_id: String,
         pub(crate) saved_routes: Vec<(String, String)>, // (from_station, to_station)
@@ -17152,7 +17147,7 @@ mod fare_calculator {
         let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = chrono::Utc::now().weekday().num_days_from_monday();
         if weekday >= 5 { return false; } // weekends are off-peak
-        (hour >= 6.5 && hour <= 9.5) || (hour >= 16.0 && hour <= 19.0)
+        (6.5..=9.5).contains(&hour) || (16.0..=19.0).contains(&hour)
     }
 
     fn peak_fare(zones: &[i32]) -> f64 {
@@ -17214,11 +17209,9 @@ mod fare_calculator {
 // ============================================================================
 mod station_popularity {
     use crate::primitives::*;
-    use crate::spatial::*;
     use serde::{Deserialize, Serialize};
     pub(crate) type PopularityEntry = String;
     pub(crate) fn get_top_stations(_n: usize) -> Vec<PopularityEntry> { vec![] }
-    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct StationPopularity {
@@ -17287,7 +17280,6 @@ mod journey_reliability {
     pub(crate) type ReliabilityStat = String;
     pub(crate) fn get_reliability_for_line(_line_id: &str) -> Vec<ReliabilityStat> { vec![] }
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct JourneyReliability {
@@ -17305,14 +17297,14 @@ mod journey_reliability {
     /// Estimate journey time reliability between two stations
     pub(crate) fn estimate_reliability(
         stations: &[Station],
-        lines: &[Line],
+        _lines: &[Line],
         from_id: &str,
         to_id: &str,
     ) -> JourneyReliability {
         let now = chrono::Utc::now();
         let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
-        let is_peak = weekday < 5 && ((hour >= 7.0 && hour <= 9.5) || (hour >= 16.0 && hour <= 18.5));
+        let is_peak = weekday < 5 && ((7.0..=9.5).contains(&hour) || (16.0..=18.5).contains(&hour));
         let is_late = hour >= 22.0 || hour <= 5.0;
 
         // Base travel time (simulated)
@@ -17368,12 +17360,10 @@ mod cli_interface {
     use crate::config::*;
     use crate::logger::*;
     use crate::routing::*;
-    use crate::spatial::*;
-    use std::collections::HashMap;
     use std::io::{self, Write, BufRead};
 
     pub(crate) fn run_cli_loop(
-        config: &Config,
+        _config: &Config,
         lines: &[Line],
         stations: &[Station],
     ) {
@@ -17441,7 +17431,7 @@ mod cli_interface {
                     println!("Open stations: {}", open_stations);
                     let interchanges = stations.iter().filter(|s| s.is_interchange).count();
                     println!("Interchanges: {}", interchanges);
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("stations ") => {
                     let query = cmd.trim_start_matches("stations ").to_lowercase();
@@ -17505,7 +17495,7 @@ mod cli_interface {
                         if let Some(last) = obs.last() {
                             println!("Current demand: {:.0} passengers", last.passenger_count);
                         }
-                        let st = stations.iter().find(|s| s.id == station_id);
+                        let _st = stations.iter().find(|s| s.id == station_id);
                         let forecasts = crate::demand_forecaster::forecast_all(stations, 30);
                         if let Some(fc) = forecasts.iter().find(|f| f.station_id == station_id) {
                             println!("Predicted 30min: {:.0}", fc.predicted_30min);
@@ -17515,7 +17505,7 @@ mod cli_interface {
                     } else {
                         println!("No forecast data for station '{}'", station_id);
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("carbon ") => {
                     let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -17532,7 +17522,7 @@ mod cli_interface {
                     println!("Off-peak: £{:.2}", fare.off_peak_fare_gbp);
                     println!("Daily cap: £{:.2}", fare.daily_cap_gbp);
                     println!("{}", fare.recommended_touch);
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("occupancy") => {
                     let occ = crate::occupancy_engine::OCCUPANCY.load();
@@ -17543,7 +17533,7 @@ mod cli_interface {
                     if let Some((busiest_line, occ_val)) = occ.line_occupancy.iter().max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)) {
                         println!("Busiest line: {} ({:.0}% occupancy)", busiest_line, occ_val * 100.0);
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("alerts") => {
                     let alerts = crate::smart_alerts::get_unread_alerts();
@@ -17551,7 +17541,7 @@ mod cli_interface {
                     for a in &alerts {
                         println!("  [{}] {}: {} ({})", a.severity, a.title, a.description, a.created_at_ms);
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("city") => {
                     let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -17575,7 +17565,7 @@ mod cli_interface {
                             println!("Current city: {} ({})", c.name, c.country);
                         }
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("lang ") => {
                     let lang = cmd.trim_start_matches("lang ").trim();
@@ -17585,7 +17575,7 @@ mod cli_interface {
                 cmd if cmd.starts_with("metrics") => {
                     println!("\n=== Performance Metrics ===");
                     print!("{}", crate::metrics_collector::render_prometheus());
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("export ") => {
                     let fmt = cmd.trim_start_matches("export ").trim();
@@ -17606,7 +17596,7 @@ mod cli_interface {
                         println!("  {} ({}) — {} stations [{}]", line.name, line.id, line.stations.len(), line.color);
                     }
                     if lines.len() > 40 { println!("  ... and {} more", lines.len() - 40); }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("history") => {
                     let events = crate::historical_archive::get_timeline();
@@ -17619,7 +17609,7 @@ mod cli_interface {
                         );
                     }
                     if events.len() > 20 { println!("  ... and {} more events", events.len() - 20); }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("analytics ") => {
                     let metric = cmd.trim_start_matches("analytics ").trim();
@@ -17645,7 +17635,7 @@ mod cli_interface {
                         println!("  {}: {:.1} min delay [{:.0}% confidence] — {}",
                             pred.line_name, pred.predicted_delay_min, pred.confidence_pct, pred.recommendation);
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("eco ") => {
                     let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -17661,7 +17651,7 @@ mod cli_interface {
                                 println!("  {} — {} → {} ({:.1} km, {:.3} kg CO2)",
                                     leg.mode, leg.from_station, leg.to_station, leg.distance_km, leg.co2_kg);
                             }
-                            println!("");
+                            println!();
                         }
                         None => println!("No eco route found.\n"),
                     }
@@ -17686,7 +17676,7 @@ mod cli_interface {
                                 println!("Warnings:");
                                 for w in &route.warnings { println!("  ⚠️ {}", w); }
                             }
-                            println!("");
+                            println!();
                         }
                         None => println!("No accessible route found.\n"),
                     }
@@ -17703,7 +17693,7 @@ mod cli_interface {
                             if f.is_covered { "🏠" } else { "" },
                             if f.ev_charging { "🔌" } else { "" });
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("cycle ") => {
                     let station_id = cmd.trim_start_matches("cycle ").trim();
@@ -17717,7 +17707,7 @@ mod cli_interface {
                                 println!("  {}: {} bikes / {} ebikes / {} docks [{}]",
                                     d.name, d.available_bikes, d.ebikes_available, d.available_docks, d.status);
                             }
-                            println!("");
+                            println!();
                         }
                         None => println!("Station not found.\n"),
                     }
@@ -17726,20 +17716,20 @@ mod cli_interface {
                     println!("\n=== TfL Live Status ===");
                     let synthetic = crate::tfl_live_integration::synthetic_line_status(lines);
                     for status in &synthetic {
-                        for s in &status.lineStatuses {
-                            let icon = match s.statusSeverityDescription.as_deref() {
+                        for s in &status.line_statuses {
+                            let icon = match s.status_severity_description.as_deref() {
                                 Some("Good Service") => "✅",
                                 Some("Minor Delays") => "⚠️",
                                 Some("Severe Delays") => "🔴",
                                 _ => "❓",
                             };
-                            println!("  {} {}: {}", icon, status.name, s.statusSeverityDescription.as_deref().unwrap_or("unknown"));
+                            println!("  {} {}: {}", icon, status.name, s.status_severity_description.as_deref().unwrap_or("unknown"));
                             if let Some(ref r) = s.reason {
                                 println!("    Reason: {}", r);
                             }
                         }
                     }
-                    println!("");
+                    println!();
                 }
                 cmd if cmd.starts_with("contributions") => {
                     let parts: Vec<&str> = cmd.split_whitespace().collect();
@@ -17767,11 +17757,9 @@ mod cli_interface {
 mod webgl_visualization {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::logger::*;
     pub(crate) type SceneState = String;
     pub(crate) fn get_scene_state() -> SceneState { String::new() }
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct WebGLScene {
@@ -17843,7 +17831,7 @@ mod webgl_visualization {
         let mut nodes = Vec::new();
         let mut edges = Vec::new();
         let mut labels = Vec::new();
-        let station_map: std::collections::HashMap<&str, &Station> = stations.iter().map(|s| (s.id.as_str(), s)).collect();
+        let _station_map: std::collections::HashMap<&str, &Station> = stations.iter().map(|s| (s.id.as_str(), s)).collect();
 
         for st in stations {
             let (x, y, z) = to_webgl(&st.coord);
@@ -17898,9 +17886,8 @@ mod webgl_visualization {
 // Allows the app to function without internet by caching API responses.
 // ============================================================================
 mod offline_mode {
-    use crate::primitives::*;
-    use crate::logger::*;
-    use serde::{Deserialize, Serialize};
+    use crate::logger::log_info;
+    
     pub(crate) type OfflineStatus = String;
     pub(crate) fn get_status() -> OfflineStatus { String::new() }
     use std::collections::HashMap;
@@ -17919,6 +17906,7 @@ mod offline_mode {
     }
 
     /// Cache an API response keyed by URL
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn cache_response(url: &str, body: &str) {
         if *CACHE_ENABLED.lock().unwrap() {
             OFFLINE_CACHE.lock().unwrap().insert(url.to_string(), body.to_string());
@@ -17926,11 +17914,13 @@ mod offline_mode {
     }
 
     /// Retrieve a cached response
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_cached(url: &str) -> Option<String> {
         OFFLINE_CACHE.lock().unwrap().get(url).cloned()
     }
 
     /// Check if a response is in cache
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn is_cached(url: &str) -> bool {
         OFFLINE_CACHE.lock().unwrap().contains_key(url)
     }
@@ -17957,9 +17947,9 @@ mod on_the_fly_drawing {
     use crate::primitives::*;
     use crate::routing::*;
     use crate::logger::*;
-    use crate::spatial::*;
+    
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct DrawingSession {
@@ -18047,7 +18037,7 @@ mod on_the_fly_drawing {
         session_id: &str,
         line_id: &str,
     ) -> Option<Line> {
-        let mut sessions = DRAWING_SESSIONS.lock().unwrap();
+        let sessions = DRAWING_SESSIONS.lock().unwrap();
         let session = sessions.iter().find(|s| s.id == session_id)?;
 
         let stations: Vec<Station> = session.snapped_stations.iter()
@@ -18100,11 +18090,11 @@ mod on_the_fly_drawing {
 // Integrates with OpenWeatherMap and provides weather-based routing advisories.
 // ============================================================================
 mod weather_integration {
-    use crate::primitives::*;
+    
     use crate::logger::*;
     use chrono::Timelike;
     pub(crate) type WeatherSnapshot = String;
-    pub(crate) fn get_weather() -> WeatherSnapshot { String::new() }
+    pub(crate) fn get_weather(_lat: f64, _lon: f64) -> WeatherSnapshot { String::new() }
     use serde::{Deserialize, Serialize};
     use std::sync::Mutex;
 
@@ -18145,7 +18135,7 @@ mod weather_integration {
         once_cell::sync::Lazy::new(|| Mutex::new(None));
 
     /// Fetch weather from OpenWeatherMap (stub — would make HTTP request)
-    pub(crate) async fn fetch_weather(api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
+    pub(crate) async fn fetch_weather(_api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
         // In production, this would call:
         // GET https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&appid={key}&units=metric
         log_info(&format!("weather_integration: fetching weather for ({}, {})", lat, lon));
@@ -18195,10 +18185,10 @@ mod weather_integration {
 // Tracks station openings, line extensions, name changes, and closures.
 // ============================================================================
 mod historical_archive {
-    use crate::primitives::*;
-    use crate::logger::*;
+    
+    
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct HistoricalEvent {
@@ -18239,6 +18229,7 @@ mod historical_archive {
         HISTORY.iter().filter(|e| e.year == year).collect()
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_history_by_type(event_type: &str) -> Vec<&'static HistoricalEvent> {
         HISTORY.iter().filter(|e| e.event_type == event_type).collect()
     }
@@ -18249,6 +18240,7 @@ mod historical_archive {
         events
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn format_timeline_html() -> String {
         let mut html = String::from("<div class='timeline'>");
         for event in get_timeline() {
@@ -18274,8 +18266,8 @@ mod historical_archive {
 mod deep_analytics {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::spatial::*;
-    use chrono::{Datelike, Timelike};
+    
+    
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -18348,7 +18340,7 @@ mod deep_analytics {
                 let mut line_stats: Vec<(String, usize)> = lines.iter().map(|l| {
                     (l.name.clone(), l.stations.len())
                 }).collect();
-                line_stats.sort_by(|a, b| b.1.cmp(&a.1));
+                line_stats.sort_by_key(|a| std::cmp::Reverse(a.1));
                 let breakdown: HashMap<String, serde_json::Value> = line_stats.iter().take(5).map(|(name, count)| {
                     (name.clone(), serde_json::json!({ "stations": count }))
                 }).collect();
@@ -18420,12 +18412,12 @@ mod deep_analytics {
 // expected delay based on line, time of day, weather, and day of week.
 // ============================================================================
 mod ml_predictor {
-    use crate::primitives::*;
+    
     use crate::routing::*;
-    use crate::logger::*;
+    
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct DelayPrediction {
@@ -18439,6 +18431,7 @@ mod ml_predictor {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) struct MLFeatures {
         pub(crate) hour: f64,
         pub(crate) is_weekend: f64,
@@ -18471,7 +18464,7 @@ mod ml_predictor {
         let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
         let is_weekend = if weekday >= 5 { 1.0 } else { 0.0 };
-        let is_peak = if weekday < 5 && ((hour >= 7.0 && hour <= 9.5) || (hour >= 16.0 && hour <= 18.5)) { 1.0 } else { 0.0 };
+        let is_peak = if weekday < 5 && ((7.0..=9.5).contains(&hour) || (16.0..=18.5).contains(&hour)) { 1.0 } else { 0.0 };
         let temp = weather_temp_c.unwrap_or(15.0);
         let precip = weather_precip.unwrap_or(0.0);
         let wind = weather_wind.unwrap_or(5.0);
@@ -18537,9 +18530,9 @@ mod ml_predictor {
 mod scenario_planner {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::spatial::*;
+    
     use serde::{Deserialize, Serialize};
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct ScenarioDefinition {
@@ -18649,8 +18642,8 @@ mod accessibility_route_planner {
     use crate::accessibility_db::{AccessibilityStatus, get_accessibility};
     use crate::routing::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::{HashMap, BinaryHeap};
-    use std::cmp::Ordering;
+    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct AccessibleRoute {
@@ -18784,7 +18777,7 @@ mod accessibility_route_planner {
 // Fetches live disruptions, arrivals, and service data from TfL Unified API.
 // ============================================================================
 mod tfl_live_integration {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
     use chrono::{Datelike, Timelike};
@@ -18796,32 +18789,44 @@ mod tfl_live_integration {
     pub(crate) struct TfLLineStatus {
         pub(crate) id: String,
         pub(crate) name: String,
-        pub(crate) lineStatuses: Vec<TfLStatus>,
+        #[serde(rename = "lineStatuses")]
+        pub(crate) line_statuses: Vec<TfLStatus>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct TfLStatus {
-        pub(crate) statusSeverityDescription: Option<String>,
+        #[serde(rename = "statusSeverityDescription")]
+        pub(crate) status_severity_description: Option<String>,
         pub(crate) reason: Option<String>,
-        pub(crate) validityPeriods: Option<Vec<TfLValidityPeriod>>,
+        #[serde(rename = "validityPeriods")]
+        pub(crate) validity_periods: Option<Vec<TfLValidityPeriod>>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct TfLValidityPeriod {
-        pub(crate) fromDate: Option<String>,
-        pub(crate) toDate: Option<String>,
+        #[serde(rename = "fromDate")]
+        pub(crate) from_date: Option<String>,
+        #[serde(rename = "toDate")]
+        pub(crate) to_date: Option<String>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct TfLArrivalPrediction {
-        pub(crate) stationName: String,
-        pub(crate) lineId: String,
-        pub(crate) lineName: String,
-        pub(crate) platformName: Option<String>,
+        #[serde(rename = "stationName")]
+        pub(crate) station_name: String,
+        #[serde(rename = "lineId")]
+        pub(crate) line_id: String,
+        #[serde(rename = "lineName")]
+        pub(crate) line_name: String,
+        #[serde(rename = "platformName")]
+        pub(crate) platform_name: Option<String>,
         pub(crate) direction: String,
-        pub(crate) expectedArrival: String,
-        pub(crate) timeToStation: i64,
-        pub(crate) currentLocation: Option<String>,
+        #[serde(rename = "expectedArrival")]
+        pub(crate) expected_arrival: String,
+        #[serde(rename = "timeToStation")]
+        pub(crate) time_to_station: i64,
+        #[serde(rename = "currentLocation")]
+        pub(crate) current_location: Option<String>,
         pub(crate) towards: String,
     }
 
@@ -18870,8 +18875,8 @@ mod tfl_live_integration {
     /// Generate synthetic TfL-like status data when API is unavailable
     pub(crate) fn synthetic_line_status(lines: &[Line]) -> Vec<TfLLineStatus> {
         let now = chrono::Utc::now();
-        let hour = now.hour() as f64;
-        let weekday = now.weekday().num_days_from_monday();
+        let _hour = now.hour() as f64;
+        let _weekday = now.weekday().num_days_from_monday();
 
         lines.iter().map(|line| {
             let has_disruption = fastrand::f64() < 0.15; // 15% chance of disruption
@@ -18888,10 +18893,10 @@ mod tfl_live_integration {
             TfLLineStatus {
                 id: line.id.clone(),
                 name: line.name.clone(),
-                lineStatuses: vec![TfLStatus {
-                    statusSeverityDescription: Some(desc.into()),
+                line_statuses: vec![TfLStatus {
+                    status_severity_description: Some(desc.into()),
                     reason,
-                    validityPeriods: None,
+                    validity_periods: None,
                 }],
             }
         }).collect()
@@ -18905,10 +18910,10 @@ mod tfl_live_integration {
 mod eco_routing {
     use crate::primitives::*;
     use crate::routing::*;
-    use crate::network::JourneyLeg;
-    use crate::carbon_estimator::calculate_journey_carbon;
+    
+    
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct EcoRoute {
@@ -18936,6 +18941,7 @@ mod eco_routing {
     const TUBE_CO2_PER_KM: f64 = 0.028;
     const BUS_CO2_PER_KM: f64 = 0.089;
     const RAIL_CO2_PER_KM: f64 = 0.041;
+    #[expect(dead_code, reason = "reserved for future use")]
     const WALK_CO2_PER_KM: f64 = 0.0;
 
     /// Find the most eco-friendly route between two stations
@@ -18974,7 +18980,7 @@ mod eco_routing {
             };
             let co2_kg = dist_km * co2_per_km;
             let is_green = co2_per_km < 0.05;
-            let time_min = dist_km / 32.0 * 60.0; // 32 km/h average
+            let _time_min = dist_km / 32.0 * 60.0; // 32 km/h average
             let eco_score_val = (1.0 - co2_kg / (dist_km * CAR_CO2_PER_KM).max(0.001)) * 100.0;
 
             if eco_score_val < best_score {
@@ -19035,10 +19041,10 @@ mod eco_routing {
 // upload photos, and validate each other's contributions.
 // ============================================================================
 mod crowd_sourcing {
-    use crate::primitives::*;
+    
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19057,6 +19063,7 @@ mod crowd_sourcing {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) struct ValidationBadge {
         pub(crate) user: String,
         pub(crate) badge_type: String, // "mapper", "validator", "photographer", "expert"
@@ -19140,7 +19147,7 @@ mod parking_integration {
     use crate::primitives::*;
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct ParkingFacility {
@@ -19239,7 +19246,7 @@ mod cycle_network {
     use crate::primitives::*;
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
-    use std::collections::HashMap;
+    
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct CycleRoute {
@@ -19674,6 +19681,7 @@ mod air_quality {
             .collect()
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_all_readings() -> Vec<AirQualityReading> {
         let db = AIR_READINGS.lock().unwrap();
         db.clone()
@@ -19765,8 +19773,8 @@ mod crowd_density {
             p.people_estimate = (new_density * capacity as f64) as u32;
             p.level = if new_density < 0.3 { "quiet".into() }
                 else if new_density < 0.6 { "busy".into() }
-                else { "overcrowded".into() };
                 else if new_density < 0.85 { "very_busy".into() }
+                else { "overcrowded".into() };
             p.trend = if drift > 0.02 { "rising".into() }
                 else if drift < -0.02 { "falling".into() }
                 else { "stable".into() };
@@ -19971,6 +19979,7 @@ mod accessibility_audit {
         db.iter().find(|a| a.station_id == station_id).cloned()
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_all_audits() -> Vec<AccessibilityAudit> {
         let db = AUDITS.lock().unwrap();
         db.clone()
@@ -20040,10 +20049,10 @@ mod energy_grid {
 // SIGNAL TIMING OPTIMIZER - Optimize train frequencies
 // ============================================================================
 mod signal_optimizer {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20571,7 +20580,7 @@ mod station_photos {
 // ============================================================================
 mod accessibility_route_enhancer {
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20620,10 +20629,10 @@ mod accessibility_route_enhancer {
 // NIGHT TUBE SCHEDULE - Friday/Saturday night services
 // ============================================================================
 mod night_tube {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20669,10 +20678,10 @@ mod night_tube {
 // CONSTRUCTION TRACKER - Planned works & closures
 // ============================================================================
 mod construction_tracker {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20714,7 +20723,7 @@ mod construction_tracker {
                     title: titles[fastrand::usize(..titles.len())].into(),
                     line_id: line.id.clone(),
                     line_name: line.name.clone(),
-                    affected_stations: stations,
+                    affected_stations: stations.clone(),
                     start_date: format!("2026-{:02}-01", fastrand::u32(1..=12)),
                     end_date: format!("2026-{:02}-28", fastrand::u32(1..=12)),
                     status: status.into(),
@@ -20736,8 +20745,8 @@ mod construction_tracker {
 // STATION AMENITIES SUMMARY - Combined amenity report
 // ============================================================================
 mod station_amenities {
-    use crate::logger::*;
-    use crate::primitives::*;
+    
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20876,7 +20885,7 @@ mod departure_board {
     use crate::primitives::*;
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20954,7 +20963,7 @@ mod departure_board {
 // SERVICE ALERTS - Real-time disruption alerts
 // ============================================================================
 mod service_alerts {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
     use serde::{Deserialize, Serialize};
@@ -21073,7 +21082,7 @@ mod wifi_speed {
 // ============================================================================
 mod accessibility_route_finder {
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21123,10 +21132,10 @@ mod accessibility_route_finder {
 // NIGHT TUBE SCHEDULE ENHANCED - With live status
 // ============================================================================
 mod night_tube_enhanced {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21184,10 +21193,10 @@ mod night_tube_enhanced {
 // CONSTRUCTION TRACKER ENHANCED - With progress tracking
 // ============================================================================
 mod construction_tracker_enh {
-    use crate::primitives::*;
+    
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21278,7 +21287,7 @@ mod crowd_prediction {
         let now_hour = chrono::Utc::now().hour();
         for station in stations.iter().filter(|s| s.is_open).take(80) {
             for h in 0..24 {
-                let base = if h >= 7 && h <= 9 { 0.8 } else if h >= 17 && h <= 19 { 0.85 } else if h >= 11 && h <= 14 { 0.5 } else { 0.2 };
+                let base = if (7..=9).contains(&h) { 0.8 } else if (17..=19).contains(&h) { 0.85 } else if (11..=14).contains(&h) { 0.5 } else { 0.2 };
                 let noise = fastrand::f64() * 0.2 - 0.1;
                 let density = (base + noise).clamp(0.0, 1.0);
                 let trend = if h > now_hour { "upcoming".into() } else { "past".into() };
@@ -21455,7 +21464,7 @@ mod signal_priority {
     use crate::primitives::*;
     use crate::routing::*;
     use crate::logger::*;
-    use crate::primitives::*;
+    
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21473,7 +21482,7 @@ mod signal_priority {
     pub(crate) static PRIORITY_SIGNALS: once_cell::sync::Lazy<std::sync::Mutex<Vec<PrioritySignal>>> =
         once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_priority(lines: &[Line], stations: &[Station]) {
+    pub(crate) fn initialize_priority(lines: &[Line], _stations: &[Station]) {
         let mut db = PRIORITY_SIGNALS.lock().unwrap();
         db.clear();
         for line in lines.iter().take(10) {
@@ -21498,6 +21507,7 @@ mod signal_priority {
         db.clone()
     }
 
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn trigger_emergency(line_id: &str, emergency_type: &str) {
         let mut db = PRIORITY_SIGNALS.lock().unwrap();
         if let Some(sig) = db.iter_mut().find(|s| s.line_id == line_id) {
@@ -21569,11 +21579,11 @@ mod capacity_forecast {
     }
 }
 
-mod ui {
-    #[cfg(feature = "desktop")]
-    use dioxus::prelude::*;
+    mod ui {
+    #[expect(dead_code, reason = "reserved for future use")]
     pub(crate) fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
-    pub(crate) fn build_webview_head(_api_base: String) -> String { String::new() }
+    #[expect(dead_code, reason = "reserved for future use")]
+    pub(crate) fn build_webview_head(_api_base: &str) -> String { String::new() }
 
     mod styles {
         // #[rustfmt::skip] — prevent formatter from parsing the massive CSS string
@@ -21969,6 +21979,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
 
         // Clippy fallback: empty string so clippy doesn't have to parse the 330-line CSS blob
         #[cfg(clippy)]
+        #[expect(dead_code, reason = "reserved for future use")]
         pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> =
             std::sync::LazyLock::new(String::new);
 
@@ -21990,6 +22001,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // CLIPBOARD HELPER - Minimal JS for desktop WebView
         // ============================================================================
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn copy_to_clipboard_js(text: &str) -> String {
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
@@ -22011,10 +22023,12 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn build_copy_log_js(text: &str) -> String {
             copy_to_clipboard_js(&serde_json::to_string(text).unwrap_or_default())
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn scroll_to_bottom_query_js(selector: &str) -> String {
             format!(
                 r#"setTimeout(() => {{
@@ -22030,18 +22044,22 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn set_cursor_js(cursor: &str) -> String {
             format!("window.map.getContainer().style.cursor = '{}';", cursor)
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn call_window_js(func: &str) -> String {
             format!("window.{}();", func)
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn call_window_js_with_arg(func: &str, arg: &str) -> String {
             format!("window.{}('{}');", func, arg)
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn focus_element_js(selector: &str) -> String {
             format!(
                 "let si = document.getElementById('{}'); if (si) si.focus();",
@@ -22049,10 +22067,12 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
             format!("window.{}({});", func, json_arg)
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn call_window_js_with_json_and_string(
             func: &str,
             json_arg: &str,
@@ -22061,6 +22081,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             format!("window.{}({}, '{}');", func, json_arg, string_arg)
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
             format!(
                 "window.map.setView([{}, {}], {}, {{ animate: true }});",
@@ -22068,6 +22089,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn set_sat_provider_js(idx: i32) -> String {
             format!(
                 "window.satProviderIdx = {}; window.setBaseMode('satellite');",
@@ -22075,6 +22097,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
             format!(
                 "window.drawIsochrone({}, {}, {});",
@@ -22105,6 +22128,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // ============================================================================
         // CLIPBOARD HELPER (JavaScript) – defines a global copyText function
         // ============================================================================
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static CLIPBOARD_JS: &str = r#"
 function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -22173,6 +22197,7 @@ window.close = function() {
 
         // ============================================================================
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static MAP_INIT_JS: &str = r##"
 window.addEventListener('error', function(e) {
     var msg = e.message || "Unknown Opaque Error";
@@ -25180,6 +25205,7 @@ window.initMap = async function() {
 };
 "##;
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static MAP_LOOP_JS: &str = r##"
 // ── Parallel Line Offset Helpers ─────────────────────────────────────────────
 // Generate a deterministic colour for lines missing a custom colour
@@ -25538,6 +25564,7 @@ while (true) {
         // use std::sync::OnceLock;
         use std::time::Duration;
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
@@ -25549,6 +25576,7 @@ while (true) {
         /// single client across all handlers means TCP connections are reused, avoiding
         /// the overhead of TLS handshakes and DNS resolution on every API call. Do NOT
         /// create a new client per request.
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn get_api_client() -> &'static reqwest::Client {
             API_CLIENT.get_or_init(|| {
                 log_debug("get_api_client - initialising shared API client (15s timeout)");
@@ -25561,8 +25589,10 @@ while (true) {
 
         /// Separate client with a 5-minute timeout for CPU-heavy endpoints
         /// (AI station planning, coverage stats, transit deserts).
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn get_api_client_slow() -> &'static reqwest::Client {
             API_CLIENT_SLOW.get_or_init(|| {
                 log_debug("get_api_client_slow - initialising slow API client (300s timeout)");
@@ -25573,6 +25603,7 @@ while (true) {
             })
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25604,6 +25635,7 @@ while (true) {
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25633,6 +25665,7 @@ while (true) {
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25665,6 +25698,7 @@ while (true) {
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25702,7 +25736,9 @@ while (true) {
         use crate::routing::roundel_svg_for_line;
         #[cfg(feature = "desktop")]
         use dioxus::prelude::*;
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
         /// Build the HTML \<head> string for the desktop WebView.
@@ -25716,6 +25752,7 @@ while (true) {
         /// - ARIA live region announcements
         /// - Keyboard navigation support (Tab, Enter, Escape)
         /// - Screen reader announcements via aria-live regions
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn build_webview_head(api_base: &str) -> String {
             log_debug(&format!("build_webview_head - api_base={}", api_base));
             let mut h = String::with_capacity(512 * 1024);
@@ -25973,6 +26010,8 @@ window.__consoleDupCount = 0;
 
         /// Analytics dashboard panel showing network statistics
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AnalyticsPanel() -> Element {
             let analytics = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -25994,7 +26033,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #00bcd4; cursor: pointer;",
-                        "📊 Network Analytics {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "📊 Network Analytics ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26014,10 +26053,12 @@ window.__consoleDupCount = 0;
 
         /// Eco routing panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EcoPanel() -> Element {
-            let from = use_signal(|| String::new());
-            let to = use_signal(|| String::new());
-            let result = use_signal(|| String::new());
+            let mut from = use_signal(String::new);
+            let mut to = use_signal(String::new);
+            let result = use_signal(String::new);
             let mut expanded = use_signal(|| false);
 
             let search_eco = move |_| {
@@ -26039,7 +26080,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #4caf50; cursor: pointer;",
-                        "🌿 Eco Routing {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "🌿 Eco Routing ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26071,9 +26112,11 @@ window.__consoleDupCount = 0;
 
         /// Accessibility panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityPanel() -> Element {
-            let station_id = use_signal(|| String::new());
-            let result = use_signal(|| String::new());
+            let mut station_id = use_signal(String::new);
+            let result = use_signal(String::new);
             let mut expanded = use_signal(|| false);
 
             let check_access = move |_| {
@@ -26094,7 +26137,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff9800; cursor: pointer;",
-                        "♿ Accessibility Checker {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "♿ Accessibility Checker ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26120,6 +26163,8 @@ window.__consoleDupCount = 0;
 
         /// Delay predictions panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DelayPredictionsPanel() -> Element {
             let result = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26141,7 +26186,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #e91e63; cursor: pointer;",
-                        "🤖 ML Delay Predictions {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "🤖 ML Delay Predictions ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26161,8 +26206,10 @@ window.__consoleDupCount = 0;
 
         /// TfL Live Status panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn TfLStatusPanel() -> Element {
-            let result = use_signal(|| String::new());
+            let result = use_signal(String::new);
             let mut expanded = use_signal(|| false);
 
             let fetch_status = move |_| {
@@ -26182,7 +26229,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #2196f3; cursor: pointer;",
-                        "🚇 TfL Live Status {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "🚇 TfL Live Status ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26202,8 +26249,10 @@ window.__consoleDupCount = 0;
 
         /// Historical timeline panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn HistoryPanel() -> Element {
-            let result = use_signal(|| String::new());
+            let result = use_signal(String::new);
             let mut expanded = use_signal(|| false);
 
             let fetch_history = move |_| {
@@ -26223,7 +26272,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #9c27b0; cursor: pointer;",
-                        "📜 Network History {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "📜 Network History ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26243,9 +26292,11 @@ window.__consoleDupCount = 0;
 
         /// Parking availability panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ParkingPanel() -> Element {
-            let station_id = use_signal(|| String::new());
-            let result = use_signal(|| String::new());
+            let mut station_id = use_signal(String::new);
+            let result = use_signal(String::new);
             let mut expanded = use_signal(|| false);
 
             let search_parking = move |_| {
@@ -26266,7 +26317,7 @@ window.__consoleDupCount = 0;
                     style: "background: rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px; margin: 8px 0; color: #eee;",
                     onclick: move |_| expanded.set(!expanded()),
                     h3 { style: "margin: 0 0 8px 0; font-size: 14px; color: #ff5722; cursor: pointer;",
-                        "🅿️ Parking {if expanded() { \"▼\" } else { \"▶\" }}"
+                        "🅿️ Parking ", if expanded() { "▼" } else { "▶" }
                     }
                     if expanded() {
                         div {
@@ -26292,6 +26343,8 @@ window.__consoleDupCount = 0;
 
         /// MaaS (Mobility as a Service) panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn MaaSPanel() -> Element {
             let providers = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26327,6 +26380,8 @@ window.__consoleDupCount = 0;
 
         /// Noise monitoring panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NoisePanel() -> Element {
             let noise = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26362,6 +26417,8 @@ window.__consoleDupCount = 0;
 
         /// Air quality panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AirQualityPanel() -> Element {
             let air = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26397,6 +26454,8 @@ window.__consoleDupCount = 0;
 
         /// Crowd density panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdDensityPanel() -> Element {
             let crowd = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26432,6 +26491,8 @@ window.__consoleDupCount = 0;
 
         /// Energy grid panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyPanel() -> Element {
             let energy = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26467,6 +26528,8 @@ window.__consoleDupCount = 0;
 
         /// Night tube panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NightTubePanel() -> Element {
             let night = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26502,6 +26565,8 @@ window.__consoleDupCount = 0;
 
         /// Construction tracker panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ConstructionPanel() -> Element {
             let construction = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26537,6 +26602,8 @@ window.__consoleDupCount = 0;
 
         /// Departure board panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DepartureBoardPanel() -> Element {
             let departures = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26572,6 +26639,8 @@ window.__consoleDupCount = 0;
 
         /// Service alerts panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ServiceAlertsPanel() -> Element {
             let alerts = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26607,6 +26676,8 @@ window.__consoleDupCount = 0;
 
         /// Photo gallery panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn PhotoGalleryPanel() -> Element {
             let photos = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26642,6 +26713,8 @@ window.__consoleDupCount = 0;
 
         /// WiFi speed panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn WifiSpeedPanel() -> Element {
             let speeds = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26675,6 +26748,8 @@ window.__consoleDupCount = 0;
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdPredictionPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26708,6 +26783,8 @@ window.__consoleDupCount = 0;
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityAuditEnhPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26741,6 +26818,8 @@ window.__consoleDupCount = 0;
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyOptimizationPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26774,6 +26853,8 @@ window.__consoleDupCount = 0;
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn SignalPriorityPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26807,6 +26888,8 @@ window.__consoleDupCount = 0;
             }
         }
 
+        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CapacityForecastPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
             let mut expanded = use_signal(|| false);
@@ -26847,6 +26930,7 @@ window.__consoleDupCount = 0;
         /// Desktop-only: configure the Dioxus WebView window.
         /// This function uses Dioxus types and is only compiled when `desktop` feature is active.
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
             log_info("build_desktop_window_configuration - configuring desktop WebView");
             // The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is set once, early, in
@@ -26974,6 +27058,7 @@ window.__consoleDupCount = 0;
         /// handle, NOT the signal data itself). Cloning a Signal is cheap ? it's
         /// just an Arc bump ? and is safe across await points because Dioxus signals
         /// are Send + Sync.
+        #[expect(dead_code, reason = "reserved for future use")]
         pub(crate) fn show_toast(
             toasts: &mut Signal<Vec<Toast>>,
             id_counter: &mut Signal<usize>,
@@ -27004,6 +27089,7 @@ window.__consoleDupCount = 0;
         }
 
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "reserved for future use")]
         pub fn build_console_window_configuration() -> dioxus::desktop::Config {
             log_info("build_console_window_configuration - configuring analytics console window");
             let window = dioxus::desktop::WindowBuilder::new()
@@ -27295,6 +27381,7 @@ window.__consoleDupCount = 0;
         /// nested Dioxus trees.
         #[cfg(feature = "desktop")]
         #[allow(dependency_on_unit_never_type_fallback)]
+        #[expect(dead_code, reason = "reserved for future use")]
         pub fn app() -> Element {
             // ── Panic-safe guard: if a prior Dioxus rendering panic occurred, render a
             //    minimal recovery UI that keeps the Axum server alive for browser users.
@@ -27440,7 +27527,7 @@ window.__consoleDupCount = 0;
             let mut overlay_parking = use_signal::<bool>(|| false);
             let mut overlay_cycle_docking = use_signal::<bool>(|| false);
             let mut overlay_tfl_status = use_signal::<bool>(|| false);
-            let mut overlay_history = use_signal::<bool>(|| false);
+            let mut _overlay_history = use_signal::<bool>(|| false);
             let mut overlay_air_quality = use_signal::<bool>(|| false);
             let mut overlay_noise = use_signal::<bool>(|| false);
             let mut overlay_crowd = use_signal::<bool>(|| false);
@@ -30083,12 +30170,12 @@ window.__consoleDupCount = 0;
                         style: "padding: 20px 20px 12px; border-bottom: 1px solid rgba(255,255,255,.08); flex-shrink: 0;",
                         div {
                             style: "display: flex; justify-content: space-between; align-items: center;",
-                            div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #6950A1;", "\\u{1f4ca} Data Explorer" }
+                            div { style: "font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1.5px; color: #6950A1;", "\\u{{1f4ca}} Data Explorer" }
                             button {
                                 "aria-label": "Close Data Explorer",
                                 style: "background: none; border: none; color: #888; cursor: pointer; font-size: 18px; padding: 4px;",
                                 onclick: move |_| { show_data_explorer.set(false); },
-                                "\\u{2715}"
+                                "\\u{{2715}}"
                             }
                         }
                         div { style: "font-size: 10px; color: #666; margin-top: 4px;", "Network analytics, eco-routing, accessibility, TfL status, history, parking" }
