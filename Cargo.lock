@@ -58,7 +58,6 @@ dependencies = [
  "geo",
  "memmap2",
  "mimalloc",
- "once_cell",
  "open",
  "phf 0.14.0",
  "r2d2",

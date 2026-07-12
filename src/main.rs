@@ -124,6 +124,11 @@ use std::time::Duration;
 #[cfg(feature = "desktop")]
 use chrono::Utc;
 
+// Silence "unused crate dependency" for crates that ARE used in submodules
+// (the crate-root check cannot see re-exports inside nested mod blocks).
+use crossbeam_channel as _;
+use ::geo as _;
+
 // ============================================================================
 // GLOBAL MEMORY ALLOCATOR — mimalloc
 // ============================================================================
@@ -226,7 +231,7 @@ mod error {
                         "AppError returned to client (scrubbed): {:?}",
                         self
                     ));
-                    "An internal error occurred. Please try again.".to_string()
+                    "An internal error occurred. Please try again.".to_owned()
                 }
             };
             let body = serde_json::json!({
@@ -330,7 +335,7 @@ where
                     // Exponential backoff, but clamp the delay so a large retry
                     // count can never produce pathological multi-minute waits
                     // (e.g. attempt 10 -> 256s) with no upper bound.
-                    let delay_ms = (2u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
+                    let delay_ms = (2_u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
                     // Retries are expected under transient network errors — keep them
                     // at debug level to avoid flooding operator logs; only the final,
                     // unrecoverable failure is surfaced as an error by the caller.
@@ -388,7 +393,7 @@ fn validate_line_id(id: &str) -> AppResult<()> {
 /// Validate geographic bounding box coordinates.
 /// Maximum safe latitude for Web-Mercator projection.
 /// The Mercator formula contains `tan(PI/4 + lat_rad/2)` which diverges
-/// as latitude approaches ?90?. Clamping to ?85.0511? prevents floating-point
+/// as latitude approaches ±90°. Clamping to ±85.0511° prevents floating-point
 /// overflow / NaN in R*-tree envelope comparisons.
 const MAX_MERCATOR_LAT: f64 = 85.0511;
 
@@ -556,9 +561,9 @@ fn build_console_window_configuration() -> dioxus::desktop::Config { dioxus::des
 fn build_desktop_window_configuration(_api_base: &str) -> dioxus::desktop::Config { dioxus::desktop::Config::new() }
 #[cfg(feature = "desktop")]
 #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
-fn ConsoleStandaloneApp() -> dioxus::prelude::Element { rsx! { div { "Console" } } }
+fn ConsoleStandaloneApp() -> Element { rsx! { div { "Console" } } }
 #[cfg(feature = "desktop")]
-fn app() -> dioxus::prelude::Element { rsx! { div { "App" } } }
+fn app() -> Element { rsx! { div { "App" } } }
 
 // Consolidated CSS natively inline
 // External CSS files removed per requirements.
@@ -570,7 +575,7 @@ mod logger {
     use std::time::{Duration, Instant};
 
     // Consolidated global state in a single static struct.
-    static GLOBALS: std::sync::OnceLock<Globals> = std::sync::OnceLock::new();
+    static GLOBALS: OnceLock<Globals> = OnceLock::new();
 
     // Configurable escape hatch for the "load-bearing" routing-diagnostic filters
     // below. Set ALEXTUBE_LOG_ROUTING_ERRORS=1 to disable downgrading and surface
@@ -613,16 +618,7 @@ mod logger {
             })
         }
 
-        /// Read the stored API base URL, returning a sensible fallback if unavailable.
-        #[allow(dead_code)]
-        pub(crate) fn get_api_base() -> String {
-            Self::get()
-                .api_base
-                .read()
-                .ok()
-                .and_then(|g| g.clone())
-                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string())
-        }
+
     }
 
     /// Hard cap on accumulated crash text so a long-running process that hits
@@ -738,7 +734,7 @@ mod logger {
         Trace,
     }
 
-    pub(crate) static LOG_LEVEL: std::sync::OnceLock<LogLevel> = std::sync::OnceLock::new();
+    pub(crate) static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 
     pub(crate) fn get_log_level() -> &'static LogLevel {
         LOG_LEVEL.get_or_init(|| {
@@ -1001,7 +997,7 @@ mod logger {
             pub(crate) b_inherit_handle: i32, // BOOL
         }
 
-        const STD_ERROR_HANDLE: u32 = 0xFFFFFFF5u32; // -11 as u32
+        const STD_ERROR_HANDLE: u32 = 0xFFFFFFF5_u32; // -11 as u32
         const INVALID_HANDLE_VALUE: isize = -1;
         const STD_FILENO: i32 = 2; // CRT file descriptor for stderr
 
@@ -1106,7 +1102,7 @@ mod logger {
                                     break;
                                 }
 
-                                let mut buf: [u8; 1024] = [0u8; 1024];
+                                let mut buf: [u8; 1024] = [0_u8; 1024];
                                 let mut read_bytes: u32 = 0;
 
                                 let result = ReadFile(
@@ -1429,9 +1425,9 @@ mod config {
     impl Default for Config {
         fn default() -> Self {
             Self {
-                tfl_base_url: "https://api.tfl.gov.uk".to_string(),
-                overpass_base_url: "https://overpass-api.de/api/interpreter".to_string(),
-                server_host: "127.0.0.1".to_string(),
+                tfl_base_url: "https://api.tfl.gov.uk".to_owned(),
+                overpass_base_url: "https://overpass-api.de/api/interpreter".to_owned(),
+                server_host: "127.0.0.1".to_owned(),
                 server_port: 3000,
                 cache_expiry_hours: 24,
                 log_max_entries: 10000,
@@ -1443,19 +1439,19 @@ mod config {
                 },
                 // Fix #7: Configurable sample lines list
                 sample_lines: vec![
-                    "bakerloo".to_string(),
-                    "central".to_string(),
-                    "northern".to_string(),
-                    "piccadilly".to_string(),
-                    "victoria".to_string(),
-                    "jubilee".to_string(),
-                    "district".to_string(),
-                    "circle".to_string(),
-                    "hammersmith-city".to_string(),
-                    "metropolitan".to_string(),
-                    "waterloo-city".to_string(),
-                    "elizabeth".to_string(),
-                    "dlr".to_string(),
+                    "bakerloo".to_owned(),
+                    "central".to_owned(),
+                    "northern".to_owned(),
+                    "piccadilly".to_owned(),
+                    "victoria".to_owned(),
+                    "jubilee".to_owned(),
+                    "district".to_owned(),
+                    "circle".to_owned(),
+                    "hammersmith-city".to_owned(),
+                    "metropolitan".to_owned(),
+                    "waterloo-city".to_owned(),
+                    "elizabeth".to_owned(),
+                    "dlr".to_owned(),
                 ],
                 max_astar_iterations: 50000,
                 interchange_penalty_min: 3.5,
@@ -1519,8 +1515,6 @@ mod primitives {
     use std::f64::consts::PI;
 
     pub(crate) use geo::*;
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) type JourneyLeg = crate::network::JourneyLeg;
 
     pub(crate) mod geo {
         use super::*;
@@ -1671,7 +1665,7 @@ mod primitives {
                             // Normalize line kind: merge "South Eastern" ? "Southeastern"
                             let kind_normalized = normalize_line_name(&s.kind);
                             let kind_display = if kind_normalized.contains("southeast") {
-                                "Southeastern".to_string()
+                                "Southeastern".to_owned()
                             } else {
                                 s.kind.clone()
                             };
@@ -2043,8 +2037,8 @@ mod primitives {
     ///
     /// ```rust
     /// let station = Station::new(
-    ///     "940GZZLUBNK".to_string(),
-    ///     "Bank".to_string(),
+    ///     "940GZZLUBNK".to_owned(),
+    ///     "Bank".to_owned(),
     ///     Coordinate { lat: 51.5134, lon: -0.0886 },
     /// );
     /// assert_eq!(station.name, "Bank");
@@ -2223,8 +2217,8 @@ mod spatial {
                 }
 
                 // First pass: count edges so we can size the CSR offset array.
-                let mut edge_counts = vec![0usize; node_count];
-                let mut total_edges = 0usize;
+                let mut edge_counts = vec![0_usize; node_count];
+                let mut total_edges = 0_usize;
                 for line in lines {
                     for w in line.stations.windows(2) {
                         let a = id_to_node.get(w[0].id.as_str());
@@ -2251,9 +2245,9 @@ mod spatial {
                 }
 
                 // Second pass: populate the actual edge arrays.
-                let mut edge_targets: Vec<u32> = vec![0u32; total_edges];
-                let mut edge_weights: Vec<f32> = vec![0.0f32; total_edges];
-                let mut edge_line_ids: Vec<u32> = vec![0u32; total_edges];
+                let mut edge_targets: Vec<u32> = vec![0_u32; total_edges];
+                let mut edge_weights: Vec<f32> = vec![0.0_f32; total_edges];
+                let mut edge_line_ids: Vec<u32> = vec![0_u32; total_edges];
                 // Per-node write cursor into the CSR edge arrays.
                 let mut cursor = edge_offsets.clone();
 
@@ -2638,111 +2632,7 @@ mod routing {
             ))
         }
 
-        // ── LINE ROUNDELS LOADED FROM EXTERNAL ASSET ─────────────────────────────
-        // The large SVG roundel blobs previously lived inline here (one const per
-        // line). They are now stored in assets/roundels.json (a flat map of
-        // ROUNDEL_<NAME> -> SVG string) so the source stays readable and the art
-        // can be edited without recompiling. The map is loaded once (lazily) from
-        // disk at runtime, with a compile-time `include_str!` copy as a fallback so
-        // the binary still works if the asset file is missing next to the exe.
-        #[expect(dead_code, reason = "reserved for future use")]
-        static ROUNDELS_JSON_EMBEDDED: &str = include_str!("../assets/roundels.json");
 
-        #[expect(dead_code, reason = "reserved for future use")]
-        static ROUNDEL_MAP: std::sync::OnceLock<std::collections::HashMap<String, String>> =
-            std::sync::OnceLock::new();
-
-        #[expect(dead_code, reason = "reserved for future use")]
-        fn load_roundel_map() -> &'static std::collections::HashMap<String, String> {
-            ROUNDEL_MAP.get_or_init(|| {
-                let raw = std::fs::read_to_string("assets/roundels.json")
-                    .or_else(|_| {
-                        // Fall back to the path relative to the current exe.
-                        std::env::current_exe()
-                            .ok()
-                            .and_then(|p| p.parent().map(|d| d.join("assets/roundels.json")))
-                            .and_then(|p| std::fs::read_to_string(p).ok())
-                            .ok_or(())
-                    })
-                    .unwrap_or_else(|_| ROUNDELS_JSON_EMBEDDED.to_string());
-                match serde_json::from_str::<std::collections::HashMap<String, String>>(&raw) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log_error(&format!("load_roundel_map - failed to parse roundels.json: {}", e));
-                        std::collections::HashMap::new()
-                    }
-                }
-            })
-        }
-
-        /// Returns the SVG markup for a given line's roundel, loaded from the external
-        /// roundel asset map. `None` if the line has no known roundel.
-        #[expect(dead_code, reason = "reserved for future use")]
-        pub(crate) fn roundel_svg_for_line(line_id: &str) -> Option<&'static str> {
-            let map = load_roundel_map();
-            // Map each public line id to its ROUNDEL_<NAME> key.
-            let key = match line_id {
-                "bakerloo" => "ROUNDEL_BAKERLOO",
-                "central" => "ROUNDEL_CENTRAL",
-                "circle" => "ROUNDEL_CIRCLE",
-                "district" => "ROUNDEL_DISTRICT",
-                "hammersmith-city" => "ROUNDEL_HAMMERSMITH_CITY",
-                "jubilee" => "ROUNDEL_JUBILEE",
-                "metropolitan" => "ROUNDEL_METROPOLITAN",
-                "northern" => "ROUNDEL_NORTHERN",
-                "piccadilly" => "ROUNDEL_PICCADILLY",
-                "victoria" => "ROUNDEL_VICTORIA",
-                "waterloo-city" => "ROUNDEL_WATERLOO_CITY",
-                "elizabeth" => "ROUNDEL_ELIZABETH",
-                "dlr" => "ROUNDEL_DLR",
-                "tramlink" => "ROUNDEL_TRAMLINK",
-                "underground" => "ROUNDEL_UNDERGROUND",
-                "liberty" | "lioness" | "mildmay" | "suffragette" | "weaver" | "windrush"
-                | "overground" | "london overground" => "ROUNDEL_OVERGROUND",
-                "national-rail" | "national rail" => "ROUNDEL_NATIONAL_RAIL",
-                "emirates-airline" | "emirates" | "airline" => "ROUNDEL_EMIRATES_AIRLINE",
-                "avanti" | "avanti-west-coast" => "ROUNDEL_AVANTI",
-                "c2c" => "ROUNDEL_C2C",
-                "caledonian-sleeper" => "ROUNDEL_CALEDONIAN_SLEEPER",
-                "east-midlands" | "east-midlands-railway" => "ROUNDEL_EAST_MIDLANDS",
-                "eurostar" => "ROUNDEL_EUROSTAR",
-                "grand-central" => "ROUNDEL_GRAND_CENTRAL",
-                "gwr" | "great-western" | "great-western-railway" => "ROUNDEL_GWR",
-                "gtr" | "great-thameslink-railway" => "ROUNDEL_GTR",
-                "heathrow-express" => "ROUNDEL_HEATHROW_EXPRESS",
-                "hull-trains" | "hull trains" => "ROUNDEL_HULL_TRAINS",
-                "lner" | "london-north-eastern-railway" => "ROUNDEL_LNER",
-                "lumo" => "ROUNDEL_LUMO",
-                "merseyrail" => "ROUNDEL_MERSEYRAIL",
-                "northern-trains" | "northern trains" => "ROUNDEL_NORTHERN_TRAINS",
-                "scotrail" => "ROUNDEL_SCOTRAIL",
-                "southeastern" => "ROUNDEL_SOUTHEASTERN",
-                "southwestern-railway" | "swr" | "south-western-railway" => "ROUNDEL_SOUTHWESTERN_RAILWAY",
-                "thameslink" => "ROUNDEL_THAMESLINK",
-                "tpe" | "transpennine" | "transpennine-express" => "ROUNDEL_TRANSPENNINE",
-                "transport-for-wales" | "tfw" | "transport for wales" => "ROUNDEL_TRANSPORT_FOR_WALES",
-                "west-midlands-railway" | "west-midlands" | "west midlands railway" | "west midlands" => "ROUNDEL_WEST_MIDLANDS_RAILWAY",
-                "london-northwestern-railway" | "lnr" | "london-northwestern" => "ROUNDEL_LONDON_NORTHWESTERN_RAILWAY",
-                "stansted-express" => "ROUNDEL_STANSTED_EXPRESS",
-                "ni-railways" | "ni railways" | "northern-ireland-railways" => "ROUNDEL_NI_RAILWAYS",
-                "island-line" | "isle-of-wight" | "island line" => "ROUNDEL_ISLAND_LINE",
-                "tyne-and-wear-metro" | "tyne & wear metro" | "tyne and wear metro" => "ROUNDEL_TYNE_AND_WEAR_METRO",
-                "glasgow-subway" | "glasgow subway" => "ROUNDEL_GLASGOW_SUBWAY",
-                "manchester-metrolink" | "manchester metrolink" => "ROUNDEL_MANCHESTER_METROLINK",
-                "sheffield-supertram" | "sheffield supertram" => "ROUNDEL_SHEFFIELD_SUPERTRAM",
-                "nottingham-express-transit" | "nottingham express transit" | "net" => "ROUNDEL_NOTTINGHAM_EXPRESS_TRANSIT",
-                "west-midlands-metro" | "west midlands metro" | "midland-metro" => "ROUNDEL_WEST_MIDLANDS_METRO",
-                "edinburgh-trams" | "edinburgh trams" => "ROUNDEL_EDINBURGH_TRAMS",
-                "blackpool-tramway" | "blackpool tramway" | "blackpool-trams" => "ROUNDEL_BLACKPOOL_TRAMWAY",
-                "ifs-cloud-cable-car" | "ifs cloud cable car" | "ifs-cable-car" | "cable-car" => "ROUNDEL_IFS_CLOUD_CABLE_CAR",
-                "luton-dart" | "luton dart" | "luton-airport-dart" => "ROUNDEL_LUTON_DART",
-                "isle-of-man-railway" | "isle of man railway" | "iom railway" => "ROUNDEL_ISLE_OF_MAN_RAILWAY",
-                "manx-electric-railway" | "manx electric railway" => "ROUNDEL_MANX_ELECTRIC_RAILWAY",
-                "getlink" | "eurotunnel" | "le shuttle" => "ROUNDEL_GETLINK",
-                _ => return None,
-            };
-            map.get(key).map(|s| s.as_str())
-        }
 
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         pub struct RouteSegment {
@@ -2786,7 +2676,7 @@ mod routing {
         }
 
         pub(crate) fn default_group() -> String {
-            "tfl".to_string()
+            "tfl".to_owned()
         }
 
         impl Line {
@@ -2800,7 +2690,7 @@ mod routing {
                     segments: Vec::new(),
                     geometry: Vec::new(),
                     is_custom: false,
-                    group: "tfl".to_string(),
+                    group: "tfl".to_owned(),
                     sub_geometries: Vec::new(),
                 }
             }
@@ -2948,7 +2838,7 @@ mod routing {
                 // then build the R-Tree in a single pass. This guarantees optimal
                 // bounding box packing with zero overlapping AABBs.
                 let mut points: Vec<SpatialPoint> = Vec::new();
-                let mut total_points = 0usize;
+                let mut total_points = 0_usize;
                 for (track_idx, track) in tracks.iter().enumerate() {
                     if cfg!(debug_assertions) {
                         log_trace(&format!(
@@ -3020,7 +2910,7 @@ mod routing {
 
                 let mut inside = false;
                 let n = polygon.len();
-                let mut intersections = 0usize;
+                let mut intersections = 0_usize;
 
                 for (i, j) in (0..n).zip((1..n).chain(std::iter::once(0))) {
                     let xi = polygon[i].lon;
@@ -3164,7 +3054,7 @@ mod routing {
                     threshold_meters, threshold
                 ));
 
-                let mut merges_performed = 0usize;
+                let mut merges_performed = 0_usize;
                 for (i, station) in stations.iter().enumerate() {
                     if processed.contains(&i) {
                         continue;
@@ -3248,7 +3138,7 @@ mod routing {
                 }
                 let mut stack = vec![(0, points.len() - 1)];
                 let mut keep = vec![true; points.len()];
-                let mut iterations = 0usize;
+                let mut iterations = 0_usize;
                 while let Some((start, end)) = stack.pop() {
                     iterations += 1;
                     if end - start < 2 {
@@ -3699,8 +3589,8 @@ mod routing {
             let mut best = current;
             let mut best_score = current_score;
 
-            let t0 = 800.0f64;
-            let t_min = 8.0f64;
+            let t0 = 800.0_f64;
+            let t_min = 8.0_f64;
             let alpha = (t_min / t0).powf(1.0 / iterations as f64);
             let mut temperature = t0;
 
@@ -3803,7 +3693,7 @@ mod routing {
             let search_sq = mercator_search_radius_sq(radius);
 
             let mut covered = vec![false; n];
-            let mut covered_total = 0usize;
+            let mut covered_total = 0_usize;
             let mut placed: Vec<Coordinate> = Vec::new();
 
             while covered_total < n && placed.len() < hard_cap {
@@ -3832,7 +3722,7 @@ mod routing {
 
                 // Mark covered
                 let r_m = refined.to_mercator();
-                let mut newly = 0usize;
+                let mut newly = 0_usize;
                 for sp in tree.locate_within_distance([r_m.0, r_m.1], search_sq) {
                     let j = sp.index;
                     if !covered[j] && refined.distance_to(&deserts[j]) <= radius {
@@ -4011,9 +3901,9 @@ mod routing {
             let mut visited = vec![false; n];
             let mut queue = std::collections::VecDeque::new();
             visited[src] = true;
-            queue.push_back((src, 0usize));
+            queue.push_back((src, 0_usize));
             let mut farthest = src;
-            let mut max_depth = 0usize;
+            let mut max_depth = 0_usize;
             while let Some((v, depth)) = queue.pop_front() {
                 if depth > max_depth {
                     max_depth = depth;
@@ -4150,17 +4040,17 @@ mod routing {
                 let is_trunk = idx == 0;
                 let name = if deep {
                     if is_trunk {
-                        "AI Express Trunk".to_string()
+                        "AI Express Trunk".to_owned()
                     } else if idx == 1 {
-                        "AI Branch North".to_string()
+                        "AI Branch North".to_owned()
                     } else if idx == 2 {
-                        "AI Branch South".to_string()
+                        "AI Branch South".to_owned()
                     } else {
                         format!("AI Shuttle {}", idx)
                     }
                 } else {
                     if is_trunk {
-                        "AI Main Line".to_string()
+                        "AI Main Line".to_owned()
                     } else {
                         format!("AI Branch {}", idx + 1)
                     }
@@ -4260,7 +4150,7 @@ mod routing {
                     segments,
                     geometry: curved_geometry,
                     is_custom: true,
-                    group: "custom".to_string(),
+                    group: "custom".to_owned(),
                     sub_geometries: sub_geoms,
                 });
             }
@@ -4870,7 +4760,7 @@ mod routing {
 
         impl Default for TflApiClient {
             fn default() -> Self {
-                Self::new("https://api.tfl.gov.uk".to_string())
+                Self::new("https://api.tfl.gov.uk".to_owned())
             }
         }
 
@@ -4895,8 +4785,8 @@ mod routing {
                     network: NetworkManager::new(),
                     base_url,
                     fallback_urls: vec![
-                        "https://overpass.kumi.systems/api/interpreter".to_string(),
-                        "https://overpass.openstreetmap.ie/api/interpreter".to_string(),
+                        "https://overpass.kumi.systems/api/interpreter".to_owned(),
+                        "https://overpass.openstreetmap.ie/api/interpreter".to_owned(),
                     ],
                 }
             }
@@ -5039,7 +4929,7 @@ out body; >; out skel qt;"#,
                     .collect();
 
                 for url in &all_urls {
-                    for retry in 0u32..3 {
+                    for retry in 0_u32..3 {
                         let resp = match self
                             .network
                             .client
@@ -5229,7 +5119,7 @@ out body;"#,
 
                             let mut station_lines = Vec::new();
                             if is_historic {
-                                station_lines.push("historic".to_string());
+                                station_lines.push("historic".to_owned());
                             } else {
                                 let operator = tags
                                     .and_then(|t| t.get("operator"))
@@ -5269,7 +5159,7 @@ out body;"#,
             ));
 
                     let mut nodes_map = HashMap::new();
-                    let mut nodes_extracted = 0usize;
+                    let mut nodes_extracted = 0_usize;
                     for el in elements {
                         if el.get("type").and_then(|v| v.as_str()) == Some("node") {
                             if let (Some(id), Some(lat), Some(lon)) = (
@@ -5287,7 +5177,7 @@ out body;"#,
                 nodes_extracted
             ));
 
-                    let mut ways_processed = 0usize;
+                    let mut ways_processed = 0_usize;
                     for (idx, element) in elements.iter().enumerate() {
                         if element.get("type").and_then(|v| v.as_str()) == Some("way") {
                             ways_processed += 1;
@@ -5442,7 +5332,7 @@ out body;"#,
                     node_id: start,
                 });
 
-                let mut iterations = 0usize;
+                let mut iterations = 0_usize;
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
                     // Security: hard cap to prevent algorithmic DoS on degenerate graphs.
@@ -5547,7 +5437,7 @@ out body;"#,
                 let mut came_from: HashMap<usize, usize> = HashMap::new();
                 let mut open_set = BinaryHeap::new();
                 let mut closed_set = HashSet::new();
-                let mut disruptions_avoided = 0usize;
+                let mut disruptions_avoided = 0_usize;
 
                 let _max_iter_limit = crate::logger::Globals::get()
                     .config
@@ -5590,7 +5480,7 @@ out body;"#,
                     node_id: start,
                 });
 
-                let mut iterations = 0usize;
+                let mut iterations = 0_usize;
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
                     let max_iter = crate::logger::Globals::get()
@@ -5822,7 +5712,7 @@ out body;"#,
                         .par_iter()
                         .fold(
                             // Thread-local accumulator: zero contention, pure L1 cache speed
-                            || vec![0usize; num_edges],
+                            || vec![0_usize; num_edges],
                             |mut local_loads, &(origin, dest)| {
                                 let result =
                                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5848,7 +5738,7 @@ out body;"#,
                             },
                         )
                         .reduce(
-                            || vec![0usize; num_edges],
+                            || vec![0_usize; num_edges],
                             |mut a, b| {
                                 // LLVM auto-vectorizes this to AVX2 vpaddq instructions
                                 for i in 0..a.len() {
@@ -6024,8 +5914,8 @@ out body;"#,
                 let mut came_from: HashMap<usize, usize> = HashMap::new();
                 let mut open_set = BinaryHeap::new();
                 let mut closed_set = HashSet::new();
-                let mut congestion_bypasses = 0usize;
-                let mut interchange_penalties = 0usize;
+                let mut congestion_bypasses = 0_usize;
+                let mut interchange_penalties = 0_usize;
 
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
@@ -6056,7 +5946,7 @@ out body;"#,
                     node_id: start,
                 });
 
-                let mut iterations = 0usize;
+                let mut iterations = 0_usize;
                 while let Some(current) = open_set.pop() {
                     iterations += 1;
                     let max_iter = crate::logger::Globals::get()
@@ -6196,7 +6086,7 @@ out body;"#,
                     return Vec::new();
                 }
 
-                let mut steps = 0usize;
+                let mut steps = 0_usize;
                 while let Some(&prev) = came_from.get(&current) {
                     steps += 1;
                     if let Some(node) = self.nodes.get(&prev) {
@@ -6232,8 +6122,8 @@ out body;"#,
                 INTERNAL_NODE_ID_POOL.store(0, Ordering::SeqCst);
 
                 let mut tree = RTree::new();
-                let mut total_edges = 0usize;
-                let mut merged_nodes = 0usize;
+                let mut total_edges = 0_usize;
+                let mut merged_nodes = 0_usize;
 
                 for (track_idx, track) in tracks.iter().enumerate() {
                     log_trace(&format!(
@@ -6432,7 +6322,7 @@ mod network {
         pub(crate) mode: String,
     }
     pub(crate) fn default_journey_mode() -> String {
-        "fastest".to_string()
+        "fastest".to_owned()
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6497,7 +6387,7 @@ mod network {
         pub(crate) bore_type: String,
     }
     pub(crate) fn default_bore_type() -> String {
-        "twin_bore".to_string()
+        "twin_bore".to_owned()
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6826,13 +6716,13 @@ mod network {
         let co2_kt = km * 12.0 + num_stations as f64 * 8.0;
 
         let comparison = if total < 500.0 {
-            "Cheaper than a new London Bridge station refurbishment (£500M)".to_string()
+            "Cheaper than a new London Bridge station refurbishment (£500M)".to_owned()
         } else if total < 2_000.0 {
-            "Similar cost range to the Northern line extension (£1.2Bn)".to_string()
+            "Similar cost range to the Northern line extension (£1.2Bn)".to_owned()
         } else if total < 10_000.0 {
-            "In the same league as Crossrail (£18.9Bn total)".to_string()
+            "In the same league as Crossrail (£18.9Bn total)".to_owned()
         } else {
-            "Major infrastructure megaproject — exceeds Crossrail budget".to_string()
+            "Major infrastructure megaproject — exceeds Crossrail budget".to_owned()
         };
 
         let result = TunnelCostResponse {
@@ -7039,7 +6929,7 @@ mod network {
             return 0.0;
         }
         log_trace(&format!("polygon_area_km2 - {} vertices", poly.len()));
-        let mut area = 0.0f64;
+        let mut area = 0.0_f64;
         let n = poly.len();
         for i in 0..n {
             let j = (i + 1) % n;
@@ -7198,11 +7088,11 @@ mod network {
                                     if seg_idx < geometry.len() {
                                         if let Some(obj) = enriched.as_object_mut() {
                                             obj.insert(
-                                                "live_lat".to_string(),
+                                                "live_lat".to_owned(),
                                                 serde_json::json!(geometry[seg_idx].lat),
                                             );
                                             obj.insert(
-                                                "live_lon".to_string(),
+                                                "live_lon".to_owned(),
                                                 serde_json::json!(geometry[seg_idx].lon),
                                             );
                                         }
@@ -7230,11 +7120,11 @@ mod network {
                                                 * ratio;
                                         if let Some(obj) = enriched.as_object_mut() {
                                             obj.insert(
-                                                "live_lat".to_string(),
+                                                "live_lat".to_owned(),
                                                 serde_json::json!((lat * 1e6).round() / 1e6),
                                             );
                                             obj.insert(
-                                                "live_lon".to_string(),
+                                                "live_lon".to_owned(),
                                                 serde_json::json!((lon * 1e6).round() / 1e6),
                                             );
                                         }
@@ -7717,13 +7607,13 @@ mod server {
                         stations: Vec::new(),
                         segments: Vec::new(),
                         is_custom: true,
-                        group: "custom".to_string(),
+                        group: "custom".to_owned(),
                         sub_geometries: Vec::new(),
                     })
                 })?;
 
                 let mut result = Vec::new();
-                let mut parse_errors = 0usize;
+                let mut parse_errors = 0_usize;
                 for line in lines {
                     match line {
                         Ok(l) => result.push(l),
@@ -7769,7 +7659,7 @@ mod server {
                 })?;
 
                 let mut result = Vec::new();
-                let mut parse_errors = 0usize;
+                let mut parse_errors = 0_usize;
                 for station in stations {
                     match station {
                         Ok(s) => result.push(s),
@@ -8205,7 +8095,7 @@ mod server {
                 // data loss when multiple API routes / parallel workers call this function.
                 self.stations.rcu(|current_stations| {
                     let mut updated = (**current_stations).clone();
-                    let mut added = 0usize;
+                    let mut added = 0_usize;
 
                     for station in &line.stations {
                         if !updated.iter().any(|existing| existing.id == station.id) {
@@ -8281,7 +8171,7 @@ mod server {
                         "AppState::parse_line_data - found {} stations",
                         stations.len()
                     ));
-                    let mut skipped = 0usize;
+                    let mut skipped = 0_usize;
                     for st_val in stations {
                         if let (Some(id), Some(name), Some(lat), Some(lon)) = (
                             st_val.get("id").and_then(|v| v.as_str()),
@@ -8319,7 +8209,7 @@ mod server {
                         "AppState::parse_line_data - found {} lineStrings",
                         line_strings.len()
                     ));
-                    let mut empty_geoms = 0usize;
+                    let mut empty_geoms = 0_usize;
                     for ls_val in line_strings {
                         if let Some(ls_str) = ls_val.as_str() {
                             if let Ok(parsed_ls) = serde_json::from_str::<Value>(ls_str) {
@@ -8631,16 +8521,16 @@ mod server {
                 };
 
                 let mut raw_areas = Vec::new();
-                let mut elements_processed = 0usize;
+                let mut elements_processed = 0_usize;
                 if let Some(elements) = data
                     .as_ref()
                     .and_then(|d| d.get("elements"))
                     .and_then(|v| v.as_array())
                 {
                     log_info(&format!("AppState::fetch_residential_coordinates - processing {} elements from Overpass response", elements.len()));
-                    let mut skipped_no_geom = 0usize;
-                    let mut used_vertex_centroid = 0usize;
-                    let mut used_toplevel_centroid = 0usize;
+                    let mut skipped_no_geom = 0_usize;
+                    let mut used_vertex_centroid = 0_usize;
+                    let mut used_toplevel_centroid = 0_usize;
                     for el in elements {
                         elements_processed += 1;
                         let el_type = el.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -8842,7 +8732,7 @@ mod server {
                 let mut stations_clone = (**self.stations.load()).clone();
 
                 log_debug("AppState::initialize_routing_graph - fetching Overpass stations (active + historical)");
-                let cache_key = "overpass_stations_london".to_string();
+                let cache_key = "overpass_stations_london".to_owned();
                 let cache_clone = self.cache.clone();
                 let cache_key_clone = cache_key.clone();
 
@@ -9059,14 +8949,14 @@ mod server {
                     payload.file_path.len()
                 ));
                 return Json(ApiResponse::error(
-                    "File path must be at most 1024 bytes".to_string(),
+                    "File path must be at most 1024 bytes".to_owned(),
                 ));
             }
             // Security: reject paths containing null bytes (poison null byte attack)
             if payload.file_path.contains('\0') {
                 log_error("IDE write rejected: file path contains null byte");
                 return Json(ApiResponse::error(
-                    "File path must not contain null bytes".to_string(),
+                    "File path must not contain null bytes".to_owned(),
                 ));
             }
 
@@ -9138,7 +9028,7 @@ mod server {
                     MAX_IDE_WRITE_SIZE
                 ));
                 return Json(ApiResponse::error(
-                    "Payload too large: maximum 50 MB permitted.".to_string(),
+                    "Payload too large: maximum 50 MB permitted.".to_owned(),
                 ));
             }
 
@@ -9151,7 +9041,7 @@ mod server {
                     log_error(&format!("Failed to write modifications to disk: {}", e));
                     // Security: scrub OS error details (may reveal filesystem paths or permissions)
                     Json(ApiResponse::error(
-                        "Failed to write file. Please check permissions and try again.".to_string(),
+                        "Failed to write file. Please check permissions and try again.".to_owned(),
                     ))
                 }
             }
@@ -9937,7 +9827,7 @@ mod server {
 
             use std::collections::hash_map::Entry;
             // (name, color, group, sub_geometries)
-            #[allow(clippy::type_complexity)]
+            #[expect(clippy::type_complexity, reason = "hashmap of groups necessarily complex")]
             let mut groups: HashMap<
                 String,
                 (String, String, String, Vec<Vec<Coordinate>>),
@@ -10155,120 +10045,120 @@ mod server {
                 }
 
                 let group = if is_nr {
-                    "nationalrail".to_string()
+                    "nationalrail".to_owned()
                 } else {
-                    "tfl".to_string()
+                    "tfl".to_owned()
                 };
                 let op_lower = track.operator_name.to_lowercase();
                 // Flexible contains-based matching to handle Overpass naming variations
                 let color = if op_lower.contains("southeastern") || op_lower.contains("south eastern") {
-                    "#E20000".to_string()
+                    "#E20000".to_owned()
                 } else if op_lower.contains("southern") && !op_lower.contains("great") {
-                    "#004328".to_string()
+                    "#004328".to_owned()
                 } else if op_lower.contains("thameslink") {
-                    "#0081C6".to_string()
+                    "#0081C6".to_owned()
                 } else if op_lower.contains("great western") || op_lower == "gwr" {
-                    "#0A493B".to_string()
+                    "#0A493B".to_owned()
                 } else if op_lower.contains("greater anglia") {
-                    "#D90A07".to_string()
+                    "#D90A07".to_owned()
                 } else if op_lower == "c2c" {
-                    "#B71C8C".to_string()
+                    "#B71C8C".to_owned()
                 } else if op_lower.contains("chiltern") {
-                    "#00205B".to_string()
+                    "#00205B".to_owned()
                 } else if op_lower.contains("south western") || op_lower.contains("swr") {
-                    "#003A70".to_string()
+                    "#003A70".to_owned()
                 } else if op_lower.contains("underground") || op_lower.contains("london underground") {
-                    "#003688".to_string()
+                    "#003688".to_owned()
                 } else if op_lower.contains("elizabeth") {
-                    "#7373D8".to_string()
+                    "#7373D8".to_owned()
                 } else if op_lower.contains("overground") {
-                    "#EF7C00".to_string()
+                    "#EF7C00".to_owned()
                 } else if op_lower == "dlr" {
-                    "#00AFAD".to_string()
+                    "#00AFAD".to_owned()
                 } else if op_lower.contains("avanti") {
-                    "#ff4713".to_string()
+                    "#ff4713".to_owned()
                 } else if op_lower.contains("caledonian") {
-                    "#092A30".to_string()
+                    "#092A30".to_owned()
                 } else if op_lower.contains("east midlands") {
-                    "#452d48".to_string()
+                    "#452d48".to_owned()
                 } else if op_lower.contains("eurostar") {
-                    "#116bfe".to_string()
+                    "#116bfe".to_owned()
                 } else if op_lower.contains("grand central") {
-                    "#9d7729".to_string()
+                    "#9d7729".to_owned()
                 } else if op_lower.contains("heathrow") {
-                    "#666666".to_string()
+                    "#666666".to_owned()
                 } else if op_lower.contains("gatwick") {
-                    "#EB1E2B".to_string()
+                    "#EB1E2B".to_owned()
                 } else if op_lower.contains("great northern") {
-                    "#00A6E2".to_string()
+                    "#00A6E2".to_owned()
                 } else if op_lower.contains("crosscountry") || op_lower.contains("cross country") {
-                    "#660000".to_string()
+                    "#660000".to_owned()
                 } else if op_lower.contains("first rail") {
-                    "#1e295d".to_string()
+                    "#1e295d".to_owned()
                 } else if op_lower.contains("hull") {
-                    "#00A1DE".to_string()
+                    "#00A1DE".to_owned()
                 } else if op_lower.contains("lner") || op_lower.contains("london north eastern") {
-                    "#BE0027".to_string()
+                    "#BE0027".to_owned()
                 } else if op_lower.contains("lumo") {
-                    "#00B2A9".to_string()
+                    "#00B2A9".to_owned()
                 } else if op_lower.contains("merseyrail") {
-                    "#005CA9".to_string()
+                    "#005CA9".to_owned()
                 } else if (op_lower.contains("northern") && !op_lower.contains("great")) || op_lower.contains("northern-trains") {
-                    "#0072CE".to_string()
+                    "#0072CE".to_owned()
                 } else if op_lower.contains("scotrail") {
-                    "#1C1CFF".to_string()
+                    "#1C1CFF".to_owned()
                 } else if op_lower.contains("transpennine") || op_lower == "tpe" {
-                    "#0072CE".to_string()
+                    "#0072CE".to_owned()
                 } else if op_lower.contains("transport for wales") || op_lower.contains("tfw") {
-                    "#E7204E".to_string()
+                    "#E7204E".to_owned()
                 } else if op_lower.contains("west midlands") {
-                    "#004B87".to_string()
+                    "#004B87".to_owned()
                 } else if op_lower.contains("london north western") || op_lower.contains("lnr") {
-                    "#004F30".to_string()
+                    "#004F30".to_owned()
                 } else if op_lower.contains("stansted") {
-                    "#005288".to_string()
+                    "#005288".to_owned()
                 } else if op_lower.contains("ni railways") || op_lower.contains("northern ireland") {
-                    "#0062A5".to_string()
+                    "#0062A5".to_owned()
                 } else if op_lower.contains("island line") || op_lower.contains("isle of wight") {
-                    "#0099FF".to_string()
+                    "#0099FF".to_owned()
                 } else if op_lower.contains("tyne") || op_lower.contains("wear") {
-                    "#FFCC00".to_string()
+                    "#FFCC00".to_owned()
                 } else if op_lower.contains("glasgow subway") || op_lower.contains("glasgow-subway") {
-                    "#FF6600".to_string()
+                    "#FF6600".to_owned()
                 } else if op_lower.contains("manchester metrolink") || op_lower.contains("manchester-metrolink") {
-                    "#FFCC00".to_string()
+                    "#FFCC00".to_owned()
                 } else if op_lower.contains("sheffield supertram") || op_lower.contains("sheffield-supertram") {
-                    "#0055A5".to_string()
+                    "#0055A5".to_owned()
                 } else if op_lower.contains("nottingham") || op_lower == "net" {
-                    "#007C32".to_string()
+                    "#007C32".to_owned()
                 } else if op_lower.contains("west midlands metro") || op_lower.contains("midland metro") {
-                    "#0072C6".to_string()
+                    "#0072C6".to_owned()
                 } else if op_lower.contains("edinburgh") {
-                    "#7C2542".to_string()
+                    "#7C2542".to_owned()
                 } else if op_lower.contains("blackpool") {
-                    "#522D80".to_string()
+                    "#522D80".to_owned()
                 } else if op_lower.contains("ifs") || op_lower.contains("cable car") {
-                    "#593282".to_string()
+                    "#593282".to_owned()
                 } else if op_lower.contains("luton") {
-                    "#532D6D".to_string()
+                    "#532D6D".to_owned()
                 } else if op_lower.contains("gatwick shuttle") || op_lower.contains("gatwick-shuttle") {
-                    "#00A651".to_string()
+                    "#00A651".to_owned()
                 } else if op_lower.contains("birmingham air") || op_lower.contains("birmingham-air") {
-                    "#00A1DE".to_string()
+                    "#00A1DE".to_owned()
                 } else if op_lower.contains("isle of man") || op_lower.contains("iom") {
-                    "#8C1D40".to_string()
+                    "#8C1D40".to_owned()
                 } else if op_lower.contains("manx electric") || op_lower.contains("manx-electric") {
-                    "#006A4E".to_string()
+                    "#006A4E".to_owned()
                 } else if op_lower.contains("snaefell") {
-                    "#1D428A".to_string()
+                    "#1D428A".to_owned()
                 } else if op_lower.contains("getlink") || op_lower.contains("eurotunnel") || op_lower.contains("le shuttle") {
-                    "#002F6C".to_string()
+                    "#002F6C".to_owned()
                 } else if op_lower.contains("imrc") {
-                    "#8C1D40".to_string()
+                    "#8C1D40".to_owned()
                 } else if is_nr {
-                    "#c96a1e".to_string()
+                    "#c96a1e".to_owned()
                 } else {
-                    "#4a6fa5".to_string()
+                    "#4a6fa5".to_owned()
                 };
 
                 segs.push(RailSegment {
@@ -10978,7 +10868,7 @@ mod server {
 
                 let mut st = Station::new(format!("ai_station_{}_{}", ts, i), final_name, *coord);
                 st.zone = 0; // zone 0 flags an AI-proposed station for the UI
-                st.lines = vec!["AI Plan".to_string()];
+                st.lines = vec!["AI Plan".to_owned()];
                 new_stations.push(st);
             }
 
@@ -11177,12 +11067,12 @@ mod server {
             if selected.len() < 2 {
                 log_warn(&format!("POST /api/ai/link-stations - only {} stations selected. Need at least 2 to link.", selected.len()));
                 return Json(ApiResponse::error(
-                    "Need at least 2 stations to link. Run 'AI: Add Station' first.".to_string(),
+                    "Need at least 2 stations to link. Run 'AI: Add Station' first.".to_owned(),
                 ));
             }
 
             let philosophy = if req.philosophy.is_empty() {
-                "sub_surface".to_string()
+                "sub_surface".to_owned()
             } else {
                 req.philosophy.clone()
             };
@@ -11291,8 +11181,8 @@ mod server {
                         format!("Avg of Open-Meteo ({:.1}°C) & Yr.no ({:.1}°C)", t1, t2),
                     ))
                 }
-                (Some(t), None) => Some((t, "Open-Meteo".to_string())),
-                (None, Some(t)) => Some((t, "Yr.no".to_string())),
+                (Some(t), None) => Some((t, "Open-Meteo".to_owned())),
+                (None, Some(t)) => Some((t, "Yr.no".to_owned())),
                 _ => None,
             }
         }
@@ -11492,10 +11382,10 @@ mod server {
 
             if is_historical {
                 return Json(ApiResponse::success(vec![StationArrival {
-                    line_name: "Historical Heritage".to_string(),
-                    destination_name: "Museum / Ceremonial Display".to_string(),
+                    line_name: "Historical Heritage".to_owned(),
+                    destination_name: "Museum / Ceremonial Display".to_owned(),
                     time_to_station_min: 999.0,
-                    platform_name: "Platform 1 (Disused)".to_string(),
+                    platform_name: "Platform 1 (Disused)".to_owned(),
                 }]));
             }
 
@@ -12202,7 +12092,7 @@ mod server {
         ) -> Json<ApiResponse<Vec<crate::ml_predictor::DelayPrediction>>> {
             let lines = state.lines.load().as_ref().clone();
             let weather = state.weather.load();
-            let (temp, _source) = weather.as_ref().as_ref().cloned().unwrap_or((15.0, "default".to_string()));
+            let (temp, _source) = weather.as_ref().as_ref().cloned().unwrap_or((15.0, "default".to_owned()));
             let predictions = crate::ml_predictor::predict_all_lines(&lines, Some(temp), None, None);
             Json(ApiResponse::success(predictions))
         }
@@ -12903,7 +12793,6 @@ mod server {
         };
         use std::sync::Arc;
         use tower_http::cors::CorsLayer;
-
         pub(crate) async fn run_server(
             state: AppState,
             config: Config,
@@ -13166,7 +13055,7 @@ mod server {
                     } else if let Some(s) = panic_payload.downcast_ref::<String>() {
                         s.clone()
                     } else {
-                        "Unknown route construction panic".to_string()
+                        "Unknown route construction panic".to_owned()
                     };
                     log_error(&format!(
                         "run_server - FATAL: route construction panicked: {}",
@@ -13361,7 +13250,7 @@ mod server {
             ));
 
             let cache_path = dirs::cache_dir()
-                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_string()))?
+                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_owned()))?
                 .join("alex-tube-v")
                 .join("network.bin");
 
@@ -13416,14 +13305,14 @@ mod server {
                         },
                         zone: s.zone as u8,
                         is_interchange: if s.is_interchange { 1 } else { 0 },
-                        _padding: [0u8; 2],
+                        _padding: [0_u8; 2],
                         name_hash: hash,
                     }
                 })
                 .collect();
 
             let cache_path = dirs::cache_dir()
-                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_string()))?
+                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_owned()))?
                 .join("alex-tube-v")
                 .join("spatial_pods.bin");
 
@@ -13443,13 +13332,13 @@ mod server {
         /// Load station pods from memory-mapped binary file — zero parsing cost.
         pub fn load_spatial_cache_mmap() -> AppResult<Vec<StationPod>> {
             let cache_path = dirs::cache_dir()
-                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_string()))?
+                .ok_or_else(|| AppError::Config("Cannot find cache directory".to_owned()))?
                 .join("alex-tube-v")
                 .join("spatial_pods.bin");
 
             if !cache_path.exists() {
                 return Err(AppError::Config(
-                    "Spatial cache not found. Run with --build-cache first.".to_string(),
+                    "Spatial cache not found. Run with --build-cache first.".to_owned(),
                 ));
             }
 
@@ -13493,7 +13382,7 @@ mod server {
             pub(crate) len: usize,
             /// Live memory mapping — kept alive so the kernel-backed region remains
             /// valid for the lifetime of the store. `memmap2::Mmap` is `Send + Sync`.
-            #[allow(dead_code)]
+            #[expect(dead_code, reason = "mmap kept alive for kernel-backed region")]
             pub(crate) mmap: memmap2::Mmap,
         }
 
@@ -13743,7 +13632,7 @@ fn main() {
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("london_transport");
-        let mut cleared = 0usize;
+        let mut cleared = 0_usize;
         if let Ok(entries) = std::fs::read_dir(&cache_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
@@ -13808,7 +13697,7 @@ fn main() {
         let target_os = std::env::consts::OS;
         let exe_path = std::env::current_exe()
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_string());
+            .unwrap_or_else(|_| "unknown".to_owned());
 
         log_info(&format!(
             "London Transport Network v{} ? {} profile (opt-level {})",
@@ -13904,7 +13793,7 @@ fn main() {
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "Unknown Location".to_string());
+            .unwrap_or_else(|| "Unknown Location".to_owned());
         let payload = info
             .payload()
             .downcast_ref::<&str>()
@@ -14757,7 +14646,7 @@ async fn shuttle_main(
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3000);
-    config.server_host = "0.0.0.0".to_string();
+    config.server_host = "0.0.0.0".to_owned();
     config.server_port = port;
 
     log_info(&format!(
@@ -15433,21 +15322,7 @@ mod multi_modal_router {
         }
     }
 
-    /// Compare two multi-modal journeys and return the recommended one.
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn compare_journeys(journeys: &[MultiModalJourney]) -> Vec<(usize, String, f64)> {
-        let mut results = Vec::new();
-        for (i, j) in journeys.iter().enumerate() {
-            let eco_score = if j.total_co2_kg < 0.1 { 100.0 } else { (1.0 / j.total_co2_kg).min(1.0) * 100.0 };
-            let speed_score = if j.total_duration_min < 15.0 { 100.0 } else { (60.0 / j.total_duration_min).min(1.0) * 100.0 };
-            let cost_score = if j.total_cost_gbp < 1.0 { 100.0 } else { (5.0 / j.total_cost_gbp).min(1.0) * 100.0 };
-            let overall = eco_score * 0.3 + speed_score * 0.4 + cost_score * 0.3;
-            let label = if overall > 80.0 { "Recommended" } else if overall > 60.0 { "Good option" } else { "Possible" };
-            results.push((i, format!("{} (score: {:.0})", label, overall), overall));
-        }
-        results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        results
-    }
+
 }
 
 // ============================================================================
@@ -15491,12 +15366,12 @@ mod realtime_integration {
     }
 
     /// Global real-time vehicle positions
-    pub(crate) static RT_VEHICLES: once_cell::sync::Lazy<Mutex<Vec<VehiclePosition>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
+    pub(crate) static RT_VEHICLES: std::sync::LazyLock<Mutex<Vec<VehiclePosition>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
     /// Global real-time predictions
-    pub(crate) static RT_PREDICTIONS: once_cell::sync::Lazy<Mutex<Vec<RTPrediction>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
+    pub(crate) static RT_PREDICTIONS: std::sync::LazyLock<Mutex<Vec<RTPrediction>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
     /// Simulate vehicle positions based on line geometry (for demo/offline use)
     pub(crate) fn simulate_vehicles(lines: &[Line]) -> Vec<VehiclePosition> {
@@ -15586,23 +15461,7 @@ mod realtime_integration {
         preds.retain(|p| p.timestamp_ms > cutoff);
     }
 
-    /// OpenTripPlanner integration stub — would send HTTP request to OTP server
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) async fn query_otp(
-        from: Coordinate,
-        to: Coordinate,
-        otp_url: &str,
-    ) -> Result<String, String> {
-        let url = format!(
-            "{}/otp/routers/default/plan?fromPlace={},{}&toPlace={},{}&mode=TRANSIT,WALK",
-            otp_url.trim_end_matches('/'),
-            from.lat, from.lon, to.lat, to.lon
-        );
-        match reqwest::get(&url).await {
-            Ok(resp) => resp.text().await.map_err(|e| format!("OTP parse error: {}", e)),
-            Err(e) => Err(format!("OTP request failed: {}", e)),
-        }
-    }
+
 }
 
 // ============================================================================
@@ -15647,13 +15506,8 @@ mod occupancy_engine {
     }
 
     /// Global live occupancy — updated every 5s by background task
-    pub(crate) static OCCUPANCY: once_cell::sync::Lazy<Arc<ArcSwap<OccupancySnapshot>>> =
-        once_cell::sync::Lazy::new(|| Arc::new(ArcSwap::new(Arc::new(OccupancySnapshot::empty()))));
-
-    /// Historical occupancy profiles: station_id -> (hour_of_day -> average occupancy)
-    #[expect(dead_code, reason = "reserved for future use")]
-    static HISTORICAL_OCCUPANCY: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, Vec<f64>>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+    pub(crate) static OCCUPANCY: std::sync::LazyLock<Arc<ArcSwap<OccupancySnapshot>>> =
+        std::sync::LazyLock::new(|| Arc::new(ArcSwap::new(Arc::new(OccupancySnapshot::empty()))));
 
     /// Simulate occupancy data (since we lack live TfL feed, we generate realistic estimates)
     pub(crate) fn tick_occupancy(stations: &[Station], lines: &[Line]) {
@@ -15713,29 +15567,7 @@ mod occupancy_engine {
         OCCUPANCY.store(Arc::new(snapshot));
     }
 
-    /// Get interpolated occupancy for a station at a given time (for historical playback)
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_historical_occupancy(station_id: &str, hour: f64) -> f64 {
-        let hist = HISTORICAL_OCCUPANCY.lock().unwrap();
-        if let Some(profile) = hist.get(station_id) {
-            let idx = (hour as usize).min(23);
-            profile[idx]
-        } else {
-            0.3
-        }
-    }
 
-    /// Record a real observation (called by API when TfL data arrives)
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn record_observation(station_id: &str, occupancy: f64) {
-        let mut hist = HISTORICAL_OCCUPANCY.lock().unwrap();
-        let entry = hist.entry(station_id.to_string()).or_insert_with(|| vec![0.3; 24]);
-        let hour = Utc::now().hour() as usize;
-        if hour < 24 {
-            // Exponential moving average
-            entry[hour] = entry[hour] * 0.85 + occupancy * 0.15;
-        }
-    }
 }
 
 // ============================================================================
@@ -15889,10 +15721,6 @@ mod demand_forecaster {
     /// A single demand observation
     #[derive(Debug, Clone)]
     pub(crate) struct DemandObservation {
-        #[expect(dead_code, reason = "reserved for future use")]
-        pub(crate) station_id: String,
-        #[expect(dead_code, reason = "reserved for future use")]
-        pub(crate) timestamp_ms: i64,
         pub(crate) passenger_count: f64,
     }
 
@@ -15909,8 +15737,8 @@ mod demand_forecaster {
     }
 
     /// Global demand observation buffer (ring buffer per station)
-    pub(crate) static DEMAND_HISTORY: once_cell::sync::Lazy<Mutex<HashMap<String, Vec<DemandObservation>>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+    pub(crate) static DEMAND_HISTORY: std::sync::LazyLock<Mutex<HashMap<String, Vec<DemandObservation>>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     const MAX_HISTORY_PER_STATION: usize = 1440; // 24h at 1min resolution
 
@@ -16086,13 +15914,8 @@ mod metrics_collector {
                 total: AtomicU64::new(0),
             }
         }
-        #[expect(dead_code, reason = "reserved for future use")]
-        pub(crate) fn observe(&self, value: f64) {
-            let mut counts = self.counts.lock().unwrap();
-            let idx = self.buckets.iter().position(|b| value <= *b).unwrap_or(self.buckets.len());
-            counts[idx] += 1;
-            self.total.fetch_add(1, Ordering::Relaxed);
-        }
+
+
     }
 
     // ========================================================================
@@ -16142,8 +15965,8 @@ mod metrics_collector {
     );
 
     /// Request latency histogram (ms)
-    pub(crate) static REQUEST_LATENCY_MS: once_cell::sync::Lazy<Histogram> =
-        once_cell::sync::Lazy::new(|| {
+    pub(crate) static REQUEST_LATENCY_MS: std::sync::LazyLock<Histogram> =
+        std::sync::LazyLock::new(|| {
             Histogram::new(
                 "request_latency_ms",
                 "HTTP request latency in milliseconds",
@@ -16218,8 +16041,7 @@ mod carbon_estimator {
     const RAIL_G_PER_KM: f64 = 41.0;
     const BUS_G_PER_KM: f64 = 89.0;
     const CAR_G_PER_KM: f64 = 171.0;
-    #[expect(dead_code, reason = "reserved for future use")]
-    const BIKE_G_PER_KM: f64 = 0.0;
+
     const WALK_G_PER_KM: f64 = 0.0;
 
     /// Calculate carbon footprint for a journey given legs
@@ -16274,8 +16096,8 @@ mod i18n {
     /// Supported language codes
     pub(crate) const SUPPORTED_LANGUAGES: &[&str] = &["en", "fr", "de", "es", "zh", "ja", "it", "pt"];
 
-    pub(crate) static CURRENT_LANGUAGE: once_cell::sync::Lazy<Mutex<String>> =
-        once_cell::sync::Lazy::new(|| Mutex::new("en".to_string()));
+    pub(crate) static CURRENT_LANGUAGE: std::sync::LazyLock<Mutex<String>> =
+        std::sync::LazyLock::new(|| Mutex::new("en".to_owned()));
 
     /// Set active language
     pub(crate) fn set_language(lang: &str) {
@@ -16291,7 +16113,7 @@ mod i18n {
     /// Translation table (key -> [en, fr, de, es, zh, ja, it, pt])
     type TranslationMap = HashMap<&'static str, [&'static str; 8]>;
 
-    static TRANSLATIONS: once_cell::sync::Lazy<TranslationMap> = once_cell::sync::Lazy::new(|| {
+    static TRANSLATIONS: std::sync::LazyLock<TranslationMap> = std::sync::LazyLock::new(|| {
         let mut m: TranslationMap = HashMap::new();
         m.insert("app.title",          ["Alex's Tube V", "Tube V d'Alex", "Alex' Tube V", "Tube V de Alex", "亚历克斯地铁V", "アレックスのチューブV", "Tube V di Alex", "Metrô V do Alex"]);
         m.insert("search.placeholder", ["Search stations, lines, POIs...", "Rechercher gares, lignes, POIs...", "Bahnhöfe, Linien, POIs suchen...", "Buscar estaciones, líneas, POIs...", "搜索车站、线路、兴趣点...", "駅、路線、POIを検索...", "Cerca stazioni, linee, POI...", "Pesquisar estações, linhas, POIs..."]);
@@ -16354,8 +16176,8 @@ mod poi_database {
     }
 
     /// Global POI list (loaded from cache or generated)
-    pub(crate) static POI_DATABASE: once_cell::sync::Lazy<std::sync::Mutex<Vec<PointOfInterest>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static POI_DATABASE: std::sync::LazyLock<std::sync::Mutex<Vec<PointOfInterest>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Known London landmarks as POIs
     fn get_london_pois() -> Vec<PointOfInterest> {
@@ -16470,8 +16292,8 @@ mod accessibility_db {
         pub(crate) notes: Vec<String>,
     }
 
-    pub(crate) static ACCESSIBILITY_DATA: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, StationAccessibility>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+    pub(crate) static ACCESSIBILITY_DATA: std::sync::LazyLock<std::sync::Mutex<HashMap<String, StationAccessibility>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
     /// Initialize from known TfL accessibility data
     pub(crate) fn initialize_accessibility(stations: &[Station]) {
@@ -16533,8 +16355,8 @@ mod social_sharing {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    pub(crate) static SHARED_ROUTES: once_cell::sync::Lazy<Mutex<HashMap<String, SharedRoute>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+    pub(crate) static SHARED_ROUTES: std::sync::LazyLock<Mutex<HashMap<String, SharedRoute>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct SharedRoute {
@@ -16738,8 +16560,8 @@ mod city_config {
     use serde::{Deserialize, Serialize};
     pub(crate) type CityInfo = String;
     pub(crate) fn get_all_cities() -> Vec<CityInfo> { vec![] }
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn switch_city(_id: &str) {} 
+
+
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16758,10 +16580,10 @@ mod city_config {
         pub(crate) overpass_query: Option<String>,
     }
 
-    pub(crate) static CURRENT_CITY: once_cell::sync::Lazy<Mutex<String>> =
-        once_cell::sync::Lazy::new(|| Mutex::new("london".to_string()));
+    pub(crate) static CURRENT_CITY: std::sync::LazyLock<Mutex<String>> =
+        std::sync::LazyLock::new(|| Mutex::new("london".to_owned()));
 
-    pub(crate) static CITIES: once_cell::sync::Lazy<Vec<CityDefinition>> = once_cell::sync::Lazy::new(|| {
+    pub(crate) static CITIES: std::sync::LazyLock<Vec<CityDefinition>> = std::sync::LazyLock::new(|| {
         vec![
             CityDefinition {
                 id: "london".into(), name: "London".into(), country: "United Kingdom".into(),
@@ -16855,11 +16677,11 @@ mod citizen_reports {
         pub(crate) resolved: bool,
     }
 
-    pub(crate) static REPORTS: once_cell::sync::Lazy<Mutex<Vec<CitizenReport>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
+    pub(crate) static REPORTS: std::sync::LazyLock<Mutex<Vec<CitizenReport>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static REPORT_ID_COUNTER: once_cell::sync::Lazy<Mutex<u64>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(0));
+    pub(crate) static REPORT_ID_COUNTER: std::sync::LazyLock<Mutex<u64>> =
+        std::sync::LazyLock::new(|| Mutex::new(0));
 
     pub(crate) fn submit_report(
         report_type: &str,
@@ -16911,16 +16733,8 @@ mod citizen_reports {
         }
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn resolve_report(id: &str) -> bool {
-        let mut db = REPORTS.lock().unwrap();
-        if let Some(report) = db.iter_mut().find(|r| r.id == id) {
-            report.resolved = true;
-            true
-        } else {
-            false
-        }
-    }
+
+
 }
 
 // ============================================================================
@@ -16930,24 +16744,9 @@ mod citizen_reports {
 mod smart_alerts {
     use crate::primitives::Disruption;
     use serde::{Deserialize, Serialize};
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) type SmartAlert = String;
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_active_alerts() -> Vec<SmartAlert> { vec![] }
+
     use std::collections::HashSet;
     use std::sync::Mutex;
-
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) struct AlertPreference {
-        pub(crate) user_id: String,
-        pub(crate) saved_routes: Vec<(String, String)>, // (from_station, to_station)
-        pub(crate) watched_lines: Vec<String>,
-        pub(crate) notify_crowding: bool,
-        pub(crate) notify_delays: bool,
-        pub(crate) notify_lifts: bool,
-        pub(crate) email: Option<String>,
-    }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct AlertEvent {
@@ -16962,11 +16761,11 @@ mod smart_alerts {
         pub(crate) read: bool,
     }
 
-    pub(crate) static ALERT_EVENTS: once_cell::sync::Lazy<Mutex<Vec<AlertEvent>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
+    pub(crate) static ALERT_EVENTS: std::sync::LazyLock<Mutex<Vec<AlertEvent>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static ALERT_COUNTER: once_cell::sync::Lazy<Mutex<u64>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(0));
+    pub(crate) static ALERT_COUNTER: std::sync::LazyLock<Mutex<u64>> =
+        std::sync::LazyLock::new(|| Mutex::new(0));
 
     /// Generate alerts based on current disruptions
     pub(crate) fn generate_alerts(
@@ -17893,11 +17692,11 @@ mod offline_mode {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    pub(crate) static CACHE_ENABLED: once_cell::sync::Lazy<Mutex<bool>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(false));
+    pub(crate) static CACHE_ENABLED: std::sync::LazyLock<Mutex<bool>> =
+        std::sync::LazyLock::new(|| Mutex::new(false));
 
-    pub(crate) static OFFLINE_CACHE: once_cell::sync::Lazy<Mutex<HashMap<String, String>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+    pub(crate) static OFFLINE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     /// Enable or disable offline caching mode
     pub(crate) fn set_offline_mode(enabled: bool) {
@@ -17905,25 +17704,7 @@ mod offline_mode {
         log_info(&format!("offline_mode: caching {}", if enabled { "ENABLED" } else { "DISABLED" }));
     }
 
-    /// Cache an API response keyed by URL
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn cache_response(url: &str, body: &str) {
-        if *CACHE_ENABLED.lock().unwrap() {
-            OFFLINE_CACHE.lock().unwrap().insert(url.to_string(), body.to_string());
-        }
-    }
 
-    /// Retrieve a cached response
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_cached(url: &str) -> Option<String> {
-        OFFLINE_CACHE.lock().unwrap().get(url).cloned()
-    }
-
-    /// Check if a response is in cache
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn is_cached(url: &str) -> bool {
-        OFFLINE_CACHE.lock().unwrap().contains_key(url)
-    }
 
     /// Clear all cached data
     pub(crate) fn clear_cache() {
@@ -17971,8 +17752,8 @@ mod on_the_fly_drawing {
     }
 
     /// Active drawing sessions
-    pub(crate) static DRAWING_SESSIONS: once_cell::sync::Lazy<std::sync::Mutex<Vec<DrawingSession>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static DRAWING_SESSIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DrawingSession>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Create a new drawing session
     pub(crate) fn start_drawing(name: &str, color: &str) -> String {
@@ -18131,8 +17912,8 @@ mod weather_integration {
     }
 
     /// Global weather state
-    pub(crate) static WEATHER_STATE: once_cell::sync::Lazy<Mutex<Option<WeatherForecast>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(None));
+    pub(crate) static WEATHER_STATE: std::sync::LazyLock<Mutex<Option<WeatherForecast>>> =
+        std::sync::LazyLock::new(|| Mutex::new(None));
 
     /// Fetch weather from OpenWeatherMap (stub — would make HTTP request)
     pub(crate) async fn fetch_weather(_api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
@@ -18204,7 +17985,7 @@ mod historical_archive {
         pub(crate) significance: u8, // 1-5 (5 = major)
     }
 
-    pub(crate) static HISTORY: once_cell::sync::Lazy<Vec<HistoricalEvent>> = once_cell::sync::Lazy::new(|| {
+    pub(crate) static HISTORY: std::sync::LazyLock<Vec<HistoricalEvent>> = std::sync::LazyLock::new(|| {
         vec![
             HistoricalEvent { year: 1863, month: 1, day: 10, event_type: "line_opened".into(), station_id: None, station_name: None, line_id: Some("metropolitan".into()), line_name: Some("Metropolitan Railway".into()), description: "World's first underground railway opened between Paddington and Farringdon".into(), significance: 5 },
             HistoricalEvent { year: 1890, month: 12, day: 18, event_type: "line_opened".into(), station_id: None, station_name: None, line_id: Some("northern".into()), line_name: Some("City & South London Railway".into()), description: "First deep-level tube line opened (King William Street to Stockwell)".into(), significance: 5 },
@@ -18229,10 +18010,6 @@ mod historical_archive {
         HISTORY.iter().filter(|e| e.year == year).collect()
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_history_by_type(event_type: &str) -> Vec<&'static HistoricalEvent> {
-        HISTORY.iter().filter(|e| e.event_type == event_type).collect()
-    }
 
     pub(crate) fn get_timeline() -> Vec<&'static HistoricalEvent> {
         let mut events: Vec<&'static HistoricalEvent> = HISTORY.iter().collect();
@@ -18240,23 +18017,8 @@ mod historical_archive {
         events
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn format_timeline_html() -> String {
-        let mut html = String::from("<div class='timeline'>");
-        for event in get_timeline() {
-            let sig_stars = "★".repeat(event.significance as usize);
-            html.push_str(&format!(
-                "<div class='timeline-event sig-{}'>\
-                   <span class='timeline-date'>{}-{:02}-{:02}</span>\
-                   <span class='timeline-desc'>{}</span>\
-                   <span class='timeline-sig'>{}</span>\
-                 </div>",
-                event.significance, event.year, event.month, event.day, event.description, sig_stars
-            ));
-        }
-        html.push_str("</div>");
-        html
-    }
+
+
 }
 
 // ============================================================================
@@ -18430,20 +18192,6 @@ mod ml_predictor {
         pub(crate) timestamp_ms: i64,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) struct MLFeatures {
-        pub(crate) hour: f64,
-        pub(crate) is_weekend: f64,
-        pub(crate) is_peak: f64,
-        pub(crate) temperature_c: f64,
-        pub(crate) precipitation_mm: f64,
-        pub(crate) wind_speed_ms: f64,
-        pub(crate) line_index: f64,
-        pub(crate) station_count: f64,
-        pub(crate) historical_delay_min: f64,
-    }
-
     /// Pre-trained linear model weights (would be loaded from file in production)
     /// Format: [bias, hour, is_weekend, is_peak, temp_c, precip_mm, wind_ms, line_idx, station_cnt, hist_delay]
     const MODEL_WEIGHTS: [f64; 10] = [0.5, 0.12, -0.3, 0.8, -0.02, 0.15, 0.1, 0.05, 0.01, 0.4];
@@ -18570,7 +18318,7 @@ mod scenario_planner {
     ) -> ScenarioImpact {
         let mut isolated = Vec::new();
         let mut total_delay = 0.0;
-        let mut affected = 0usize;
+        let mut affected = 0_usize;
 
         let mut affected_lines: HashSet<&str> = HashSet::new();
         let mut affected_stations: HashSet<&str> = HashSet::new();
@@ -18831,8 +18579,8 @@ mod tfl_live_integration {
     }
 
     /// Global cached TfL status
-    pub(crate) static TFL_STATUS_CACHE: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, Vec<TfLLineStatus>>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+    pub(crate) static TFL_STATUS_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<TfLLineStatus>>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
     /// Fetch line status from TfL API
     pub(crate) async fn fetch_line_status(api_key: &str) -> Result<Vec<TfLLineStatus>, String> {
@@ -18941,8 +18689,6 @@ mod eco_routing {
     const TUBE_CO2_PER_KM: f64 = 0.028;
     const BUS_CO2_PER_KM: f64 = 0.089;
     const RAIL_CO2_PER_KM: f64 = 0.041;
-    #[expect(dead_code, reason = "reserved for future use")]
-    const WALK_CO2_PER_KM: f64 = 0.0;
 
     /// Find the most eco-friendly route between two stations
     pub(crate) fn plan_eco_route(
@@ -19062,20 +18808,11 @@ mod crowd_sourcing {
         pub(crate) notes: Option<String>,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) struct ValidationBadge {
-        pub(crate) user: String,
-        pub(crate) badge_type: String, // "mapper", "validator", "photographer", "expert"
-        pub(crate) contributions: u32,
-        pub(crate) approvals: u32,
-    }
+    pub(crate) static CONTRIBUTIONS: std::sync::LazyLock<Mutex<Vec<Contribution>>> =
+        std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static CONTRIBUTIONS: once_cell::sync::Lazy<Mutex<Vec<Contribution>>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
-
-    pub(crate) static CONTRIBUTION_ID: once_cell::sync::Lazy<Mutex<u64>> =
-        once_cell::sync::Lazy::new(|| Mutex::new(0));
+    pub(crate) static CONTRIBUTION_ID: std::sync::LazyLock<Mutex<u64>> =
+        std::sync::LazyLock::new(|| Mutex::new(0));
 
     /// Submit a new contribution
     pub(crate) fn submit_contribution(
@@ -19166,13 +18903,13 @@ mod parking_integration {
         pub(crate) updated_at_ms: i64,
     }
 
-    pub(crate) static PARKING_FACILITIES: once_cell::sync::Lazy<std::sync::Mutex<Vec<ParkingFacility>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PARKING_FACILITIES: std::sync::LazyLock<std::sync::Mutex<Vec<ParkingFacility>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Initialize parking facilities for major stations
     pub(crate) fn initialize_parking(stations: &[Station]) {
         let mut db = PARKING_FACILITIES.lock().unwrap();
-        let mut id = 0u32;
+        let mut id = 0_u32;
 
         for st in stations.iter().filter(|s| s.is_interchange && s.is_open).take(30) {
             id += 1;
@@ -19273,7 +19010,7 @@ mod cycle_network {
         pub(crate) status: String, // "active", "full", "empty", "closed"
     }
 
-    pub(crate) static CYCLE_ROUTES: once_cell::sync::Lazy<Vec<CycleRoute>> = once_cell::sync::Lazy::new(|| {
+    pub(crate) static CYCLE_ROUTES: std::sync::LazyLock<Vec<CycleRoute>> = std::sync::LazyLock::new(|| {
         vec![
             CycleRoute {
                 id: "cs3".into(), name: "CS3 — Superhighway 3".into(), route_type: "cs".into(),
@@ -19306,8 +19043,8 @@ mod cycle_network {
         ]
     });
 
-    pub(crate) static DOCKING_STATIONS: once_cell::sync::Lazy<std::sync::Mutex<Vec<DockingStation>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static DOCKING_STATIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DockingStation>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_docking(stations: &[Station]) {
         let mut db = DOCKING_STATIONS.lock().unwrap();
@@ -19375,8 +19112,8 @@ mod mobility_service {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static MAAS_PROVIDERS: once_cell::sync::Lazy<std::sync::Mutex<Vec<MaaSProvider>>> =
-        once_cell::sync::Lazy::new(|| {
+    pub(crate) static MAAS_PROVIDERS: std::sync::LazyLock<std::sync::Mutex<Vec<MaaSProvider>>> =
+        std::sync::LazyLock::new(|| {
             std::sync::Mutex::new(Vec::new())
         });
 
@@ -19479,8 +19216,8 @@ mod noise_monitoring {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static NOISE_READINGS: once_cell::sync::Lazy<std::sync::Mutex<Vec<NoiseReading>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static NOISE_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<NoiseReading>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_noise_monitoring(stations: &[Station]) {
         let mut db = NOISE_READINGS.lock().unwrap();
@@ -19555,8 +19292,8 @@ mod station_vendors {
         pub(crate) is_open_now: bool,
     }
 
-    pub(crate) static STATION_VENDORS: once_cell::sync::Lazy<std::sync::Mutex<Vec<StationVendor>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static STATION_VENDORS: std::sync::LazyLock<std::sync::Mutex<Vec<StationVendor>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_vendors(stations: &[Station]) {
         let mut db = STATION_VENDORS.lock().unwrap();
@@ -19638,8 +19375,8 @@ mod air_quality {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static AIR_READINGS: once_cell::sync::Lazy<std::sync::Mutex<Vec<AirQualityReading>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static AIR_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<AirQualityReading>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_air_quality(stations: &[Station]) {
         let mut db = AIR_READINGS.lock().unwrap();
@@ -19681,11 +19418,7 @@ mod air_quality {
             .collect()
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_all_readings() -> Vec<AirQualityReading> {
-        let db = AIR_READINGS.lock().unwrap();
-        db.clone()
-    }
+
 
     pub(crate) fn tick_air_quality() {
         let mut db = AIR_READINGS.lock().unwrap();
@@ -19724,8 +19457,8 @@ mod crowd_density {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static CROWD_DENSITY: once_cell::sync::Lazy<std::sync::Mutex<Vec<CrowdDensityPoint>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static CROWD_DENSITY: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdDensityPoint>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_crowd_density(stations: &[Station]) {
         let mut db = CROWD_DENSITY.lock().unwrap();
@@ -19805,8 +19538,8 @@ mod wifi_finder {
         pub(crate) is_crowded: bool,
     }
 
-    pub(crate) static WIFI_HOTSPOTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<WifiHotspot>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static WIFI_HOTSPOTS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiHotspot>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_wifi(stations: &[Station]) {
         let mut db = WIFI_HOTSPOTS.lock().unwrap();
@@ -19930,8 +19663,8 @@ mod accessibility_audit {
         pub(crate) grade: String,
     }
 
-    pub(crate) static AUDITS: once_cell::sync::Lazy<std::sync::Mutex<Vec<AccessibilityAudit>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static AUDITS: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAudit>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_audits(stations: &[Station]) {
         let mut db = AUDITS.lock().unwrap();
@@ -19979,11 +19712,8 @@ mod accessibility_audit {
         db.iter().find(|a| a.station_id == station_id).cloned()
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn get_all_audits() -> Vec<AccessibilityAudit> {
-        let db = AUDITS.lock().unwrap();
-        db.clone()
-    }
+
+
 }
 
 // ============================================================================
@@ -20004,8 +19734,8 @@ mod energy_grid {
         pub(crate) cost_gbp_per_day: f64,
     }
 
-    pub(crate) static ENERGY: once_cell::sync::Lazy<std::sync::Mutex<EnergyReport>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(EnergyReport {
+    pub(crate) static ENERGY: std::sync::LazyLock<std::sync::Mutex<EnergyReport>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(EnergyReport {
             total_kwh_per_day: 0.0,
             traction_kwh: 0.0,
             stations_kwh: 0.0,
@@ -20066,8 +19796,8 @@ mod signal_optimizer {
         pub(crate) recommendation: String,
     }
 
-    pub(crate) static SIGNAL_PLANS: once_cell::sync::Lazy<std::sync::Mutex<Vec<SignalPlan>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static SIGNAL_PLANS: std::sync::LazyLock<std::sync::Mutex<Vec<SignalPlan>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn optimize_signals(lines: &[Line]) {
         let mut db = SIGNAL_PLANS.lock().unwrap();
@@ -20122,8 +19852,8 @@ mod platform_capacity {
         pub(crate) status: String, // "clear", "busy", "hold"
     }
 
-    pub(crate) static PLATFORMS: once_cell::sync::Lazy<std::sync::Mutex<Vec<PlatformStatus>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PLATFORMS: std::sync::LazyLock<std::sync::Mutex<Vec<PlatformStatus>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_platforms(stations: &[Station]) {
         let mut db = PLATFORMS.lock().unwrap();
@@ -20189,8 +19919,8 @@ mod ticket_machines {
         pub(crate) queue_length: u32,
     }
 
-    pub(crate) static MACHINES: once_cell::sync::Lazy<std::sync::Mutex<Vec<TicketMachine>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static MACHINES: std::sync::LazyLock<std::sync::Mutex<Vec<TicketMachine>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_machines(stations: &[Station]) {
         let mut db = MACHINES.lock().unwrap();
@@ -20247,8 +19977,8 @@ mod emergency_services {
         pub(crate) floor: i32,
     }
 
-    pub(crate) static EMERGENCY: once_cell::sync::Lazy<std::sync::Mutex<Vec<EmergencyPoint>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static EMERGENCY: std::sync::LazyLock<std::sync::Mutex<Vec<EmergencyPoint>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_emergency(stations: &[Station]) {
         let mut db = EMERGENCY.lock().unwrap();
@@ -20307,8 +20037,8 @@ mod bike_parking {
         pub(crate) has_repair: bool,
     }
 
-    pub(crate) static BIKE_PARKING_DB: once_cell::sync::Lazy<std::sync::Mutex<Vec<BikeParking>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static BIKE_PARKING_DB: std::sync::LazyLock<std::sync::Mutex<Vec<BikeParking>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_bike_parking(stations: &[Station]) {
         let mut db = BIKE_PARKING_DB.lock().unwrap();
@@ -20362,8 +20092,8 @@ mod river_services {
         pub(crate) is_operational: bool,
     }
 
-    pub(crate) static PIERS: once_cell::sync::Lazy<std::sync::Mutex<Vec<Pier>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PIERS: std::sync::LazyLock<std::sync::Mutex<Vec<Pier>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_piers() {
         let mut db = PIERS.lock().unwrap();
@@ -20429,8 +20159,8 @@ mod taxi_ranks {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static TAXI_RANKS_DB: once_cell::sync::Lazy<std::sync::Mutex<Vec<TaxiRank>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static TAXI_RANKS_DB: std::sync::LazyLock<std::sync::Mutex<Vec<TaxiRank>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_taxi_ranks(stations: &[Station]) {
         let mut db = TAXI_RANKS_DB.lock().unwrap();
@@ -20483,8 +20213,8 @@ mod lost_property {
         pub(crate) category: String,
     }
 
-    pub(crate) static LOST_ITEMS: once_cell::sync::Lazy<std::sync::Mutex<Vec<LostItem>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static LOST_ITEMS: std::sync::LazyLock<std::sync::Mutex<Vec<LostItem>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_lost_property() {
         let mut db = LOST_ITEMS.lock().unwrap();
@@ -20540,8 +20270,8 @@ mod station_photos {
         pub(crate) photographer: String,
     }
 
-    pub(crate) static PHOTOS: once_cell::sync::Lazy<std::sync::Mutex<Vec<StationPhoto>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PHOTOS: std::sync::LazyLock<std::sync::Mutex<Vec<StationPhoto>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_photos(stations: &[Station]) {
         let mut db = PHOTOS.lock().unwrap();
@@ -20646,8 +20376,8 @@ mod night_tube {
         pub(crate) days: Vec<String>,
     }
 
-    pub(crate) static NIGHT_SERVICES: once_cell::sync::Lazy<std::sync::Mutex<Vec<NightService>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static NIGHT_SERVICES: std::sync::LazyLock<std::sync::Mutex<Vec<NightService>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_night_services(lines: &[Line]) {
         let mut db = NIGHT_SERVICES.lock().unwrap();
@@ -20698,8 +20428,8 @@ mod construction_tracker {
         pub(crate) description: String,
     }
 
-    pub(crate) static PROJECTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ConstructionProject>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PROJECTS: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProject>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_projects(lines: &[Line]) {
         let mut db = PROJECTS.lock().unwrap();
@@ -20834,8 +20564,8 @@ mod photo_gallery {
         pub(crate) credit: String,
     }
 
-    pub(crate) static GALLERY: once_cell::sync::Lazy<std::sync::Mutex<Vec<GalleryPhoto>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static GALLERY: std::sync::LazyLock<std::sync::Mutex<Vec<GalleryPhoto>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_gallery(stations: &[Station]) {
         let mut db = GALLERY.lock().unwrap();
@@ -20901,8 +20631,8 @@ mod departure_board {
         pub(crate) delay_min: u32,
     }
 
-    pub(crate) static DEPARTURES: once_cell::sync::Lazy<std::sync::Mutex<Vec<Departure>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static DEPARTURES: std::sync::LazyLock<std::sync::Mutex<Vec<Departure>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_departures(stations: &[Station], lines: &[Line]) {
         let mut db = DEPARTURES.lock().unwrap();
@@ -20981,8 +20711,8 @@ mod service_alerts {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static ALERTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ServiceAlert>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static ALERTS: std::sync::LazyLock<std::sync::Mutex<Vec<ServiceAlert>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_alerts(lines: &[Line]) {
         let mut db = ALERTS.lock().unwrap();
@@ -21044,8 +20774,8 @@ mod wifi_speed {
         pub(crate) timestamp: String,
     }
 
-    pub(crate) static WIFI_SPEEDS: once_cell::sync::Lazy<std::sync::Mutex<Vec<WifiSpeedTest>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static WIFI_SPEEDS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiSpeedTest>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_wifi_speeds(stations: &[Station]) {
         let mut db = WIFI_SPEEDS.lock().unwrap();
@@ -21149,8 +20879,8 @@ mod night_tube_enhanced {
         pub(crate) crowd_level: String,
     }
 
-    pub(crate) static NIGHT_SERVICES_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<NightServiceEnhanced>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static NIGHT_SERVICES_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<NightServiceEnhanced>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_night_services_enh(lines: &[Line]) {
         let mut db = NIGHT_SERVICES_ENH.lock().unwrap();
@@ -21213,8 +20943,8 @@ mod construction_tracker_enh {
         pub(crate) spent_millions: f64,
     }
 
-    pub(crate) static PROJECTS_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<ConstructionProjectEnhanced>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PROJECTS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProjectEnhanced>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_projects_enh(lines: &[Line]) {
         let mut db = PROJECTS_ENH.lock().unwrap();
@@ -21278,8 +21008,8 @@ mod crowd_prediction {
         pub(crate) trend: String,
     }
 
-    pub(crate) static PREDICTIONS: once_cell::sync::Lazy<std::sync::Mutex<Vec<CrowdPrediction>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PREDICTIONS: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdPrediction>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_predictions(stations: &[Station]) {
         let mut db = PREDICTIONS.lock().unwrap();
@@ -21340,8 +21070,8 @@ mod accessibility_audit_enh {
         pub(crate) recommendations: Vec<String>,
     }
 
-    pub(crate) static AUDITS_ENH: once_cell::sync::Lazy<std::sync::Mutex<Vec<AccessibilityAuditEnhanced>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static AUDITS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAuditEnhanced>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_audits_enh(stations: &[Station]) {
         let mut db = AUDITS_ENH.lock().unwrap();
@@ -21422,8 +21152,8 @@ mod energy_optimization {
         pub(crate) battery_storage_mwh: f64,
     }
 
-    pub(crate) static OPTIMIZATION: once_cell::sync::Lazy<std::sync::Mutex<EnergyOptimization>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(EnergyOptimization {
+    pub(crate) static OPTIMIZATION: std::sync::LazyLock<std::sync::Mutex<EnergyOptimization>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(EnergyOptimization {
             current_renewable_pct: 42.0,
             target_renewable_pct: 100.0,
             potential_savings_gbp_per_year: 0.0,
@@ -21479,8 +21209,8 @@ mod signal_priority {
         pub(crate) estimated_clear_sec: u32,
     }
 
-    pub(crate) static PRIORITY_SIGNALS: once_cell::sync::Lazy<std::sync::Mutex<Vec<PrioritySignal>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static PRIORITY_SIGNALS: std::sync::LazyLock<std::sync::Mutex<Vec<PrioritySignal>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_priority(lines: &[Line], _stations: &[Station]) {
         let mut db = PRIORITY_SIGNALS.lock().unwrap();
@@ -21507,16 +21237,8 @@ mod signal_priority {
         db.clone()
     }
 
-    #[expect(dead_code, reason = "reserved for future use")]
-    pub(crate) fn trigger_emergency(line_id: &str, emergency_type: &str) {
-        let mut db = PRIORITY_SIGNALS.lock().unwrap();
-        if let Some(sig) = db.iter_mut().find(|s| s.line_id == line_id) {
-            sig.priority_active = true;
-            sig.emergency_type = emergency_type.into();
-            sig.estimated_clear_sec = fastrand::u32(30..=300);
-            log_info(&format!("signal_priority: emergency {} triggered on {}", emergency_type, line_id));
-        }
-    }
+
+
 }
 
 // ============================================================================
@@ -21538,8 +21260,8 @@ mod capacity_forecast {
         pub(crate) recommended_action: String,
     }
 
-    pub(crate) static FORECASTS: once_cell::sync::Lazy<std::sync::Mutex<Vec<CapacityForecast>>> =
-        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+    pub(crate) static FORECASTS: std::sync::LazyLock<std::sync::Mutex<Vec<CapacityForecast>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     pub(crate) fn initialize_forecasts(stations: &[Station]) {
         let mut db = FORECASTS.lock().unwrap();
@@ -21580,9 +21302,9 @@ mod capacity_forecast {
 }
 
     mod ui {
-    #[expect(dead_code, reason = "reserved for future use")]
+
     pub(crate) fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
-    #[expect(dead_code, reason = "reserved for future use")]
+
     pub(crate) fn build_webview_head(_api_base: &str) -> String { String::new() }
 
     mod styles {
@@ -21979,7 +21701,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
 
         // Clippy fallback: empty string so clippy doesn't have to parse the 330-line CSS blob
         #[cfg(clippy)]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> =
             std::sync::LazyLock::new(String::new);
 
@@ -22001,7 +21723,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // CLIPBOARD HELPER - Minimal JS for desktop WebView
         // ============================================================================
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn copy_to_clipboard_js(text: &str) -> String {
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
@@ -22023,12 +21745,12 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn build_copy_log_js(text: &str) -> String {
             copy_to_clipboard_js(&serde_json::to_string(text).unwrap_or_default())
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn scroll_to_bottom_query_js(selector: &str) -> String {
             format!(
                 r#"setTimeout(() => {{
@@ -22044,22 +21766,22 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn set_cursor_js(cursor: &str) -> String {
             format!("window.map.getContainer().style.cursor = '{}';", cursor)
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn call_window_js(func: &str) -> String {
             format!("window.{}();", func)
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn call_window_js_with_arg(func: &str, arg: &str) -> String {
             format!("window.{}('{}');", func, arg)
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn focus_element_js(selector: &str) -> String {
             format!(
                 "let si = document.getElementById('{}'); if (si) si.focus();",
@@ -22067,12 +21789,12 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
             format!("window.{}({});", func, json_arg)
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn call_window_js_with_json_and_string(
             func: &str,
             json_arg: &str,
@@ -22081,7 +21803,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             format!("window.{}({}, '{}');", func, json_arg, string_arg)
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
             format!(
                 "window.map.setView([{}, {}], {}, {{ animate: true }});",
@@ -22089,7 +21811,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn set_sat_provider_js(idx: i32) -> String {
             format!(
                 "window.satProviderIdx = {}; window.setBaseMode('satellite');",
@@ -22097,7 +21819,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             )
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
             format!(
                 "window.drawIsochrone({}, {}, {});",
@@ -22128,7 +21850,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // ============================================================================
         // CLIPBOARD HELPER (JavaScript) – defines a global copyText function
         // ============================================================================
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static CLIPBOARD_JS: &str = r#"
 function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -22197,7 +21919,7 @@ window.close = function() {
 
         // ============================================================================
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static MAP_INIT_JS: &str = r##"
 window.addEventListener('error', function(e) {
     var msg = e.message || "Unknown Opaque Error";
@@ -25205,7 +24927,7 @@ window.initMap = async function() {
 };
 "##;
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static MAP_LOOP_JS: &str = r##"
 // ── Parallel Line Offset Helpers ─────────────────────────────────────────────
 // Generate a deterministic colour for lines missing a custom colour
@@ -25564,7 +25286,7 @@ while (true) {
         // use std::sync::OnceLock;
         use std::time::Duration;
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
@@ -25576,7 +25298,7 @@ while (true) {
         /// single client across all handlers means TCP connections are reused, avoiding
         /// the overhead of TLS handshakes and DNS resolution on every API call. Do NOT
         /// create a new client per request.
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn get_api_client() -> &'static reqwest::Client {
             API_CLIENT.get_or_init(|| {
                 log_debug("get_api_client - initialising shared API client (15s timeout)");
@@ -25589,10 +25311,10 @@ while (true) {
 
         /// Separate client with a 5-minute timeout for CPU-heavy endpoints
         /// (AI station planning, coverage stats, transit deserts).
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn get_api_client_slow() -> &'static reqwest::Client {
             API_CLIENT_SLOW.get_or_init(|| {
                 log_debug("get_api_client_slow - initialising slow API client (300s timeout)");
@@ -25603,7 +25325,7 @@ while (true) {
             })
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25614,7 +25336,7 @@ while (true) {
                 .read()
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
-                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("post_api_slow - POST {}", target_endpoint));
             match client.post(&target_endpoint).json(body).send().await {
@@ -25635,7 +25357,7 @@ while (true) {
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25643,7 +25365,7 @@ while (true) {
                 .read()
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
-                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("fetch_api - GET {}", target_endpoint));
 
@@ -25665,7 +25387,7 @@ while (true) {
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25676,7 +25398,7 @@ while (true) {
                 .read()
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
-                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("post_api - POST {}", target_endpoint));
 
@@ -25698,7 +25420,7 @@ while (true) {
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25706,7 +25428,7 @@ while (true) {
                 .read()
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
-                .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+                .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
             let target_endpoint = format!("{}{}", base_url, url);
             log_trace(&format!("get_api - GET {}", target_endpoint));
 
@@ -25736,9 +25458,9 @@ while (true) {
         use crate::routing::roundel_svg_for_line;
         #[cfg(feature = "desktop")]
         use dioxus::prelude::*;
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
         /// Build the HTML \<head> string for the desktop WebView.
@@ -25752,7 +25474,7 @@ while (true) {
         /// - ARIA live region announcements
         /// - Keyboard navigation support (Tab, Enter, Escape)
         /// - Screen reader announcements via aria-live regions
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn build_webview_head(api_base: &str) -> String {
             log_debug(&format!("build_webview_head - api_base={}", api_base));
             let mut h = String::with_capacity(512 * 1024);
@@ -25993,7 +25715,7 @@ window.__consoleDupCount = 0;
                 }
             }
 
-            let json_map = serde_json::to_string(&svg_map).unwrap_or_else(|_| "{}".to_string());
+            let json_map = serde_json::to_string(&svg_map).unwrap_or_else(|_| "{}".to_owned());
             h.push_str(&json_map);
             h.push_str(";</script>");
 
@@ -26010,7 +25732,7 @@ window.__consoleDupCount = 0;
 
         /// Analytics dashboard panel showing network statistics
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AnalyticsPanel() -> Element {
             let analytics = use_signal(|| String::from("Loading..."));
@@ -26053,7 +25775,7 @@ window.__consoleDupCount = 0;
 
         /// Eco routing panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EcoPanel() -> Element {
             let mut from = use_signal(String::new);
@@ -26112,7 +25834,7 @@ window.__consoleDupCount = 0;
 
         /// Accessibility panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -26163,7 +25885,7 @@ window.__consoleDupCount = 0;
 
         /// Delay predictions panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DelayPredictionsPanel() -> Element {
             let result = use_signal(|| String::from("Loading..."));
@@ -26206,7 +25928,7 @@ window.__consoleDupCount = 0;
 
         /// TfL Live Status panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn TfLStatusPanel() -> Element {
             let result = use_signal(String::new);
@@ -26249,7 +25971,7 @@ window.__consoleDupCount = 0;
 
         /// Historical timeline panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn HistoryPanel() -> Element {
             let result = use_signal(String::new);
@@ -26292,7 +26014,7 @@ window.__consoleDupCount = 0;
 
         /// Parking availability panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ParkingPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -26343,7 +26065,7 @@ window.__consoleDupCount = 0;
 
         /// MaaS (Mobility as a Service) panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn MaaSPanel() -> Element {
             let providers = use_signal(|| String::from("Loading..."));
@@ -26380,7 +26102,7 @@ window.__consoleDupCount = 0;
 
         /// Noise monitoring panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NoisePanel() -> Element {
             let noise = use_signal(|| String::from("Loading..."));
@@ -26417,7 +26139,7 @@ window.__consoleDupCount = 0;
 
         /// Air quality panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AirQualityPanel() -> Element {
             let air = use_signal(|| String::from("Loading..."));
@@ -26454,7 +26176,7 @@ window.__consoleDupCount = 0;
 
         /// Crowd density panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdDensityPanel() -> Element {
             let crowd = use_signal(|| String::from("Loading..."));
@@ -26491,7 +26213,7 @@ window.__consoleDupCount = 0;
 
         /// Energy grid panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyPanel() -> Element {
             let energy = use_signal(|| String::from("Loading..."));
@@ -26528,7 +26250,7 @@ window.__consoleDupCount = 0;
 
         /// Night tube panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NightTubePanel() -> Element {
             let night = use_signal(|| String::from("Loading..."));
@@ -26565,7 +26287,7 @@ window.__consoleDupCount = 0;
 
         /// Construction tracker panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ConstructionPanel() -> Element {
             let construction = use_signal(|| String::from("Loading..."));
@@ -26602,7 +26324,7 @@ window.__consoleDupCount = 0;
 
         /// Departure board panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DepartureBoardPanel() -> Element {
             let departures = use_signal(|| String::from("Loading..."));
@@ -26639,7 +26361,7 @@ window.__consoleDupCount = 0;
 
         /// Service alerts panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ServiceAlertsPanel() -> Element {
             let alerts = use_signal(|| String::from("Loading..."));
@@ -26676,7 +26398,7 @@ window.__consoleDupCount = 0;
 
         /// Photo gallery panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn PhotoGalleryPanel() -> Element {
             let photos = use_signal(|| String::from("Loading..."));
@@ -26713,7 +26435,7 @@ window.__consoleDupCount = 0;
 
         /// WiFi speed panel
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn WifiSpeedPanel() -> Element {
             let speeds = use_signal(|| String::from("Loading..."));
@@ -26748,7 +26470,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdPredictionPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26783,7 +26505,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityAuditEnhPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26818,7 +26540,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyOptimizationPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26853,7 +26575,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn SignalPriorityPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26888,7 +26610,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        #[expect(dead_code, reason = "reserved for future use")]
+
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CapacityForecastPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26930,7 +26652,7 @@ window.__consoleDupCount = 0;
         /// Desktop-only: configure the Dioxus WebView window.
         /// This function uses Dioxus types and is only compiled when `desktop` feature is active.
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
             log_info("build_desktop_window_configuration - configuring desktop WebView");
             // The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is set once, early, in
@@ -26961,7 +26683,7 @@ window.__consoleDupCount = 0;
                 .with_data_directory(local_profile_dir)
                 .with_window(window)
                 .with_custom_head(build_webview_head(api_base))
-                .with_custom_protocol("tube".to_string(), move |request| {
+                .with_custom_protocol("tube".to_owned(), move |request| {
                     // tube:// custom protocol: serves real data to the WebView instead
                     // of an empty 200. Supported paths:
                     //   tube://roundel/<line_id>  -> the SVG markup for that line's roundel
@@ -27058,7 +26780,7 @@ window.__consoleDupCount = 0;
         /// handle, NOT the signal data itself). Cloning a Signal is cheap ? it's
         /// just an Arc bump ? and is safe across await points because Dioxus signals
         /// are Send + Sync.
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub(crate) fn show_toast(
             toasts: &mut Signal<Vec<Toast>>,
             id_counter: &mut Signal<usize>,
@@ -27089,7 +26811,7 @@ window.__consoleDupCount = 0;
         }
 
         #[cfg(feature = "desktop")]
-        #[expect(dead_code, reason = "reserved for future use")]
+
         pub fn build_console_window_configuration() -> dioxus::desktop::Config {
             log_info("build_console_window_configuration - configuring analytics console window");
             let window = dioxus::desktop::WindowBuilder::new()
@@ -27143,7 +26865,7 @@ window.__consoleDupCount = 0;
                     .filter_map(|a| a.strip_prefix("--initial-log=").map(|s| s.to_string()))
                     .collect();
                 if init_lines.is_empty() {
-                    "Connecting to engine...\n".to_string()
+                    "Connecting to engine...\n".to_owned()
                 } else {
                     init_lines.join("\n") + "\n"
                 }
@@ -27165,7 +26887,7 @@ window.__consoleDupCount = 0;
                     ));
 
                     // Show a clean boot message while the engine starts up
-                    log_stream.set("Booting engine...\n".to_string());
+                    log_stream.set("Booting engine...\n".to_owned());
 
                     // Grace period: let the Axum server bind and start accepting
                     // connections before we start polling. Prevents the ugly
@@ -27380,8 +27102,8 @@ window.__consoleDupCount = 0;
         /// and avoids the "prop drilling" / context-override pitfalls common in deeply
         /// nested Dioxus trees.
         #[cfg(feature = "desktop")]
-        #[allow(dependency_on_unit_never_type_fallback)]
-        #[expect(dead_code, reason = "reserved for future use")]
+        #[expect(dependency_on_unit_never_type_fallback, reason = "Dioxus requires this for desktop rendering")]
+
         pub fn app() -> Element {
             // ── Panic-safe guard: if a prior Dioxus rendering panic occurred, render a
             //    minimal recovery UI that keeps the Axum server alive for browser users.
@@ -27430,14 +27152,14 @@ window.__consoleDupCount = 0;
 
             let mut construction_mode = use_signal::<bool>(|| false);
             let mut custom_line_name = use_signal::<String>(String::new);
-            let mut custom_line_color = use_signal::<String>(|| "#ff00ff".to_string());
+            let mut custom_line_color = use_signal::<String>(|| "#ff00ff".to_owned());
             let mut custom_line_coords = use_signal::<Vec<Coordinate>>(Vec::new);
-            let active_network_tab = use_signal::<String>(|| "tfl".to_string());
+            let active_network_tab = use_signal::<String>(|| "tfl".to_owned());
 
             // Automated planning + manual station sandbox state
             let mut create_station_mode = use_signal::<bool>(|| false);
             let mut ai_busy = use_signal::<bool>(|| false);
-            let _ai_philosophy = use_signal::<String>(|| "sub_surface".to_string());
+            let _ai_philosophy = use_signal::<String>(|| "sub_surface".to_owned());
             let mut coverage_summary = use_signal::<String>(String::new);
             let mut new_station_counter = use_signal::<usize>(|| 0);
 
@@ -27457,12 +27179,12 @@ window.__consoleDupCount = 0;
             let mut show_loading = use_signal::<bool>(|| true);
             let mut loading_stages = use_signal::<Vec<(String, String)>>(|| {
                 vec![
-                    ("Bakerloo".to_string(), "pending".to_string()),
-                    ("Central".to_string(), "pending".to_string()),
-                    ("Jubilee".to_string(), "pending".to_string()),
-                    ("Northern".to_string(), "pending".to_string()),
-                    ("Piccadilly".to_string(), "pending".to_string()),
-                    ("Victoria".to_string(), "pending".to_string()),
+                    ("Bakerloo".to_owned(), "pending".to_owned()),
+                    ("Central".to_owned(), "pending".to_owned()),
+                    ("Jubilee".to_owned(), "pending".to_owned()),
+                    ("Northern".to_owned(), "pending".to_owned()),
+                    ("Piccadilly".to_owned(), "pending".to_owned()),
+                    ("Victoria".to_owned(), "pending".to_owned()),
                 ]
             });
 
@@ -27481,7 +27203,7 @@ window.__consoleDupCount = 0;
             let mut data_timeout = use_signal::<bool>(|| false);
 
             // Server connection status: "connecting" | "connected" | "degraded" | "offline"
-            let mut server_status = use_signal::<String>(|| "connecting".to_string());
+            let mut server_status = use_signal::<String>(|| "connecting".to_owned());
             let mut server_fail_count = use_signal::<usize>(|| 0);
 
             // Track whether crash report has been injected into the log stream
@@ -27489,7 +27211,7 @@ window.__consoleDupCount = 0;
 
             // --- MIGRATED SIGNALS FOR NATIVE RUST/DIOXUS UI CONTROLS ---
             let _basemap_segments = use_signal::<Vec<RailSegment>>(Vec::new);
-            let mut active_base_mode = use_signal::<String>(|| "satellite".to_string());
+            let mut active_base_mode = use_signal::<String>(|| "satellite".to_owned());
             let mut sat_provider_idx = use_signal::<usize>(|| 0);
             let mut tile_provider_idx = use_signal::<usize>(|| 0);
             let google_labels = use_signal::<bool>(|| true);
@@ -27515,8 +27237,8 @@ window.__consoleDupCount = 0;
             let mut demand_heat_loading = use_signal::<bool>(|| false);
             let mut congestion_loading = use_signal::<bool>(|| false);
             let mut is_cost_estimator_open = use_signal::<bool>(|| false);
-            let mut cost_bore_type = use_signal::<String>(|| "twin_bore".to_string());
-            let mut cost_line_name = use_signal::<String>(|| "New Line".to_string());
+            let mut cost_bore_type = use_signal::<String>(|| "twin_bore".to_owned());
+            let mut cost_line_name = use_signal::<String>(|| "New Line".to_owned());
             let mut cost_drawing_mode = use_signal::<bool>(|| false);
             let mut cost_points = use_signal::<Vec<Coordinate>>(Vec::new);
             let mut cost_result = use_signal::<Option<TunnelCostResponse>>(|| None);
@@ -27558,16 +27280,16 @@ window.__consoleDupCount = 0;
                 for line in lines_ref.iter() {
                     let mut name_lower = line.name.to_lowercase();
                     if name_lower.contains("avanti") {
-                        name_lower = "avanti".to_string();
+                        name_lower = "avanti".to_owned();
                     }
                     if name_lower.contains("waterloo & city") {
-                        name_lower = "waterloo & city".to_string();
+                        name_lower = "waterloo & city".to_owned();
                     }
                     if name_lower.contains("eurostar") {
-                        name_lower = "eurostar".to_string();
+                        name_lower = "eurostar".to_owned();
                     }
                     if name_lower.contains("tramlink") {
-                        name_lower = "tramlink".to_string();
+                        name_lower = "tramlink".to_owned();
                     }
                     if seen.insert(name_lower) {
                         ul.push(line.clone());
@@ -27599,7 +27321,7 @@ window.__consoleDupCount = 0;
                         .lock()
                         .ok()
                         .map(|g| g.clone())
-                        .unwrap_or_else(|| "No crash details available.".to_string());
+                        .unwrap_or_else(|| "No crash details available.".to_owned());
                     let short_report = format!("\u{2501}\u{2501}\u{2501} ENGINE CRASH \u{2501}\u{2501}\u{2501}\n{}\nFull crash report available via COPY button above.\n\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
                         crash_text_val.lines().take(20).collect::<Vec<_>>().join("\n")
                     );
@@ -27614,8 +27336,8 @@ window.__consoleDupCount = 0;
             use_future(move || async move {
                 log_debug("App::warm_up - starting data warm-up fetch loop");
                 show_loading.set(true);
-                server_status.set("connecting".to_string());
-                let mut attempts = 0usize;
+                server_status.set("connecting".to_owned());
+                let mut attempts = 0_usize;
                 let start_time = std::time::Instant::now();
 
                 while attempts < 6 {
@@ -27672,7 +27394,7 @@ window.__consoleDupCount = 0;
 
                     // At least one endpoint responded
                     if lines_ok.is_some() || stations_ok.is_some() || tracks_ok.is_some() {
-                        server_status.set("connected".to_string());
+                        server_status.set("connected".to_owned());
                     }
 
                     if !lines.read().is_empty() || !stations.read().is_empty() {
@@ -27691,7 +27413,7 @@ window.__consoleDupCount = 0;
                     if start_time.elapsed().as_secs() >= 5 && !*data_timeout.read() {
                         data_timeout.set(true);
                         if all_failed {
-                            server_status.set("degraded".to_string());
+                            server_status.set("degraded".to_owned());
                         }
                         show_toast(
                             &mut toasts,
@@ -27718,11 +27440,11 @@ window.__consoleDupCount = 0;
                         ];
                         for stage in &names {
                             if let Some(idx) = stages.iter().position(|(n, _)| n == stage) {
-                                stages[idx].1 = "success".to_string();
+                                stages[idx].1 = "success".to_owned();
                             }
                         }
                     });
-                    server_status.set("connected".to_string());
+                    server_status.set("connected".to_owned());
                     show_toast(
                         &mut toasts,
                         &mut toast_id_counter,
@@ -27731,7 +27453,7 @@ window.__consoleDupCount = 0;
                     );
                 } else {
                     // Total failure — engine is offline
-                    server_status.set("offline".to_string());
+                    server_status.set("offline".to_owned());
                     log_error("App::warm_up - FAILED to load ANY data after all attempts! Engine is unreachable.");
                     show_toast(
                 &mut toasts,
@@ -27742,7 +27464,7 @@ window.__consoleDupCount = 0;
                     // Mark stages as failed
                     loading_stages.with_mut(|stages| {
                         for stage in stages.iter_mut() {
-                            stage.1 = "failed".to_string();
+                            stage.1 = "failed".to_owned();
                         }
                     });
                 }
@@ -27909,7 +27631,7 @@ window.__consoleDupCount = 0;
                                                 journey_from_coord
                                                     .set(Some(Coordinate::new(lat, lon)));
                                                 journey_from.set(format!("{:.5}, {:.5}", lat, lon));
-                                                journey_picking_mode.set(Some("to".to_string()));
+                                                journey_picking_mode.set(Some("to".to_owned()));
                                             } else if picker == "to" {
                                                 journey_to_coord
                                                     .set(Some(Coordinate::new(lat, lon)));
@@ -27928,7 +27650,7 @@ window.__consoleDupCount = 0;
                                                             from_lon: f.lon,
                                                             to_lat: t.lat,
                                                             to_lon: t.lon,
-                                                            mode: "fastest".to_string(),
+                                                            mode: "fastest".to_owned(),
                                                         };
                                                         match post_api::<_, JourneyPlanResponse>(
                                                             "/api/journey",
@@ -27956,7 +27678,7 @@ window.__consoleDupCount = 0;
                                                                 }
                                                             }
                                                             None => {
-                                                                journey_error.set(Some("No route found. Check stations are loaded.".to_string()));
+                                                                journey_error.set(Some("No route found. Check stations are loaded.".to_owned()));
                                                             }
                                                         }
                                                         journey_loading.set(false);
@@ -28020,7 +27742,7 @@ window.__consoleDupCount = 0;
                                                 format!("Custom Station {}", n),
                                                 Coordinate::new(lat, lon),
                                             );
-                                            st.lines = vec!["Sandbox".to_string()];
+                                            st.lines = vec!["Sandbox".to_owned()];
                                             let st_for_state = st.clone();
                                             stations.with_mut(|s| s.push(st_for_state));
                                             show_toast(
@@ -28047,9 +27769,9 @@ window.__consoleDupCount = 0;
                                         } else {
                                             selected_station.set(None);
                                             journey_from_coord.set(None);
-                                            journey_from.set("".to_string());
+                                            journey_from.set("".to_owned());
                                             journey_to_coord.set(None);
-                                            journey_to.set("".to_string());
+                                            journey_to.set("".to_owned());
                                             journey_result.set(None);
                                             show_transit_score.set(false);
                                             transit_score_data.set(None);
@@ -28091,7 +27813,7 @@ window.__consoleDupCount = 0;
                                                     journey_from_coord.set(Some(st.coord));
                                                     journey_from.set(st.name.clone());
                                                     journey_picking_mode
-                                                        .set(Some("to".to_string()));
+                                                        .set(Some("to".to_owned()));
                                                 } else if picker == "to" {
                                                     journey_to_coord.set(Some(st.coord));
                                                     journey_to.set(st.name.clone());
@@ -28109,7 +27831,7 @@ window.__consoleDupCount = 0;
                                                                 from_lon: f.lon,
                                                                 to_lat: t.lat,
                                                                 to_lon: t.lon,
-                                                                mode: "fastest".to_string(),
+                                                                mode: "fastest".to_owned(),
                                                             };
                                                             match post_api::<_, JourneyPlanResponse>(
                                                         "/api/journey",
@@ -28133,7 +27855,7 @@ window.__consoleDupCount = 0;
                                                             }
                                                         }
                                                         None => {
-                                                            journey_error.set(Some("No route found. Check stations are loaded.".to_string()));
+                                                            journey_error.set(Some("No route found. Check stations are loaded.".to_owned()));
                                                         }
                                                     }
                                                             journey_loading.set(false);
@@ -28458,7 +28180,7 @@ window.__consoleDupCount = 0;
                     segments: Vec::new(),
                     geometry,
                     is_custom: true,
-                    group: "custom".to_string(),
+                    group: "custom".to_owned(),
                     sub_geometries: Vec::new(),
                 };
 
@@ -28561,7 +28283,7 @@ window.__consoleDupCount = 0;
                 .lock()
                 .ok()
                 .map(|g| g.clone())
-                .unwrap_or_else(|| "No crash details available.".to_string());
+                .unwrap_or_else(|| "No crash details available.".to_owned());
 
             // let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
             // let edit_menu_display = if *edit_menu_open.read() { "block" } else { "none" };
@@ -28598,7 +28320,7 @@ window.__consoleDupCount = 0;
                         onkeydown: move |evt| {
                             // Cmd+K (Mac) or Ctrl+K (Windows) toggles the omnibox
                             if (evt.modifiers().contains(Modifiers::META) || evt.modifiers().contains(Modifiers::CONTROL))
-                                && evt.key() == Key::Character("k".to_string())
+                                && evt.key() == Key::Character("k".to_owned())
                             {
                                 let currently_open = show_omnibox();
                                 show_omnibox.set(!currently_open);
@@ -29567,7 +29289,7 @@ window.__consoleDupCount = 0;
                         style: "width: 100%; padding: 9px; border-radius: 6px; border: none; font-weight: bold; background: #6950A1; color: #fff; cursor: pointer; margin-bottom: 8px;",
                         onclick: move |_| {
                             if *ai_busy.read() { return; }
-                            let philosophy = "deep_tube".to_string();
+                            let philosophy = "deep_tube".to_owned();
                             ai_busy.set(true);
                             show_toast(&mut toasts, &mut toast_id_counter, "AI synthesising network topology...", "info");
                             spawn(async move {
@@ -29710,7 +29432,7 @@ window.__consoleDupCount = 0;
                                 if *active_base_mode.read() == "street" { "#000" } else { "#888" }
                             ),
                             onclick: move |_| {
-                                active_base_mode.set("street".to_string());
+                                active_base_mode.set("street".to_owned());
                                 eval(&call_window_js_with_arg("setBaseMode", "street"));
                             },
                             "Map"
@@ -29722,7 +29444,7 @@ window.__consoleDupCount = 0;
                                 if *active_base_mode.read() == "satellite" { "#fff" } else { "#888" }
                             ),
                             onclick: move |_| {
-                                active_base_mode.set("satellite".to_string());
+                                active_base_mode.set("satellite".to_owned());
                                 eval(&call_window_js_with_arg("setBaseMode", "satellite"));
                             },
                             "Sat"
@@ -29810,10 +29532,10 @@ window.__consoleDupCount = 0;
                                 button {
                                     title: "Pick on map",
                                     style: format!("padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; background: {}; border: 1px solid #00bcd4; color: #00bcd4;",
-                                        if *journey_picking_mode.read() == Some("from".to_string()) { "rgba(0,188,212,.4)" } else { "rgba(0,188,212,.2)" }
+                                        if *journey_picking_mode.read() == Some("from".to_owned()) { "rgba(0,188,212,.4)" } else { "rgba(0,188,212,.2)" }
                                     ),
                                     onclick: move |_| {
-                                        journey_picking_mode.set(Some("from".to_string()));
+                                        journey_picking_mode.set(Some("from".to_owned()));
                                     },
                                     "­ƒôì"
                                 }
@@ -29835,10 +29557,10 @@ window.__consoleDupCount = 0;
                                 button {
                                     title: "Pick on map",
                                     style: format!("padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; background: {}; border: 1px solid #6950A1; color: #a090e0;",
-                                        if *journey_picking_mode.read() == Some("to".to_string()) { "rgba(105,80,161,.4)" } else { "rgba(105,80,161,.2)" }
+                                        if *journey_picking_mode.read() == Some("to".to_owned()) { "rgba(105,80,161,.4)" } else { "rgba(105,80,161,.2)" }
                                     ),
                                     onclick: move |_| {
-                                        journey_picking_mode.set(Some("to".to_string()));
+                                        journey_picking_mode.set(Some("to".to_owned()));
                                     },
                                     "­ƒôì"
                                 }
@@ -29860,7 +29582,7 @@ window.__consoleDupCount = 0;
                                             from_lon: f.lon,
                                             to_lat: t.lat,
                                             to_lon: t.lon,
-                                            mode: "fastest".to_string(),
+                                            mode: "fastest".to_owned(),
                                         };
                                         match post_api::<_, JourneyPlanResponse>("/api/journey", &req).await {
                                             Some(res) => {
@@ -29875,7 +29597,7 @@ window.__consoleDupCount = 0;
                                                 }
                                             }
                                             None => {
-                                                journey_error.set(Some("No route found. Check stations are loaded.".to_string()));
+                                                journey_error.set(Some("No route found. Check stations are loaded.".to_owned()));
                                             }
                                         }
                                         journey_loading.set(false);
@@ -29895,7 +29617,7 @@ window.__consoleDupCount = 0;
                                 Some(rsx! { div { style: "color: #f44336; padding: 16px;", "{err}" } })
                             } else if let Some(j) = journey_result.read().as_ref() {
                                 let distance_km = j.total_distance_m / 1000.0;
-                                let zones_label = if j.zones_crossed.is_empty() { "Zone 1".to_string() } else { format!("Zones {}", j.zones_crossed.iter().map(|z| z.to_string()).collect::<Vec<_>>().join("+")) };
+                                let zones_label = if j.zones_crossed.is_empty() { "Zone 1".to_owned() } else { format!("Zones {}", j.zones_crossed.iter().map(|z| z.to_string()).collect::<Vec<_>>().join("+")) };
                                 Some(rsx! {
                                     div {
                                         style: "background: rgba(0,188,212,.08); border: 1px solid rgba(0,188,212,.2); border-radius: 10px; padding: 14px; margin-bottom: 10px;",
@@ -30661,7 +30383,7 @@ window.__consoleDupCount = 0;
                             button {
                                 style: "background:rgba(255,255,255,.08);color:rgba(255,255,255,.7);font-weight:bold;border:1px solid rgba(255,255,255,.15);padding:12px 28px;cursor:pointer;border-radius:6px;font-size:13px",
                                 onclick: move |_| {
-                                    server_status.set("connecting".to_string());
+                                    server_status.set("connecting".to_owned());
                                     server_fail_count.set(0);
                                     show_loading.set(true);
                                     // Trigger page reload to re-run warm-up
@@ -31154,17 +30876,17 @@ window.__consoleDupCount = 0;
                         div { class: "network-tabs", style: "display: flex; gap: 8px; margin-bottom: 12px;",
                             button {
                                 style: if active_tab == "tfl" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                onclick: move |_| active_network_tab.set("tfl".to_string()),
+                                onclick: move |_| active_network_tab.set("tfl".to_owned()),
                                 "TfL"
                             }
                             button {
                                 style: if active_tab == "nr" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                onclick: move |_| active_network_tab.set("nr".to_string()),
+                                onclick: move |_| active_network_tab.set("nr".to_owned()),
                                 "NR"
                             }
                             button {
                                 style: if active_tab == "custom" { "flex: 1; padding: 4px; background: #00bcd4; color: #000; border: none; font-weight: bold; cursor: pointer; border-radius: 2px;" } else { "flex: 1; padding: 4px; background: #222; color: #888; border: 1px solid #333; cursor: pointer; border-radius: 2px;" },
-                                onclick: move |_| active_network_tab.set("custom".to_string()),
+                                onclick: move |_| active_network_tab.set("custom".to_owned()),
                                 "Custom"
                             }
                         }
@@ -31247,7 +30969,7 @@ window.__consoleDupCount = 0;
                     .lock()
                     .ok()
                     .map(|g| g.clone())
-                    .unwrap_or_else(|| "No explicit trace logs collected.".to_string())
+                    .unwrap_or_else(|| "No explicit trace logs collected.".to_owned())
             });
             let telemetry_frame = String::new(); // read_crash_telemetry();
 
@@ -31898,7 +31620,7 @@ mod tests {
 
     #[test]
     fn rkyv_from_buffer_rejects_short_input() {
-        assert!(TrackGeometry::from_buffer_checked(&[0u8; 4]).is_none());
+        assert!(TrackGeometry::from_buffer_checked(&[0_u8; 4]).is_none());
         assert!(StationRecord::from_buffer_checked(&[]).is_none());
     }
 

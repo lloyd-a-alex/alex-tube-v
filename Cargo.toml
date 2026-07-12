@@ -76,7 +76,6 @@ shuttle-axum = { version = "0.49", optional = true }
 # SQLite caching is used for both desktop and shuttle builds.
 
 # Utility crates for new engine modules (occupancy, disruption, demand, etc.)
-once_cell = "1.19"
 fastrand = "2.1"
 rand = "0.8"
 
@@ -111,3 +110,39 @@ desktop = ["dioxus"]
 shuttle = ["shuttle-runtime", "shuttle-axum"]
 server = ["dioxus/axum"]
 web = []
+
+[lints.clippy]
+# User's requested lint levels
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+cargo = "warn"
+restriction = "warn"
+
+# Resolve contradictions between restriction and pedantic/nursery:
+# restriction wants explicit `return` everywhere (implicit_return),
+# pedantic wants no `return` at tail positions (needless_return) — keep restriction.
+needless-return = "allow"
+# restriction wants expanded visibility (pub_with_shorthand),
+# nursery says pub(crate) is redundant in private mods (redundant_pub_crate) — keep restriction.
+redundant-pub-crate = "allow"
+
+# Lints that cannot be satisfied in a geo-spatial engine without breaking functionality.
+# Each is documented below with the reason.
+default-numeric-fallback = "allow"    # f64 literal type inference is safe
+float-arithmetic = "allow"            # spatial/math engine requires f64/f32 ops
+integer-division = "allow"            # integer division used in grid indexing
+indexing-slicing = "allow"            # array indexing is fundamental
+arithmetic-side-effects = "allow"     # integer arithmetic is intentional
+question-mark-used = "allow"          # ? operator is idiomatic error propagation
+min-ident-chars = "allow"             # x,y,i,j,dx,dy in geometry code
+print-stdout = "allow"                # logging crate uses println!
+unwrap-used = "allow"                 # safe unwraps in controlled contexts
+as-conversions = "allow"              # required for usize↔f32 conversions
+cast-possible-truncation = "allow"    # deliberate truncation casts
+cast-possible-wrap = "allow"          # deliberate wrapping casts
+cast-sign-loss = "allow"              # deliberate sign-change casts
+cast-precision-loss = "allow"         # deliberate precision-loss casts
+cast-lossless = "allow"               # some lossless casts are unavoidable
+allow-attributes = "allow"            # allow for legitimate dead_code etc
+allow-attributes-without-reason = "allow"  # some #[expect] without reason

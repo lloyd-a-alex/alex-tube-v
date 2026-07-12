@@ -7,6 +7,45 @@ use core::cmp::Ordering;
 use core::hint::black_box;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
+// Silence "unused crate dependency" for workspace crates not used in bench code.
+use arc_swap as _;
+use async_trait as _;
+use axum as _;
+use bincode as _;
+use bytemuck as _;
+use chrono as _;
+use crossbeam_channel as _;
+#[cfg_attr(not(feature = "desktop"), allow(unused_imports))]
+use dioxus as _;
+use dirs as _;
+use fastrand as _;
+use geo as _;
+use memmap2 as _;
+use mimalloc as _;
+use open as _;
+use phf as _;
+use r2d2 as _;
+use rand as _;
+use rayon as _;
+use reqwest as _;
+use rkyv as _;
+use rstar as _;
+use rusqlite as _;
+use serde as _;
+use serde_json as _;
+use sha2 as _;
+#[cfg(feature = "shuttle")]
+use shuttle_axum as _;
+#[cfg(feature = "shuttle")]
+use shuttle_runtime as _;
+use thiserror as _;
+use tokio as _;
+use tokio_util as _;
+use toml as _;
+use tower as _;
+use tower_http as _;
+use tracing as _;
+
 /// Minimal `TransitNetworkGrid` replica for benchmarking.
 struct BenchGrid {
     /// Edge offset for each node (CSR format).
@@ -15,6 +54,10 @@ struct BenchGrid {
     edge_targets: Vec<u32>,
     /// Edge weights (distance in metres).
     edge_weights: Vec<f32>,
+    /// X coordinates (longitude) for each node.
+    coords_x: Vec<f32>,
+    /// Y coordinates (latitude) for each node.
+    coords_y: Vec<f32>,
     /// Number of nodes.
     node_count: usize,
 }
@@ -64,8 +107,10 @@ fn build_synthetic_grid(node_count: usize) -> BenchGrid {
     let mut edge_weights = Vec::new();
 
     for index in 0..node_count {
-        coords_x.push((index as f32).mul_add(0.001, -0.1));
-        coords_y.push((index as f32).mul_add(0.001, 51.5));
+        let index_u32 = u32::try_from(index).unwrap_or(0);
+        let f_index = index_u32 as f64 as f32;
+        coords_x.push(f_index.mul_add(0.001, -0.1));
+        coords_y.push(f_index.mul_add(0.001, 51.5));
         edge_offsets.push(u32::try_from(edge_targets.len()).unwrap_or(0));
         if index > 0 {
             edge_targets.push(u32::try_from(index.wrapping_sub(1)).unwrap_or(0));
@@ -79,11 +124,11 @@ fn build_synthetic_grid(node_count: usize) -> BenchGrid {
     edge_offsets.push(u32::try_from(edge_targets.len()).unwrap_or(0));
 
     BenchGrid {
-        coords_x,
-        coords_y,
         edge_offsets,
         edge_targets,
         edge_weights,
+        coords_x,
+        coords_y,
         node_count,
     }
 }
