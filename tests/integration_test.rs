@@ -1,5 +1,15 @@
-//! Integration tests for the core data-oriented design structures.
-//! Since this is a binary crate, we replicate the core algorithms inline.
+//! Integration tests for the core data-oriented design structures used in the
+//! London transport visualiser.
+//!
+//! Because this is a binary crate the production types are not importable, so
+//! the key algorithms and data structures are replicated inline here.  Each
+//! replica is kept intentionally minimal — just enough to exercise the logic
+//! under test.
+//!
+//! # Test modules
+//!
+//! * [`tests`] — A\* routing, distance queries, radius search, and
+//!   [`bytemuck`] POD casting.
 
 extern crate alloc;
 use alloc::collections::BinaryHeap;
@@ -43,22 +53,158 @@ use tower as _;
 use tower_http as _;
 use tracing as _;
 
-// ── AStarNode ───────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────────────
 
-/// Priority-queue node for A* search.
-/// `f_cost` is stored as bits in a `u32` so that `#[derive(Ord)]` gives
-/// lexicographic ordering; the heap is a max-heap so we store the bitwise
-/// complement to achieve min-heap by `f_cost`.
+/// Default edge weight assigned to every synthetic grid edge, in metres.
+///
+/// All edges in the test grid produced by [`build_grid`] are bidirectional and
+/// carry this uniform cost, which simplifies path-length assertions.
+const GRID_EDGE_WEIGHT: f32 = 100.0;
+
+// ── Structs (alphabetical) ───────────────────────────────────────────────────
+
+/// A single node in the A\* open-set priority queue.
+///
+/// The f-cost is stored as the **bitwise complement** of its IEEE-754 bit
+/// pattern so that the standard [`BinaryHeap`] max-heap pops the node with the
+/// *smallest* f-cost first, giving correct A\* behaviour without a custom
+/// comparator.
+///
+/// # Ordering
+///
+/// `f_cost_inv` is the most-significant field, so the derived [`Ord`]
+/// implementation compares f-costs before node indices, which is exactly the
+/// priority ordering A\* requires.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct AStarNode {
-    /// Bitwise-complement of `f_cost` bits — smaller `f_cost` → larger value → higher priority.
+    /// Bitwise complement of the f-cost bits.
+    ///
+    /// A smaller f-cost produces a larger `f_cost_inv`, giving higher priority
+    /// in the max-heap.
     f_cost_inv: u32,
-    /// Node index.
+    /// Index of this node in the [`TransitNetworkGrid`] node arrays.
     idx: usize,
 }
 
+/// Reusable scratch space for a single A\* search.
+///
+/// Allocating these vectors once and resetting them between searches avoids
+/// repeated heap allocation in tight benchmark loops.  Call [`RouteScratchpad::new`]
+/// to create an instance sized for a given network, then call
+/// [`RouteScratchpad::astar`] as many times as needed.
+struct RouteScratchpad {
+    /// Predecessor map used to reconstruct the shortest path.
+    ///
+    /// `came_from[v]` is the node index from which `v` was first reached, or
+    /// [`usize::MAX`] if `v` has not yet been visited.
+    came_from: Vec<usize>,
+    /// Closed-set membership flags.
+    ///
+    /// `closed[v]` is `true` once node `v` has been finalised and should not
+    /// be relaxed again.
+    closed: Vec<bool>,
+    /// Best known g-cost (distance from the start) for each node.
+    ///
+    /// Initialised to [`f32::INFINITY`] and updated whenever a shorter path is
+    /// found.
+    g_cost: Vec<f32>,
+    /// Open-set priority queue ordered by ascending f-cost.
+    heap: BinaryHeap<AStarNode>,
+}
+
+/// Plain-old-data (POD) representation of a geographic coordinate.
+///
+/// Both fields are `f32` so the struct is 8 bytes with no padding, making it
+/// safe to cast to and from `&[u8]` via [`bytemuck`].
+///
+/// # Memory layout (`repr(C)`)
+///
+/// | Field | Offset | Size |
+/// |-------|--------|------|
+/// | `x`   | 0      | 4    |
+/// | `y`   | 4      | 4    |
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+#[repr(C)]
+struct SpatialCoordPod {
+    /// Longitude in decimal degrees (WGS-84).
+    x: f32,
+    /// Latitude in decimal degrees (WGS-84).
+    y: f32,
+}
+
+/// Plain-old-data (POD) record for a single transit station.
+///
+/// The layout is carefully padded so that there are **no implicit gaps**
+/// between fields, which is required by [`bytemuck::Pod`].
+///
+/// # Memory layout (`repr(C)`)
+///
+/// | Field            | Offset | Size | Notes                        |
+/// |------------------|--------|------|------------------------------|
+/// | `coord`          | 0      | 8    | `SpatialCoordPod`            |
+/// | `zone`           | 8      | 1    | Travelcard zone 1–9          |
+/// | `is_interchange` | 9      | 1    | `0` = no, `1` = yes          |
+/// | `_padding`       | 10     | 6    | Explicit; fills to offset 16 |
+/// | `name_hash`      | 16     | 8    | FNV-1a hash of station name  |
+///
+/// Total size: 24 bytes, no implicit padding.
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
+#[repr(C)]
+struct StationPod {
+    /// Geographic position of the station entrance.
+    coord: SpatialCoordPod,
+    /// Travelcard zone (1–9).  Zone 1 is central London.
+    zone: u8,
+    /// `1` if this station is a multi-line interchange, `0` otherwise.
+    is_interchange: u8,
+    /// Explicit padding that fills the 6 bytes between `is_interchange` and
+    /// `name_hash`, preventing any implicit compiler-inserted gaps.
+    _padding: [u8; 6],
+    /// FNV-1a hash of the station name, used as a compact identifier.
+    name_hash: u64,
+}
+
+/// Minimal compressed-sparse-row (CSR) transit network used in tests.
+///
+/// Nodes are identified by contiguous `usize` indices `0..node_count`.
+/// Edges are stored in CSR format: for node `v`, its outgoing edges are
+/// `edge_targets[edge_offsets[v]..edge_offsets[v+1]]` with corresponding
+/// weights in `edge_weights`.
+///
+/// # Construction
+///
+/// Use [`build_grid`] to create a synthetic line-topology instance.
+struct TransitNetworkGrid {
+    /// Longitude of each node, indexed by node index.
+    coords_x: Vec<f32>,
+    /// Latitude of each node, indexed by node index.
+    coords_y: Vec<f32>,
+    /// CSR row-pointer array.  Length is `node_count + 1`.
+    edge_offsets: Vec<u32>,
+    /// CSR column-index array of edge target node indices.
+    edge_targets: Vec<u32>,
+    /// Edge weights in metres, parallel to `edge_targets`.
+    edge_weights: Vec<f32>,
+    /// Total number of nodes in the network.
+    node_count: usize,
+}
+
+// ── Inherent impls (alphabetical by type) ────────────────────────────────────
+
 impl AStarNode {
-    /// Construct from a raw `f_cost` and node `idx`.
+    /// Construct an [`AStarNode`] from a raw f-cost and node index.
+    ///
+    /// # Parameters
+    ///
+    /// * `f_cost` — The A\* f-cost `g + h` for this node.
+    /// * `idx`    — Index of the node in the network.
+    ///
+    /// # How the inversion works
+    ///
+    /// `f_cost.to_bits()` gives the IEEE-754 bit pattern.  For non-negative
+    /// finite floats, bit-pattern order matches numeric order, so
+    /// `!f_cost.to_bits()` reverses the order: a *smaller* f-cost produces a
+    /// *larger* `f_cost_inv`, which sorts higher in the max-heap.
     const fn new(f_cost: f32, idx: usize) -> Self {
         return Self {
             f_cost_inv: !f_cost.to_bits(),
@@ -67,22 +213,22 @@ impl AStarNode {
     }
 }
 
-// ── RouteScratchpad ─────────────────────────────────────────────────────────
-
-/// Reusable A* scratchpad to avoid repeated allocations.
-struct RouteScratchpad {
-    /// Predecessor map for path reconstruction.
-    came_from: Vec<usize>,
-    /// Closed-set flags.
-    closed: Vec<bool>,
-    /// g-cost per node.
-    g_cost: Vec<f32>,
-    /// Priority queue.
-    heap: BinaryHeap<AStarNode>,
-}
-
 impl RouteScratchpad {
-    /// Run A* from `start` to `goal` on `grid`.
+    /// Run A\* from `start` to `goal` on `grid` and return the node-index path.
+    ///
+    /// Returns an empty `Vec` if either index is out of bounds or no path
+    /// exists.  The returned path includes both the start and goal nodes.
+    ///
+    /// # Parameters
+    ///
+    /// * `grid`  — The network to search.
+    /// * `start` — Source node index.
+    /// * `goal`  — Destination node index.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<usize>` of node indices from `start` to `goal` (inclusive), or
+    /// an empty `Vec` if no path was found.
     fn astar(
         &mut self,
         grid: &TransitNetworkGrid,
@@ -154,7 +300,15 @@ impl RouteScratchpad {
         return Vec::new();
     }
 
-    /// Allocate a new scratchpad for `node_count` nodes.
+    /// Allocate a new [`RouteScratchpad`] sized for a network with `node_count` nodes.
+    ///
+    /// All g-costs are initialised to [`f32::INFINITY`], all predecessor
+    /// entries to [`usize::MAX`], and all closed flags to `false`.
+    ///
+    /// # Parameters
+    ///
+    /// * `node_count` — Number of nodes in the network this scratchpad will
+    ///   be used with.
     fn new(node_count: usize) -> Self {
         return Self {
             came_from: vec![usize::MAX; node_count],
@@ -164,7 +318,15 @@ impl RouteScratchpad {
         };
     }
 
-    /// Reset all per-node state.
+    /// Reset all per-node state so the scratchpad can be reused for a new search.
+    ///
+    /// This is cheaper than dropping and reallocating because the backing
+    /// allocations are retained.
+    ///
+    /// # Parameters
+    ///
+    /// * `node_count` — Number of nodes to reset; must match the value passed
+    ///   to [`RouteScratchpad::new`].
     fn reset(&mut self, node_count: usize) {
         self.heap.clear();
         for index in 0..node_count {
@@ -181,26 +343,15 @@ impl RouteScratchpad {
     }
 }
 
-// ── TransitNetworkGrid ──────────────────────────────────────────────────────
-
-/// Minimal replica of the main crate's transit network grid.
-struct TransitNetworkGrid {
-    /// X coordinates (longitude).
-    coords_x: Vec<f32>,
-    /// Y coordinates (latitude).
-    coords_y: Vec<f32>,
-    /// CSR edge offsets.
-    edge_offsets: Vec<u32>,
-    /// CSR edge targets.
-    edge_targets: Vec<u32>,
-    /// CSR edge weights.
-    edge_weights: Vec<f32>,
-    /// Number of nodes.
-    node_count: usize,
-}
-
 impl TransitNetworkGrid {
-    /// Return edge weights for `node`.
+    /// Return the slice of edge weights for outgoing edges of `node`.
+    ///
+    /// Uses the CSR `edge_offsets` array to locate the correct sub-slice of
+    /// `edge_weights`.  Returns an empty slice if `node` is out of range.
+    ///
+    /// # Parameters
+    ///
+    /// * `node` — Node index whose outgoing edge weights are requested.
     fn get_edge_weights(&self, node: u32) -> &[f32] {
         let start_off = self
             .edge_offsets
@@ -217,7 +368,14 @@ impl TransitNetworkGrid {
         return self.edge_weights.get(start..end).unwrap_or(&[]);
     }
 
-    /// Return edge targets for `node`.
+    /// Return the slice of target node indices for outgoing edges of `node`.
+    ///
+    /// Uses the CSR `edge_offsets` array to locate the correct sub-slice of
+    /// `edge_targets`.  Returns an empty slice if `node` is out of range.
+    ///
+    /// # Parameters
+    ///
+    /// * `node` — Node index whose outgoing edge targets are requested.
     fn get_edges(&self, node: u32) -> &[u32] {
         let start_off = self
             .edge_offsets
@@ -235,12 +393,26 @@ impl TransitNetworkGrid {
     }
 }
 
-// ── free functions ──────────────────────────────────────────────────────────
+// ── Free functions (alphabetical) ─────────────────────────────────────────────
 
-/// Default synthetic edge weight (metres).
-const GRID_EDGE_WEIGHT: f32 = 100.0;
-
-/// Compute squared distances from (`query_x`, `query_y`) to each node.
+/// Compute the squared Euclidean distance from `(query_x, query_y)` to every
+/// node in parallel coordinate arrays.
+///
+/// Squaring avoids a `sqrt` call; callers that only need relative ordering or
+/// threshold comparisons should compare against `radius²` rather than `radius`.
+///
+/// # Parameters
+///
+/// * `query_x` — X coordinate of the query point.
+/// * `query_y` — Y coordinate of the query point.
+/// * `xs`      — X coordinates of the candidate nodes.
+/// * `ys`      — Y coordinates of the candidate nodes; must be the same length
+///   as `xs`.
+///
+/// # Returns
+///
+/// A `Vec<f32>` of length `xs.len()` where element `i` is
+/// `(xs[i] - query_x)² + (ys[i] - query_y)²`.
 fn batch_distance_squared(
     query_x: f32,
     query_y: f32,
@@ -258,7 +430,21 @@ fn batch_distance_squared(
         .collect();
 }
 
-/// Build a synthetic line-topology grid with `node_count` nodes.
+/// Build a synthetic line-topology [`TransitNetworkGrid`] with `node_count` nodes.
+///
+/// Nodes are laid out along a straight line with coordinates
+/// `x = i × 0.001 − 0.1`, `y = i × 0.001 + 51.5` for node index `i`.
+/// Each interior node has two bidirectional edges (to its predecessor and
+/// successor); the two terminal nodes each have one edge.  Every edge carries
+/// weight [`GRID_EDGE_WEIGHT`].
+///
+/// # Parameters
+///
+/// * `node_count` — Number of nodes in the resulting grid.
+///
+/// # Returns
+///
+/// A fully initialised [`TransitNetworkGrid`] in CSR format.
 fn build_grid(node_count: usize) -> TransitNetworkGrid {
     let mut coords_x = Vec::with_capacity(node_count);
     let mut coords_y = Vec::with_capacity(node_count);
@@ -290,7 +476,23 @@ fn build_grid(node_count: usize) -> TransitNetworkGrid {
     };
 }
 
-/// Find all node indices within `radius` of (`query_x`, `query_y`).
+/// Return the indices of all nodes within `radius` of `(query_x, query_y)`.
+///
+/// Distances are computed in the same coordinate space as the grid (decimal
+/// degrees), scaled by an approximate Mercator stretch factor before squaring,
+/// so the threshold is not a true metric radius but is consistent across calls.
+///
+/// # Parameters
+///
+/// * `grid`    — The network whose nodes are searched.
+/// * `query_x` — Longitude of the query point.
+/// * `query_y` — Latitude of the query point.
+/// * `radius`  — Search radius in the same units as the coordinate arrays.
+///
+/// # Returns
+///
+/// A `Vec<u32>` of node indices whose distance from the query point is at most
+/// `radius` (after Mercator scaling).
 fn find_stations_within_radius(
     grid: &TransitNetworkGrid,
     query_x: f32,
@@ -309,73 +511,6 @@ fn find_stations_within_radius(
         .map(|(index, _)| return u32::try_from(index).unwrap_or(0))
         .collect();
 }
-
-// ── bytemuck POD types ──────────────────────────────────────────────────────
-
-/// Plain-old-data spatial coordinate.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct SpatialCoordPod {
-    /// Longitude.
-    x: f32,
-    /// Latitude.
-    y: f32,
-}
-// SAFETY: `SpatialCoordPod` is a plain-old-data type with no invalid bit
-// patterns: two `f32` values are always valid for any bit pattern.
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "safety documented in comment above"
-)]
-unsafe impl bytemuck::Zeroable for SpatialCoordPod {
-    fn zeroed() -> Self {
-        return Self { x: 0.0, y: 0.0 };
-    }
-}
-// SAFETY: `SpatialCoordPod` is a POD type: `Copy` + `repr(C)` with no padding.
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "safety documented in comment above"
-)]
-unsafe impl bytemuck::Pod for SpatialCoordPod {}
-
-/// Plain-old-data station record.
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-struct StationPod {
-    /// Spatial coordinate.
-    coord: SpatialCoordPod,
-    /// Travelcard zone.
-    zone: u8,
-    /// Whether this is an interchange station.
-    is_interchange: u8,
-    /// Explicit padding for alignment.
-    _padding: [u8; 2],
-    /// FNV hash of the station name.
-    name_hash: u64,
-}
-// SAFETY: `StationPod` has no invalid bit patterns (all fields are POD).
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "safety documented in comment above"
-)]
-unsafe impl bytemuck::Zeroable for StationPod {
-    fn zeroed() -> Self {
-        return Self {
-            coord: SpatialCoordPod::zeroed(),
-            zone: 0,
-            is_interchange: 0,
-            _padding: [0; 2],
-            name_hash: 0,
-        };
-    }
-}
-// SAFETY: `StationPod` is `Copy` + `repr(C)` with explicit padding.
-#[expect(
-    clippy::undocumented_unsafe_blocks,
-    reason = "safety documented in comment above"
-)]
-unsafe impl bytemuck::Pod for StationPod {}
 
 // ════════════════════════════════════════════════════════════════════════════
 // TESTS
@@ -425,7 +560,7 @@ mod tests {
             coord: super::SpatialCoordPod { x: -0.1, y: 51.5 },
             zone: 3,
             is_interchange: 1,
-            _padding: [0; 2],
+            _padding: [0; 6],
             name_hash: 0xDEAD_BEEF_CAFE_BABE,
         };
         let bytes: &[u8] = bytemuck::bytes_of(&pod);
