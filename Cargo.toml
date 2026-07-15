@@ -70,7 +70,7 @@ memmap2 = "0.9"
 open = "5"
 
 # Shuttle deployment (optional, enabled via 'shuttle' feature)
-shuttle-runtime = { version = "0.49", optional = true }
+shuttle-runtime = { version = "0.50", optional = true }
 shuttle-axum = { version = "0.49", optional = true }
 # Note: shuttle-shared-db is omitted for now to avoid libsqlite3-sys conflicts.
 # SQLite caching is used for both desktop and shuttle builds.
