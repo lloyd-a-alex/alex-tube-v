@@ -202,7 +202,7 @@ mod error {
 
     impl AppError {
         /// Convert to a JSON-serialisable status code for the API response.
-        fn status_code(&self) -> u16 {
+        const fn status_code(&self) -> u16 {
             match self {
                 Self::NotFound(_) => 404,
                 Self::Validation(_) => 400,
@@ -224,12 +224,11 @@ mod error {
             let user_message = match &self {
                 Self::Validation(msg) => msg.clone(),
                 Self::NotFound(msg) => msg.clone(),
-                Self::ExternalApi(msg) => format!("External service error: {}", msg),
+                Self::ExternalApi(msg) => format!("External service error: {msg}"),
                 _ => {
                     // Log the full error internally, but return an opaque token.
                     log_error(&format!(
-                        "AppError returned to client (scrubbed): {:?}",
-                        self
+                        "AppError returned to client (scrubbed): {self:?}"
                     ));
                     "An internal error occurred. Please try again.".to_owned()
                 }
@@ -248,7 +247,7 @@ mod error {
     }
 
     /// Convenience alias used throughout the codebase.
-    pub(crate) type AppResult<T> = Result<T, AppError>;
+    pub type AppResult<T> = Result<T, AppError>;
 }
 
 // ============================================================================
@@ -335,7 +334,7 @@ where
                     // Exponential backoff, but clamp the delay so a large retry
                     // count can never produce pathological multi-minute waits
                     // (e.g. attempt 10 -> 256s) with no upper bound.
-                    let delay_ms = (2_u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
+                    let delay_ms = (2u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
                     // Retries are expected under transient network errors — keep them
                     // at debug level to avoid flooding operator logs; only the final,
                     // unrecoverable failure is surfaced as an error by the caller.
@@ -402,8 +401,7 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
     if !min_lat.is_finite() || !min_lon.is_finite() || !max_lat.is_finite() || !max_lon.is_finite()
     {
         log_error(&format!(
-            "validate_bounds - rejected: non-finite input (NaN/Inf) lat=[{}, {}], lon=[{}, {}]",
-            min_lat, max_lat, min_lon, max_lon
+            "validate_bounds - rejected: non-finite input (NaN/Inf) lat=[{min_lat}, {max_lat}], lon=[{min_lon}, {max_lon}]"
         ));
         return Err(AppError::Validation(
             "All bounds must be finite numbers (no NaN or Infinity)".into(),
@@ -413,8 +411,7 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
         || !(-MAX_MERCATOR_LAT..=MAX_MERCATOR_LAT).contains(&max_lat)
     {
         log_debug(&format!(
-            "validate_bounds - rejected: latitude out of range [{:.4}, {:.4}]",
-            min_lat, max_lat
+            "validate_bounds - rejected: latitude out of range [{min_lat:.4}, {max_lat:.4}]"
         ));
         return Err(AppError::Validation(format!(
             "Latitude must be between -{MAX_MERCATOR_LAT} and {MAX_MERCATOR_LAT} (Web-Mercator safe range)"
@@ -422,8 +419,7 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
     }
     if !(-180.0..=180.0).contains(&min_lon) || !(-180.0..=180.0).contains(&max_lon) {
         log_debug(&format!(
-            "validate_bounds - rejected: longitude out of range [{:.4}, {:.4}]",
-            min_lon, max_lon
+            "validate_bounds - rejected: longitude out of range [{min_lon:.4}, {max_lon:.4}]"
         ));
         return Err(AppError::Validation(
             "Longitude must be between -180 and 180".into(),
@@ -431,8 +427,7 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
     }
     if min_lat > max_lat || min_lon > max_lon {
         log_debug(&format!(
-            "validate_bounds - rejected: min > max (lat [{:.4},{:.4}], lon [{:.4},{:.4}])",
-            min_lat, max_lat, min_lon, max_lon
+            "validate_bounds - rejected: min > max (lat [{min_lat:.4},{max_lat:.4}], lon [{min_lon:.4},{max_lon:.4}])"
         ));
         return Err(AppError::Validation(
             "min_lat must be <= max_lat and min_lon must be <= max_lon".into(),
@@ -446,32 +441,26 @@ fn validate_bounds(min_lat: f64, min_lon: f64, max_lat: f64, max_lon: f64) -> Ap
 fn validate_coordinate(lat: f64, lon: f64, context: &str) -> AppResult<()> {
     if !lat.is_finite() || !lon.is_finite() {
         log_debug(&format!(
-            "validate_coordinate - rejected: non-finite lat={}, lon={} in {}",
-            lat, lon, context
+            "validate_coordinate - rejected: non-finite lat={lat}, lon={lon} in {context}"
         ));
         return Err(AppError::Validation(format!(
-            "{}: coordinates must be finite numbers",
-            context
+            "{context}: coordinates must be finite numbers"
         )));
     }
     if lat.abs() > MAX_MERCATOR_LAT {
         log_debug(&format!(
-            "validate_coordinate - rejected: lat={:.4} out of range in {}",
-            lat, context
+            "validate_coordinate - rejected: lat={lat:.4} out of range in {context}"
         ));
         return Err(AppError::Validation(format!(
-            "{}: latitude must be between -{} and {}",
-            context, MAX_MERCATOR_LAT, MAX_MERCATOR_LAT
+            "{context}: latitude must be between -{MAX_MERCATOR_LAT} and {MAX_MERCATOR_LAT}"
         )));
     }
     if lon.abs() > 180.0 {
         log_debug(&format!(
-            "validate_coordinate - rejected: lon={:.4} out of range in {}",
-            lon, context
+            "validate_coordinate - rejected: lon={lon:.4} out of range in {context}"
         ));
         return Err(AppError::Validation(format!(
-            "{}: longitude must be between -180 and 180",
-            context
+            "{context}: longitude must be between -180 and 180"
         )));
     }
     Ok(())
@@ -488,8 +477,7 @@ fn validate_coordinate(lat: f64, lon: f64, context: &str) -> AppResult<()> {
 fn validate_string_input(input: &str, max_len: usize, context: &str) -> AppResult<()> {
     if input.is_empty() {
         return Err(AppError::Validation(format!(
-            "{}: must not be empty",
-            context
+            "{context}: must not be empty"
         )));
     }
     if input.len() > max_len {
@@ -511,12 +499,10 @@ fn validate_string_input(input: &str, max_len: usize, context: &str) -> AppResul
     // ANSI code injection attacks.
     if input.chars().any(|c| c.is_control() && c != '\t') {
         log_debug(&format!(
-            "validate_string_input - rejected: {} contains control characters",
-            context
+            "validate_string_input - rejected: {context} contains control characters"
         ));
         return Err(AppError::Validation(format!(
-            "{}: must not contain control characters",
-            context
+            "{context}: must not contain control characters"
         )));
     }
     Ok(())
@@ -547,12 +533,12 @@ static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! 
     "windrush" => "#00BFFF",
 };
 
-pub(crate) use config::*;
-pub(crate) use logger::*;
-pub(crate) use primitives::*;
-pub(crate) use routing::*;
-pub(crate) use server::*;
-pub(crate) use spatial::*;
+pub(crate) use config::{LondonBounds, Config};
+pub(crate) use logger::{log_debug, log_error, log_info, stderr_capture, log_warn, catch_simple, get_all_logs, accumulate_crash_text, update_crash_telemetry, get_log_storage, log_trace};
+pub(crate) use primitives::{Station, embedded_stations, Coordinate};
+pub(crate) use routing::{RailwayTrack, Line};
+pub(crate) use server::{hydrate_network_state, build_spatial_cache, libc_at_exit, AppState, load_spatial_cache_mmap, pin_memory_to_ram, MmapCacheStore};
+pub(crate) use spatial::TransitNetworkGrid;
 
 
 #[cfg(feature = "desktop")]
@@ -588,7 +574,7 @@ mod logger {
         })
     }
 
-    pub(crate) struct Globals {
+    pub struct Globals {
         pub(crate) is_panicked: std::sync::atomic::AtomicBool,
         pub(crate) crash_log: std::sync::Mutex<String>,
         pub(crate) crash_telemetry: std::sync::Mutex<String>,
@@ -600,13 +586,13 @@ mod logger {
 
     /// Minimal `catch_unwind` wrapper that swallows panics. Used inside the panic
     /// hook to prevent secondary panics (e.g. poisoned locks) from aborting the process.
-    pub(crate) fn catch_simple(f: impl FnOnce()) {
+    pub fn catch_simple(f: impl FnOnce()) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     }
 
     impl Globals {
-        pub(crate) fn get() -> &'static Globals {
-            GLOBALS.get_or_init(|| Globals {
+        pub(crate) fn get() -> &'static Self {
+            GLOBALS.get_or_init(|| Self {
                 is_panicked: std::sync::atomic::AtomicBool::new(false),
                 crash_log: std::sync::Mutex::new(String::new()),
                 crash_telemetry: std::sync::Mutex::new(String::new()),
@@ -624,9 +610,9 @@ mod logger {
 
     /// Hard cap on accumulated crash text so a long-running process that hits
     /// repeated recoverable panics cannot grow this unbounded.
-    pub(crate) const MAX_CRASH_LOG_CHARS: usize = 256 * 1024;
+    pub const MAX_CRASH_LOG_CHARS: usize = 256 * 1024;
 
-    pub(crate) fn update_crash_telemetry(summary: &str) {
+    pub fn update_crash_telemetry(summary: &str) {
         let g = Globals::get();
         // Recover from a poisoned lock instead of silently no-op'ing: the crash
         // log's entire purpose is to survive panics, so a poisoned mutex must
@@ -637,7 +623,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn accumulate_crash_text(msg: &str) {
+    pub fn accumulate_crash_text(msg: &str) {
         let g = Globals::get();
         // Recover from a poisoned lock (see `update_crash_telemetry`). Append then
         // truncate from the front if we exceed the cap so memory stays bounded.
@@ -669,13 +655,13 @@ mod logger {
     // leaks from runaway log output.
     //
     // ============================================================================
-    pub(crate) const DEFAULT_MAX_LOG_ENTRIES: usize = 20_000;
+    pub const DEFAULT_MAX_LOG_ENTRIES: usize = 20_000;
 
-    pub(crate) fn get_log_storage() -> &'static Arc<std::sync::RwLock<VecDeque<String>>> {
+    pub fn get_log_storage() -> &'static Arc<std::sync::RwLock<VecDeque<String>>> {
         &Globals::get().log_buffer
     }
 
-    pub(crate) fn log_to_storage(message: &str, is_error: bool) {
+    pub fn log_to_storage(message: &str, is_error: bool) {
         // NOTE: previously `fetch_residential_areas failed` was fully suppressed here.
         // We no longer drop it outright — it is a real (if usually benign) Overpass
         // failure that operators must be able to observe. It still flows through the
@@ -703,9 +689,9 @@ mod logger {
             }
         }
         if is_error {
-            eprintln!("{}", message);
+            eprintln!("{message}");
         } else {
-            println!("{}", message);
+            println!("{message}");
         }
         let storage = get_log_storage();
         match storage.write() {
@@ -721,13 +707,13 @@ mod logger {
         }
     }
 
-    pub(crate) fn format_high_precision_timestamp() -> String {
+    pub fn format_high_precision_timestamp() -> String {
         Utc::now().format("%Y-%m-%d %H:%M:%S%.6f UTC").to_string()
     }
 
     // ===== LOG LEVEL CONTROL =====
-    #[derive(PartialEq, PartialOrd)]
-    pub(crate) enum LogLevel {
+    #[derive(PartialEq, Eq, PartialOrd)]
+    pub enum LogLevel {
         Error,
         Warn,
         Info,
@@ -735,9 +721,9 @@ mod logger {
         Trace,
     }
 
-    pub(crate) static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
+    pub static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
 
-    pub(crate) fn get_log_level() -> &'static LogLevel {
+    pub fn get_log_level() -> &'static LogLevel {
         LOG_LEVEL.get_or_init(|| {
             if let Ok(level) = std::env::var("LOG_LEVEL") {
                 match level.to_lowercase().as_str() {
@@ -755,7 +741,7 @@ mod logger {
         })
     }
 
-    pub(crate) fn log_info(message: &str) {
+    pub fn log_info(message: &str) {
         if *get_log_level() >= LogLevel::Info {
             log_to_storage(
                 &format!("[{}] [INFO] {}", format_high_precision_timestamp(), message),
@@ -764,7 +750,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn log_info_with_context(message: &str, context: &str) {
+    pub fn log_info_with_context(message: &str, context: &str) {
         if *get_log_level() >= LogLevel::Info {
             log_to_storage(
                 &format!(
@@ -778,7 +764,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn log_error(message: &str) {
+    pub fn log_error(message: &str) {
         // LOAD-BEARING FILTER: Certain "error" messages are actually benign
         // routing diagnostics that flood stderr. Route-finding failures from the
         // A* pathfinder are expected when no route exists ? logging them as ERROR
@@ -818,7 +804,7 @@ mod logger {
         );
     }
 
-    pub(crate) fn log_error_with_context(message: &str, context: &str) {
+    pub fn log_error_with_context(message: &str, context: &str) {
         log_to_storage(
             &format!(
                 "[{}] [ERROR] [CTX:{}] {}",
@@ -830,7 +816,7 @@ mod logger {
         );
     }
 
-    pub(crate) fn log_debug(message: &str) {
+    pub fn log_debug(message: &str) {
         if *get_log_level() >= LogLevel::Debug {
             log_to_storage(
                 &format!(
@@ -843,7 +829,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn log_debug_with_context(message: &str, context: &str) {
+    pub fn log_debug_with_context(message: &str, context: &str) {
         if *get_log_level() >= LogLevel::Debug {
             log_to_storage(
                 &format!(
@@ -857,7 +843,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn log_warn(message: &str) {
+    pub fn log_warn(message: &str) {
         // LOAD-BEARING FILTER: Same rationale as log_error ? these messages are
         // expected under normal routing conditions. Downgrading avoids spamming
         // --console-child log windows and keeps crash reports actionable.
@@ -886,7 +872,7 @@ mod logger {
         );
     }
 
-    pub(crate) fn log_warn_with_context(message: &str, context: &str) {
+    pub fn log_warn_with_context(message: &str, context: &str) {
         log_to_storage(
             &format!(
                 "[{}] [WARN] [CTX:{}] {}",
@@ -898,7 +884,7 @@ mod logger {
         );
     }
 
-    pub(crate) fn log_trace(message: &str) {
+    pub fn log_trace(message: &str) {
         if *get_log_level() >= LogLevel::Trace {
             log_to_storage(
                 &format!(
@@ -911,7 +897,7 @@ mod logger {
         }
     }
 
-    pub(crate) fn log_race(message: &str) {
+    pub fn log_race(message: &str) {
         log_to_storage(
             &format!(
                 "[{}] [RACE-DETECT] {}",
@@ -922,7 +908,7 @@ mod logger {
         );
     }
 
-    pub(crate) fn get_all_logs() -> String {
+    pub fn get_all_logs() -> String {
         let storage = get_log_storage();
         match storage.read() {
             Ok(logs) => {
@@ -953,7 +939,7 @@ mod logger {
     // fprintf(stderr, ...)) goes through our pipe, not just GetStdHandle callers.
     // ============================================================================
     #[cfg(windows)]
-    pub(crate) mod stderr_capture {
+    pub mod stderr_capture {
         use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
 
@@ -992,13 +978,13 @@ mod logger {
         }
 
         #[repr(C)]
-        pub(crate) struct SECURITY_ATTRIBUTES {
+        pub struct SECURITY_ATTRIBUTES {
             pub(crate) n_length: u32,
             pub(crate) lp_security_descriptor: *mut std::ffi::c_void,
             pub(crate) b_inherit_handle: i32, // BOOL
         }
 
-        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF5_u32; // -11 as u32
+        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF5u32; // -11 as u32
         const INVALID_HANDLE_VALUE: isize = -1;
         const STD_FILENO: i32 = 2; // CRT file descriptor for stderr
 
@@ -1040,9 +1026,9 @@ mod logger {
                     let mut r: isize = 0;
                     let mut w: isize = 0;
                     if CreatePipe(
-                        &mut r,
-                        &mut w,
-                        &mut sa as *mut _ as *mut std::ffi::c_void,
+                        &raw mut r,
+                        &raw mut w,
+                        (&raw mut sa).cast::<std::ffi::c_void>(),
                         0,
                     ) == 0
                     {
@@ -1069,18 +1055,16 @@ mod logger {
                         if saved_fd < 0 {
                             super::log_warn("stderr_capture: _dup (save fd 2) failed");
                             _close(pipe_fd);
+                        } else if _dup2(pipe_fd, STD_FILENO) < 0 {
+                            super::log_warn("stderr_capture: _dup2 (redirect fd 2) failed");
+                            _close(saved_fd);
+                            _close(pipe_fd);
                         } else {
-                            if _dup2(pipe_fd, STD_FILENO) < 0 {
-                                super::log_warn("stderr_capture: _dup2 (redirect fd 2) failed");
-                                _close(saved_fd);
-                                _close(pipe_fd);
-                            } else {
-                                // Close the temporary pipe fd (after _dup2, fd 2
-                                // references the same OS handle; reference count
-                                // is managed by CRT).
-                                _close(pipe_fd);
-                                original_fd = saved_fd;
-                            }
+                            // Close the temporary pipe fd (after _dup2, fd 2
+                            // references the same OS handle; reference count
+                            // is managed by CRT).
+                            _close(pipe_fd);
+                            original_fd = saved_fd;
                         }
                     }
                     if original_fd < 0 {
@@ -1110,7 +1094,7 @@ mod logger {
                                     reader,
                                     buf.as_mut_ptr(),
                                     buf.len() as u32,
-                                    &mut read_bytes,
+                                    &raw mut read_bytes,
                                     std::ptr::null(),
                                 );
 
@@ -1138,14 +1122,14 @@ mod logger {
                                     if !trimmed.is_empty() {
                                         // Forward to original stderr ALWAYS
                                         // (so the terminal shows everything)
-                                        let with_newline = format!("{}\n", trimmed);
+                                        let with_newline = format!("{trimmed}\n");
                                         let wbuf = with_newline.as_bytes();
                                         let mut written: u32 = 0;
                                         WriteFile(
                                             original,
                                             wbuf.as_ptr(),
                                             wbuf.len() as u32,
-                                            &mut written,
+                                            &raw mut written,
                                             std::ptr::null(),
                                         );
 
@@ -1158,8 +1142,7 @@ mod logger {
                                             || trimmed.contains("Error = 1412")
                                         {
                                             super::log_debug(&format!(
-                                                "[WebView2 Shutdown] {}",
-                                                trimmed
+                                                "[WebView2 Shutdown] {trimmed}"
                                             ));
                                         } else if let Some(severity) =
                                             parse_chromium_log_line(trimmed)
@@ -1168,20 +1151,17 @@ mod logger {
                                                 ChromiumSeverity::Error
                                                 | ChromiumSeverity::Fatal => {
                                                     super::log_error(&format!(
-                                                        "[WebView2 Engine] {}",
-                                                        trimmed
+                                                        "[WebView2 Engine] {trimmed}"
                                                     ));
                                                 }
                                                 ChromiumSeverity::Warning => {
                                                     super::log_warn(&format!(
-                                                        "[WebView2 Engine] {}",
-                                                        trimmed
+                                                        "[WebView2 Engine] {trimmed}"
                                                     ));
                                                 }
                                                 _ => {
                                                     super::log_info(&format!(
-                                                        "[WebView2 Engine] {}",
-                                                        trimmed
+                                                        "[WebView2 Engine] {trimmed}"
                                                     ));
                                                 }
                                             }
@@ -1189,8 +1169,7 @@ mod logger {
                                             // Non-Chromium stderr line — still capture
                                             // as INFO so nothing is lost.
                                             super::log_info(&format!(
-                                                "[WebView2 Engine] {}",
-                                                trimmed
+                                                "[WebView2 Engine] {trimmed}"
                                             ));
                                         }
                                     }
@@ -1206,25 +1185,22 @@ mod logger {
                             CloseHandle(reader);
                         });
 
-                    match thread {
-                        Ok(handle) => {
-                            super::log_info("stderr_capture: WebView2/Chromium stderr capture started successfully (Win32 pipe + CRT fd 2 redirect)");
-                            Some(Self {
-                                _reader_handle: r,
-                                writer_handle: w,
-                                original_handle: orig,
-                                original_fd, // saved CRT fd 2 for restoration (-1 if redirect failed)
-                                thread: Some(handle),
-                                running,
-                            })
-                        }
-                        Err(_) => {
-                            // Thread failed to spawn — restore stderr and close handles
-                            SetStdHandle(STD_ERROR_HANDLE, orig);
-                            CloseHandle(r);
-                            CloseHandle(w);
-                            None
-                        }
+                    if let Ok(handle) = thread {
+                        super::log_info("stderr_capture: WebView2/Chromium stderr capture started successfully (Win32 pipe + CRT fd 2 redirect)");
+                        Some(Self {
+                            _reader_handle: r,
+                            writer_handle: w,
+                            original_handle: orig,
+                            original_fd, // saved CRT fd 2 for restoration (-1 if redirect failed)
+                            thread: Some(handle),
+                            running,
+                        })
+                    } else {
+                        // Thread failed to spawn — restore stderr and close handles
+                        SetStdHandle(STD_ERROR_HANDLE, orig);
+                        CloseHandle(r);
+                        CloseHandle(w);
+                        None
                     }
                 }
             }
@@ -1264,8 +1240,8 @@ mod logger {
             }
         }
 
-        #[derive(Debug, Clone, Copy, PartialEq)]
-        pub(crate) enum ChromiumSeverity {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ChromiumSeverity {
             Error,
             Warning,
             Info,
@@ -1277,7 +1253,7 @@ mod logger {
         /// Parse a line in Chromium log format:
         ///   [MMDD/HHMMSS.mmm:SEVERITY:file:line] message
         /// Returns `Some(severity)` if the line matches, `None` otherwise.
-        pub(crate) fn parse_chromium_log_line(line: &str) -> Option<ChromiumSeverity> {
+        pub fn parse_chromium_log_line(line: &str) -> Option<ChromiumSeverity> {
             // Chromium log prefix: [MMDD/HHMMSS.mmm:SEVERITY:...
             // e.g. [0627/222421.578:ERROR:ui\gfx\win\window_impl.cc:172]
             if !line.starts_with('[') {
@@ -1317,7 +1293,7 @@ mod logger {
 }
 
 mod config {
-    use crate::logger::*;
+    use crate::logger::{log_warn, log_info};
     use serde::{Deserialize, Serialize};
     use std::path::Path;
 
@@ -1406,16 +1382,14 @@ mod config {
     /// lat ∈ [51.28, 51.69], lon ∈ [-0.51, 0.33]
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct LondonBounds {
-        /// Southern latitude boundary (decimal degrees).
         pub(crate) min_lat: f64,
-        /// Western longitude boundary (decimal degrees).
         pub(crate) min_lon: f64,
         pub(crate) max_lat: f64,
         pub(crate) max_lon: f64,
     }
 
     impl LondonBounds {
-        pub(crate) fn contains_bounds(&self, other: &LondonBounds) -> bool {
+        pub(crate) fn contains_bounds(&self, other: &Self) -> bool {
             other.min_lat >= self.min_lat
                 && other.max_lat <= self.max_lat
                 && other.min_lon >= self.min_lon
@@ -1477,48 +1451,46 @@ mod config {
                         "config.toml is {} bytes (exceeds 1 MB limit) — rejecting, using defaults",
                         meta.len()
                     ));
-                        return Config::default();
+                        return Self::default();
                     }
                 }
                 match std::fs::read_to_string("config.toml") {
-                    Ok(content) => match toml::from_str::<Config>(&content) {
+                    Ok(content) => match toml::from_str::<Self>(&content) {
                         Ok(config) => {
                             log_info("Loaded configuration from config.toml");
                             return config;
                         }
                         Err(e) => {
                             log_warn(&format!(
-                                "Failed to parse config.toml: {}, using defaults",
-                                e
+                                "Failed to parse config.toml: {e}, using defaults"
                             ));
                         }
                     },
                     Err(e) => {
                         log_warn(&format!(
-                            "Failed to read config.toml: {}, using defaults",
-                            e
+                            "Failed to read config.toml: {e}, using defaults"
                         ));
                     }
                 }
             }
             log_info("Using default configuration");
-            Config::default()
+            Self::default()
         }
     }
 
     // Fix #8: Schema version for cache invalidation ? bump this whenever cache format changes
-    pub(crate) const CACHE_SCHEMA_VERSION: &str = "1";
+    pub const CACHE_SCHEMA_VERSION: &str = "1";
 }
 
 mod primitives {
-    use crate::logger::*;
+    use crate::logger::{log_info, log_error};
     use serde::{Deserialize, Serialize};
     use std::f64::consts::PI;
 
-    pub(crate) use geo::*;
+    pub use geo::*;
 
-    pub(crate) mod geo {
-        use super::*;
+    pub mod geo {
+        use super::{log_info, log_error, Station, Coordinate};
         use serde::{Deserialize, Serialize};
         use std::f64::consts::PI;
 
@@ -1533,16 +1505,16 @@ mod primitives {
         //
         // ============================================================================
 
-        pub(crate) const EARTH_RADIUS: f64 = 6_378_137.0;
-        pub(crate) const DEG_TO_RAD: f64 = PI / 180.0;
-        pub(crate) const RAD_TO_DEG: f64 = 180.0 / PI;
-        pub(crate) const TILE_SIZE: f64 = 256.0;
-        pub(crate) const DEFAULT_ZOOM: f64 = 13.0;
-        pub(crate) const MIN_ZOOM: f64 = 2.0;
-        pub(crate) const MAX_ZOOM: f64 = 19.0;
-        pub(crate) const STATION_MERGE_THRESHOLD: f64 = 0.005;
+        pub const EARTH_RADIUS: f64 = 6_378_137.0;
+        pub const DEG_TO_RAD: f64 = PI / 180.0;
+        pub const RAD_TO_DEG: f64 = 180.0 / PI;
+        pub const TILE_SIZE: f64 = 256.0;
+        pub const DEFAULT_ZOOM: f64 = 13.0;
+        pub const MIN_ZOOM: f64 = 2.0;
+        pub const MAX_ZOOM: f64 = 19.0;
+        pub const STATION_MERGE_THRESHOLD: f64 = 0.005;
 
-        pub(crate) const CATCHMENT_RADIUS: f64 = 800.0;
+        pub const CATCHMENT_RADIUS: f64 = 800.0;
 
         // ============================================================================
         // EMBEDDED OFFLINE BASEMAP DATA
@@ -1560,16 +1532,16 @@ mod primitives {
         // data set, on first access.
         //
         // ============================================================================
-        pub(crate) static EMBEDDED_STATIONS_JSON: &str =
+        pub static EMBEDDED_STATIONS_JSON: &'static str =
             include_str!("../data/london_stations.json");
-        pub(crate) static EMBEDDED_LINES_JSON: &str = include_str!("../data/london_lines.json");
-        pub(crate) static EMBEDDED_RESIDENTIAL_JSON: &str =
+        pub static EMBEDDED_LINES_JSON: &'static str = include_str!("../data/london_lines.json");
+        pub static EMBEDDED_RESIDENTIAL_JSON: &'static str =
             include_str!("../data/london_residential.json");
 
         /// One coloured polyline segment of a rail line (matches the compact JSON keys
         /// in `london_lines.json`: c=colour, g=group/mode, n=name, p=[[lat, lon],...]).
         #[derive(Debug, Clone, Serialize, Deserialize)]
-        pub(crate) struct RailSegment {
+        pub struct RailSegment {
             pub c: String,
             pub g: String,
             pub n: String,
@@ -1577,13 +1549,13 @@ mod primitives {
         }
 
         #[derive(Debug, Clone, Deserialize)]
-        pub(crate) struct EmbeddedLinesFile {
+        pub struct EmbeddedLinesFile {
             pub tfl: Vec<RailSegment>,
             pub nr: Vec<RailSegment>,
         }
 
         #[derive(Debug, Clone, Deserialize)]
-        pub(crate) struct EmbeddedStation {
+        pub struct EmbeddedStation {
             pub lat: f64,
             pub lon: f64,
             pub name: String,
@@ -1591,14 +1563,14 @@ mod primitives {
         }
 
         #[derive(Debug, Clone, Deserialize)]
-        pub(crate) struct EmbeddedResidential {
+        pub struct EmbeddedResidential {
             pub lat: f64,
             pub lon: f64,
         }
 
         /// Normalize a rail line name for merge/dedup purposes.
         /// E.g. "Southeastern" and "South Eastern" both become "southeastern".
-        pub(crate) fn normalize_line_name(name: &str) -> String {
+        pub fn normalize_line_name(name: &str) -> String {
             name.to_lowercase()
                 .replace(['-', '_'], " ")
                 .split_whitespace()
@@ -1609,7 +1581,7 @@ mod primitives {
         /// All embedded rail segments (`TfL` first, then National Rail), parsed once.
         /// During parsing, variant spellings of the same operator (e.g.
         /// "Southeastern" vs "South Eastern") are merged into a single segment.
-        pub(crate) fn embedded_rail_segments() -> &'static Vec<RailSegment> {
+        pub fn embedded_rail_segments() -> &'static Vec<RailSegment> {
             static SEGMENTS: std::sync::OnceLock<Vec<RailSegment>> = std::sync::OnceLock::new();
             SEGMENTS.get_or_init(|| {
                 match serde_json::from_str::<EmbeddedLinesFile>(EMBEDDED_LINES_JSON) {
@@ -1623,7 +1595,7 @@ mod primitives {
                         all
                     }
                     Err(e) => {
-                        log_error(&format!("embedded_rail_segments - parse error: {}", e));
+                        log_error(&format!("embedded_rail_segments - parse error: {e}"));
                         Vec::new()
                     }
                 }
@@ -1633,7 +1605,7 @@ mod primitives {
         /// All embedded stations as ready-to-serve `Station` records, parsed once. The
         /// originating mode is stored as the first entry of `lines` so the UI can pick
         /// the correct roundel / National Rail logo.
-        pub(crate) fn embedded_stations() -> &'static Vec<Station> {
+        pub fn embedded_stations() -> &'static Vec<Station> {
             static STATIONS: std::sync::OnceLock<Vec<Station>> = std::sync::OnceLock::new();
             STATIONS.get_or_init(|| {
                 match serde_json::from_str::<Vec<EmbeddedStation>>(EMBEDDED_STATIONS_JSON) {
@@ -1658,7 +1630,7 @@ mod primitives {
                             }
 
                             let mut st = Station::new(
-                                format!("embedded_{}", i),
+                                format!("embedded_{i}"),
                                 s.name,
                                 Coordinate::new(s.lat, s.lon),
                             );
@@ -1668,7 +1640,7 @@ mod primitives {
                             let kind_display = if kind_normalized.contains("southeast") {
                                 "Southeastern".to_owned()
                             } else {
-                                s.kind.clone()
+                                s.kind
                             };
                             st.lines = vec![kind_display];
                             st.zone = 1;
@@ -1676,7 +1648,7 @@ mod primitives {
                         })
                         .collect(),
                     Err(e) => {
-                        log_error(&format!("embedded_stations - parse error: {}", e));
+                        log_error(&format!("embedded_stations - parse error: {e}"));
                         Vec::new()
                     }
                 }
@@ -1685,7 +1657,7 @@ mod primitives {
 
         /// Embedded residential demand points, parsed once. Used as a lossless offline
         /// fallback for catchment + AI planning when Overpass is unreachable.
-        pub(crate) fn embedded_residential() -> &'static Vec<ResidentialArea> {
+        pub fn embedded_residential() -> &'static Vec<ResidentialArea> {
             static RES: std::sync::OnceLock<Vec<ResidentialArea>> = std::sync::OnceLock::new();
             RES.get_or_init(|| {
                 match serde_json::from_str::<Vec<EmbeddedResidential>>(EMBEDDED_RESIDENTIAL_JSON) {
@@ -1713,7 +1685,7 @@ mod primitives {
                         })
                         .collect(),
                     Err(e) => {
-                        log_error(&format!("embedded_residential - parse error: {}", e));
+                        log_error(&format!("embedded_residential - parse error: {e}"));
                         Vec::new()
                     }
                 }
@@ -1797,7 +1769,7 @@ mod primitives {
     /// - `polygon` — Ordered boundary vertices forming a closed ring.
     impl Coordinate {
         #[inline]
-        pub(crate) fn new(lat: f64, lon: f64) -> Self {
+        pub(crate) const fn new(lat: f64, lon: f64) -> Self {
             Self { lat, lon }
         }
 
@@ -1816,22 +1788,20 @@ mod primitives {
         /// this uses the mean latitude of the two endpoints to scale the longitude
         /// term correctly, so callers outside London get sane distances.
         #[inline]
-        pub(crate) fn fast_distance_to_calibrated(&self, other: &Coordinate) -> f64 {
+        pub(crate) fn fast_distance_to_calibrated(&self, other: &Self) -> f64 {
             let mean_lat = (self.lat + other.lat) * 0.5;
             let lon_m_per_deg = 111_320.0 * mean_lat.to_radians().cos();
             let d_lat = (other.lat - self.lat) * 111_320.0;
             let d_lon = (other.lon - self.lon) * lon_m_per_deg;
-            (d_lat * d_lat + d_lon * d_lon).sqrt()
+            d_lat.hypot(d_lon)
         }
 
         #[inline]
-        pub(crate) fn distance_to(&self, other: &Coordinate) -> f64 {
+        pub(crate) fn distance_to(&self, other: &Self) -> f64 {
             let d_lat = (other.lat - self.lat) * DEG_TO_RAD;
             let d_lon = (other.lon - self.lon) * DEG_TO_RAD;
-            let a = (d_lat / 2.0).sin().powi(2)
-                + (self.lat * DEG_TO_RAD).cos()
-                    * (other.lat * DEG_TO_RAD).cos()
-                    * (d_lon / 2.0).sin().powi(2);
+            let a = (d_lat / 2.0).sin().mul_add((d_lat / 2.0).sin(), (self.lat * DEG_TO_RAD).cos()
+                    * (other.lat * DEG_TO_RAD).cos() * (d_lon / 2.0).sin().powi(2));
             let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
             EARTH_RADIUS * c
@@ -1847,14 +1817,14 @@ mod primitives {
         #[inline]
         pub(crate) fn from_mercator(x: f64, y: f64) -> Self {
             let lon = x / EARTH_RADIUS * RAD_TO_DEG;
-            let lat = (2.0 * (y / EARTH_RADIUS).exp().atan() - PI / 2.0) * RAD_TO_DEG;
+            let lat = 2.0f64.mul_add((y / EARTH_RADIUS).exp().atan(), -(PI / 2.0)) * RAD_TO_DEG;
             Self { lat, lon }
         }
 
         #[inline]
-        pub(crate) fn normalize_projections(&self) -> Coordinate {
+        pub(crate) fn normalize_projections(&self) -> Self {
             let (x, y) = self.to_mercator();
-            Coordinate::from_mercator(x, y)
+            Self::from_mercator(x, y)
         }
 
         /// Quantizes this coordinate to 6 decimal places (~11.1cm precision) for
@@ -1995,7 +1965,7 @@ mod primitives {
         /// `_checked` rather than `_unchecked` because it DOES validate — the old
         /// name was backwards from Rust convention and implied unchecked safety.)
         pub fn from_buffer_checked(buf: &[u8]) -> Option<&ArchivedTrackGeometry> {
-            rkyv::check_archived_root::<TrackGeometry>(buf).ok()
+            rkyv::check_archived_root::<Self>(buf).ok()
         }
     }
 
@@ -2011,7 +1981,7 @@ mod primitives {
         /// Validates the buffer and returns None if too small or invalid.
         /// See `TrackGeometry::from_buffer_checked` for why this is `_checked`.
         pub fn from_buffer_checked(buf: &[u8]) -> Option<&ArchivedStationRecord> {
-            rkyv::check_archived_root::<StationRecord>(buf).ok()
+            rkyv::check_archived_root::<Self>(buf).ok()
         }
     }
 
@@ -2067,7 +2037,7 @@ mod primitives {
 
     impl Station {
         #[inline]
-        pub(crate) fn new(id: String, name: String, coord: Coordinate) -> Self {
+        pub(crate) const fn new(id: String, name: String, coord: Coordinate) -> Self {
             Self {
                 id,
                 name,
@@ -2108,12 +2078,12 @@ mod primitives {
 }
 
 mod spatial {
-    pub(crate) use morton::*;
-    pub(crate) use transit_grid::*;
+    pub use morton::*;
+    pub use transit_grid::*;
 
     mod transit_grid {
-        use crate::logger::*;
-        use crate::primitives::*;
+        use crate::logger::{log_info, log_warn};
+        use crate::primitives::Station;
         use crate::routing::Line;
         use std::collections::HashMap;
 
@@ -2281,8 +2251,7 @@ mod spatial {
                 }
 
                 log_info(&format!(
-                    "TransitNetworkGrid - built grid with {} nodes, {} edges",
-                    node_count, total_edges
+                    "TransitNetworkGrid - built grid with {node_count} nodes, {total_edges} edges"
                 ));
 
                 Self {
@@ -2307,8 +2276,8 @@ mod spatial {
     }
 
     mod morton {
-        use crate::logger::*;
-        use crate::primitives::*;
+        use crate::logger::log_trace;
+        use crate::primitives::{QuantizedCoord, Coordinate};
         use crate::routing::Node;
         use std::cmp::Ordering as CmpOrdering;
         use std::collections::HashMap;
@@ -2432,7 +2401,7 @@ mod spatial {
             }
 
             /// Squared Euclidean distance in micrometer^2 (no sqrt needed for comparison).
-            pub fn distance_squared(&self, other: &Self) -> i64 {
+            pub const fn distance_squared(&self, other: &Self) -> i64 {
                 let dx = self.x - other.x;
                 let dy = self.y - other.y;
                 dx * dx + dy * dy
@@ -2546,14 +2515,14 @@ mod spatial {
 }
 
 mod routing {
-    pub(crate) use graph::*;
+    pub use graph::*;
 
     mod graph {
-        use crate::logger::*;
-        use crate::primitives::*;
+        use crate::logger::{log_info, log_trace, log_warn, log_debug, log_error, log_info_with_context, log_debug_with_context};
+        use crate::primitives::{Station, Coordinate, EARTH_RADIUS, RAD_TO_DEG, DEG_TO_RAD, embedded_rail_segments};
         use crate::retry_with_backoff;
-        use crate::server::*;
-        use crate::spatial::*;
+        use crate::server::AppState;
+        use crate::spatial::MortonSpatialIndex;
         use crate::AppError;
         use crate::AppResult;
         use chrono::Utc;
@@ -2586,7 +2555,7 @@ mod routing {
 
         /// Handle a disruption by cloning the current graph, removing a line's edges,
         /// and hot-swapping the modified graph into `AppState`.
-        pub(crate) async fn handle_disruption(
+        pub async fn handle_disruption(
             state: &AppState,
             line_id: &str,
         ) -> AppResult<String> {
@@ -2624,12 +2593,10 @@ mod routing {
             state.hot_swap_routing_graph(new_graph);
 
             log_info(&format!(
-                "handle_disruption - removed {} nodes for line '{}'",
-                removed_count, line_id
+                "handle_disruption - removed {removed_count} nodes for line '{line_id}'"
             ));
             Ok(format!(
-                "Disruption applied: {} nodes removed for line '{}'",
-                removed_count, line_id
+                "Disruption applied: {removed_count} nodes removed for line '{line_id}'"
             ))
         }
 
@@ -2676,7 +2643,7 @@ mod routing {
             pub sub_geometries: Vec<Vec<Coordinate>>,
         }
 
-        pub(crate) fn default_group() -> String {
+        pub fn default_group() -> String {
             "tfl".to_owned()
         }
 
@@ -2748,7 +2715,7 @@ mod routing {
         // ============================================================================
 
         #[derive(Debug, Clone)]
-        pub(crate) struct SpatialPoint {
+        pub struct SpatialPoint {
             pub coord: Coordinate,
             pub(crate) index: usize,
         }
@@ -2770,7 +2737,7 @@ mod routing {
                 let (my_x, my_y) = self.coord.to_mercator();
                 let dx = my_x - point[0];
                 let dy = my_y - point[1];
-                dx * dx + dy * dy
+                dy.mul_add(dy, dx * dx)
             }
         }
 
@@ -2812,7 +2779,7 @@ mod routing {
         /// // After loading stations:
         /// let nearby = engine.get_nearby_stations(&coord, 500.0); // 500m radius
         /// ```
-        pub(crate) struct GeometryEngine {
+        pub struct GeometryEngine {
             /// R*-tree spatial index. Built via STR bulk loading.
             pub(crate) station_index: RTree<SpatialPoint>,
         }
@@ -2929,8 +2896,7 @@ mod routing {
 
                 if cfg!(debug_assertions) {
                     log_trace(&format!(
-                        "GeometryEngine::point_in_polygon result: {} ({} intersections)",
-                        inside, intersections
+                        "GeometryEngine::point_in_polygon result: {inside} ({intersections} intersections)"
                     ));
                 }
                 inside
@@ -2951,14 +2917,14 @@ mod routing {
 
                 let dx = e_x - s_x;
                 let dy = e_y - s_y;
-                let len2 = dx * dx + dy * dy;
+                let len2 = dy.mul_add(dy, dx * dx);
 
                 if len2 == 0.0 {
                     log_warn("GeometryEngine::project_to_segment - segment has zero length, returning distance to start");
                     return (point.distance_to(seg_start), *seg_start);
                 }
 
-                let t = ((p_x - s_x) * dx + (p_y - s_y) * dy) / len2;
+                let t = (p_y - s_y).mul_add(dy, (p_x - s_x) * dx) / len2;
                 let t = t.clamp(0.0, 1.0);
 
                 let proj_x = s_x + t * dx;
@@ -2968,8 +2934,7 @@ mod routing {
                 let distance = point.distance_to(&proj_coord);
                 if cfg!(debug_assertions) {
                     log_trace(&format!(
-                        "GeometryEngine::project_to_segment result: t={:.4}, distance={:.2}m",
-                        t, distance
+                        "GeometryEngine::project_to_segment result: t={t:.4}, distance={distance:.2}m"
                     ));
                 }
                 (distance, proj_coord)
@@ -2983,18 +2948,18 @@ mod routing {
             ) -> Vec<Coordinate> {
                 log_trace(&format!("GeometryEngine::create_circle called - center lat={:.6}, lon={:.6}, radius={:.2}m, segments={}", center.lat, center.lon, radius_meters, segments));
                 if radius_meters <= 0.0 {
-                    log_warn(&format!("GeometryEngine::create_circle - invalid radius={:.2}m! Returning empty circle.", radius_meters));
+                    log_warn(&format!("GeometryEngine::create_circle - invalid radius={radius_meters:.2}m! Returning empty circle."));
                     return Vec::new();
                 }
                 if segments < 3 {
-                    log_warn(&format!("GeometryEngine::create_circle - only {} segments! Need at least 3 for a circle.", segments));
+                    log_warn(&format!("GeometryEngine::create_circle - only {segments} segments! Need at least 3 for a circle."));
                 }
                 let radius_deg = radius_meters / EARTH_RADIUS * RAD_TO_DEG;
                 let circle: Vec<Coordinate> = (0..segments)
                     .map(|i| {
                         let angle = 2.0 * PI * f64::from(i) / f64::from(segments);
                         Coordinate::new(
-                            center.lat + radius_deg * angle.sin(),
+                            radius_deg.mul_add(angle.sin(), center.lat),
                             center.lon + radius_deg * angle.cos() / (center.lat * DEG_TO_RAD).cos(),
                         )
                     })
@@ -3051,8 +3016,7 @@ mod routing {
                 let mut processed = std::collections::HashSet::new();
                 let threshold_meters = threshold * 111_000.0;
                 log_debug(&format!(
-                    "Merge threshold: {:.2} meters (threshold={:.6} degrees)",
-                    threshold_meters, threshold
+                    "Merge threshold: {threshold_meters:.2} meters (threshold={threshold:.6} degrees)"
                 ));
 
                 let mut merges_performed = 0_usize;
@@ -3091,7 +3055,7 @@ mod routing {
                             stations[idx].coord.lat,
                             threshold_meters,
                         );
-                        if (dx * dx + dy * dy) <= neighbour_sq {
+                        if dy.mul_add(dy, dx * dx) <= neighbour_sq {
                             if cfg!(debug_assertions) {
                                 log_trace(&format!(
                                     "Merging station {} ({}) into hub {} ({})",
@@ -3300,7 +3264,7 @@ mod routing {
         /// Stride-sample a coordinate vector to at most `max_n` points while
         /// preserving spatial distribution. Much faster than random shuffle for
         /// the sizes we deal with (tens of thousands of residential points).
-        pub(crate) fn subsample_coords<T>(coords: Vec<T>, max_n: usize) -> Vec<T> {
+        pub fn subsample_coords<T>(coords: Vec<T>, max_n: usize) -> Vec<T> {
             if coords.len() <= max_n {
                 return coords;
             }
@@ -3318,12 +3282,12 @@ mod routing {
                 .collect()
         }
 
-        pub(crate) fn mercator_search_radius_sq(ground_radius_m: f64) -> f64 {
+        pub fn mercator_search_radius_sq(ground_radius_m: f64) -> f64 {
             let inflated = ground_radius_m * 2.5;
             inflated * inflated
         }
 
-        pub(crate) fn project_point_to_mercator_segment(
+        pub fn project_point_to_mercator_segment(
             point: Coordinate,
             seg_start: Coordinate,
             seg_end: Coordinate,
@@ -3333,11 +3297,11 @@ mod routing {
             let (e_x, e_y) = seg_end.to_mercator();
             let dx = e_x - s_x;
             let dy = e_y - s_y;
-            let len2 = dx * dx + dy * dy;
+            let len2 = dy.mul_add(dy, dx * dx);
             if len2 <= f64::EPSILON {
                 return (seg_start, point.distance_to(&seg_start));
             }
-            let t = (((p_x - s_x) * dx + (p_y - s_y) * dy) / len2).clamp(0.0, 1.0);
+            let t = ((p_y - s_y).mul_add(dy, (p_x - s_x) * dx) / len2).clamp(0.0, 1.0);
             let proj_x = s_x + t * dx;
             let proj_y = s_y + t * dy;
             let projected = Coordinate::from_mercator(proj_x, proj_y);
@@ -3348,7 +3312,7 @@ mod routing {
         /// buildable rail corridor when a plausible corridor exists nearby. This keeps
         /// the planning objective residential-service-first, while avoiding placing the
         /// infrastructure itself directly on housing.
-        pub(crate) fn snap_station_to_buildable_corridor(
+        pub fn snap_station_to_buildable_corridor(
             proposal: Coordinate,
             tracks: &[RailwayTrack],
             max_snap_m: f64,
@@ -3359,7 +3323,7 @@ mod routing {
                 return proposal;
             }
             if max_snap_m <= 0.0 {
-                log_warn(&format!("snap_station_to_buildable_corridor - invalid max_snap_m={:.2}! Returning original proposal.", max_snap_m));
+                log_warn(&format!("snap_station_to_buildable_corridor - invalid max_snap_m={max_snap_m:.2}! Returning original proposal."));
                 return proposal;
             }
             let best = tracks
@@ -3377,8 +3341,7 @@ mod routing {
             match best {
                 Some((coord, dist)) if dist <= max_snap_m => {
                     log_trace(&format!(
-                        "snap_station_to_buildable_corridor - snapped ({:.1}m)",
-                        dist
+                        "snap_station_to_buildable_corridor - snapped ({dist:.1}m)"
                     ));
                     coord
                 }
@@ -3389,7 +3352,7 @@ mod routing {
             }
         }
 
-        pub(crate) fn curved_tunnel_fallback(
+        pub fn curved_tunnel_fallback(
             start: Coordinate,
             end: Coordinate,
         ) -> Vec<Coordinate> {
@@ -3404,7 +3367,7 @@ mod routing {
             let (ey, ex) = end.to_mercator();
             let dx = ex - sx;
             let dy = ey - sy;
-            let dist = (dx * dx + dy * dy).sqrt();
+            let dist = dx.hypot(dy);
             if dist <= 1.0 {
                 return vec![start, end];
             }
@@ -3417,22 +3380,22 @@ mod routing {
             let offset = (dist * 0.14).clamp(120.0, 900.0) * sign;
             let nx = -dy / dist;
             let ny = dx / dist;
-            let cx = (sx + ex) * 0.5 + nx * offset;
-            let cy = (sy + ey) * 0.5 + ny * offset;
+            let cx = nx.mul_add(offset, (sx + ex) * 0.5);
+            let cy = ny.mul_add(offset, (sy + ey) * 0.5);
             let steps = ((dist / 250.0).ceil() as usize).clamp(12, 48);
 
             (0..=steps)
                 .map(|i| {
                     let t = i as f64 / steps as f64;
                     let omt = 1.0 - t;
-                    let x = omt * omt * sx + 2.0 * omt * t * cx + t * t * ex;
-                    let y = omt * omt * sy + 2.0 * omt * t * cy + t * t * ey;
+                    let x = (t * t).mul_add(ex, (2.0 * omt * t).mul_add(cx, omt * omt * sx));
+                    let y = (t * t).mul_add(ey, (2.0 * omt * t).mul_add(cy, omt * omt * sy));
                     Coordinate::from_mercator(x, y)
                 })
                 .collect()
         }
 
-        pub(crate) fn chaikin_smooth_path(
+        pub fn chaikin_smooth_path(
             points: &[Coordinate],
             iterations: usize,
         ) -> Vec<Coordinate> {
@@ -3458,10 +3421,10 @@ mod routing {
                 for w in current.windows(2) {
                     let (ay, ax) = w[0].to_mercator();
                     let (by, bx) = w[1].to_mercator();
-                    let qx = ax * 0.75 + bx * 0.25;
-                    let qy = ay * 0.75 + by * 0.25;
-                    let rx = ax * 0.25 + bx * 0.75;
-                    let ry = ay * 0.25 + by * 0.75;
+                    let qx = bx.mul_add(0.25, ax * 0.75);
+                    let qy = by.mul_add(0.25, ay * 0.75);
+                    let rx = bx.mul_add(0.75, ax * 0.25);
+                    let ry = by.mul_add(0.75, ay * 0.25);
                     next.push(Coordinate::from_mercator(qx, qy));
                     next.push(Coordinate::from_mercator(rx, ry));
                 }
@@ -3509,7 +3472,7 @@ mod routing {
 
         /// Gaussian KDE density at a single query point, evaluated over a set of
         /// demand points. Bandwidth `h` in metres.
-        pub(crate) fn kde_density(query: Coordinate, demand: &[Coordinate], h: f64) -> f64 {
+        pub fn kde_density(query: Coordinate, demand: &[Coordinate], h: f64) -> f64 {
             let h2 = h * h;
             demand
                 .par_iter()
@@ -3523,7 +3486,7 @@ mod routing {
 
         /// Evaluate how much total coverage a candidate `coord` adds over points not
         /// yet in `covered`, using haversine exact check at `radius`.
-        pub(crate) fn coverage_gain(
+        pub fn coverage_gain(
             coord: Coordinate,
             demand: &[Coordinate],
             covered: &[bool],
@@ -3537,7 +3500,7 @@ mod routing {
         }
 
         /// Build a coarse 2-D candidate grid over the bounding box of `demand`.
-        pub(crate) fn candidate_grid(demand: &[Coordinate], step_m: f64) -> Vec<Coordinate> {
+        pub fn candidate_grid(demand: &[Coordinate], step_m: f64) -> Vec<Coordinate> {
             log_debug(&format!(
                 "candidate_grid - {} demand points, step={:.1}m",
                 demand.len(),
@@ -3549,8 +3512,7 @@ mod routing {
             }
             if step_m <= 0.0 {
                 log_error(&format!(
-                    "candidate_grid - invalid step_m={:.2}! Returning empty grid.",
-                    step_m
+                    "candidate_grid - invalid step_m={step_m:.2}! Returning empty grid."
                 ));
                 return Vec::new();
             }
@@ -3576,7 +3538,7 @@ mod routing {
 
         /// Simulated-annealing refinement of a single station position.
         /// Perturbs within `max_perturb_m`, accepts Boltzmann-weighted improvements.
-        pub(crate) fn sa_refine_single(
+        pub fn sa_refine_single(
             start: Coordinate,
             demand: &[Coordinate],
             covered: &[bool],
@@ -3585,8 +3547,7 @@ mod routing {
             iterations: usize,
         ) -> Coordinate {
             let mut current = start;
-            let mut current_score = kde_density(current, demand, radius * 0.75)
-                + coverage_gain(current, demand, covered, radius) as f64 * 0.8;
+            let mut current_score = (coverage_gain(current, demand, covered, radius) as f64).mul_add(0.8, kde_density(current, demand, radius * 0.75));
             let mut best = current;
             let mut best_score = current_score;
 
@@ -3614,8 +3575,7 @@ mod routing {
                     current.lon + lon_off * angle.cos(),
                 );
                 let snap = snap_station_to_buildable_corridor(candidate, tracks, 900.0);
-                let score = kde_density(snap, demand, radius * 0.75)
-                    + coverage_gain(snap, demand, covered, radius) as f64 * 0.8;
+                let score = (coverage_gain(snap, demand, covered, radius) as f64).mul_add(0.8, kde_density(snap, demand, radius * 0.75));
                 let delta = score - current_score;
                 let accept = delta > 0.0 || {
                     let prob = (delta / temperature).exp();
@@ -3646,7 +3606,7 @@ mod routing {
         /// placement order. Candidate scoring is parallelised with Rayon.
         /// Phase-1 + Phase-2 + Phase-3 station planner:
         /// KDE warm-start → SA refinement → corridor snap.
-        pub(crate) fn plan_infill_stations(
+        pub fn plan_infill_stations(
             deserts: &[Coordinate],
             radius: f64,
             max_stations: usize,
@@ -3705,7 +3665,7 @@ mod routing {
                     .map(|(gi, &candidate)| {
                         let kde = kde_density(candidate, deserts, radius * 0.7);
                         let cov = coverage_gain(candidate, deserts, &covered, radius) as f64;
-                        (gi, kde * 0.4 + cov * 0.6)
+                        (gi, cov.mul_add(0.6, kde * 0.4))
                     })
                     .filter(|(_, score)| *score > 0.0)
                     .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(CmpOrdering::Equal));
@@ -3773,16 +3733,15 @@ mod routing {
         /// sparse graphs (e.g. pre-clustered points) a Delaunay-triangulation-based
         /// approach would be faster but adds a dependency on a computational-geometry
         /// crate.
-        pub(crate) fn build_mst(points: &[Coordinate]) -> Vec<(usize, usize, f64)> {
+        pub fn build_mst(points: &[Coordinate]) -> Vec<(usize, usize, f64)> {
             let n = points.len();
             if n < 2 {
                 log_warn(&format!(
-                    "build_mst - only {} points! Need at least 2 for MST.",
-                    n
+                    "build_mst - only {n} points! Need at least 2 for MST."
                 ));
                 return Vec::new();
             }
-            log_debug(&format!("build_mst - computing MST over {} points", n));
+            log_debug(&format!("build_mst - computing MST over {n} points"));
             let mut in_tree = vec![false; n];
             let mut best_dist = vec![f64::INFINITY; n];
             let mut best_from = vec![usize::MAX; n];
@@ -3827,7 +3786,7 @@ mod routing {
         /// node indices and becomes one transit line. This guarantees no redundant
         /// parallel track (every tree edge is used exactly once) while producing
         /// human-legible end-to-end services rather than a tangle.
-        pub(crate) fn decompose_tree_into_paths(
+        pub fn decompose_tree_into_paths(
             n: usize,
             edges: &[(usize, usize, f64)],
         ) -> Vec<Vec<usize>> {
@@ -3837,8 +3796,7 @@ mod routing {
             }
             if edges.is_empty() {
                 log_warn(&format!(
-                    "decompose_tree_into_paths - edges is EMPTY! n={} but no edges.",
-                    n
+                    "decompose_tree_into_paths - edges is EMPTY! n={n} but no edges."
                 ));
                 return Vec::new();
             }
@@ -3892,7 +3850,7 @@ mod routing {
 
         /// BFS over the residual tree (unused edges only) returning the farthest node
         /// from `src` and the parent-edge map used to reconstruct the path.
-        pub(crate) fn bfs_farthest(
+        pub fn bfs_farthest(
             src: usize,
             adj: &[Vec<(usize, usize)>],
             used_edge: &[bool],
@@ -3949,7 +3907,7 @@ mod routing {
         /// Compute the ideal 4-point cubic Bézier through two stations, threading
         /// around the control point inflated perpendicular to the chord.
         /// Direction of the curve alternates based on a hash of the station pair.
-        pub(crate) fn bezier_corridor(
+        pub fn bezier_corridor(
             start: Coordinate,
             end: Coordinate,
             strength: f64,
@@ -3966,34 +3924,28 @@ mod routing {
             let (ex, ey) = end.to_mercator();
             let dx = ex - sx;
             let dy = ey - sy;
-            let len = (dx * dx + dy * dy).sqrt().max(1.0);
+            let len = dx.hypot(dy).max(1.0);
             let nx = -dy / len;
             let ny = dx / len;
             let bulge = len * strength * sign;
             // Cubic Bezier: P0, P1, P2, P3
-            let p1x = sx + dx * 0.30 + nx * bulge;
-            let p1y = sy + dy * 0.30 + ny * bulge;
-            let p2x = sx + dx * 0.70 + nx * bulge * 0.8;
-            let p2y = sy + dy * 0.70 + ny * bulge * 0.8;
+            let p1x = dx.mul_add(0.30, sx) + nx * bulge;
+            let p1y = dy.mul_add(0.30, sy) + ny * bulge;
+            let p2x = (nx * bulge).mul_add(0.8, dx.mul_add(0.70, sx));
+            let p2y = (ny * bulge).mul_add(0.8, dy.mul_add(0.70, sy));
             let steps = ((len / 200.0).ceil() as usize).clamp(16, 60);
             (0..=steps)
                 .map(|i| {
                     let t = i as f64 / steps as f64;
                     let omt = 1.0 - t;
-                    let bx = omt.powi(3) * sx
-                        + 3.0 * omt.powi(2) * t * p1x
-                        + 3.0 * omt * t.powi(2) * p2x
-                        + t.powi(3) * ex;
-                    let by = omt.powi(3) * sy
-                        + 3.0 * omt.powi(2) * t * p1y
-                        + 3.0 * omt * t.powi(2) * p2y
-                        + t.powi(3) * ey;
+                    let bx = t.powi(3).mul_add(ex, (3.0 * omt * t.powi(2)).mul_add(p2x, (3.0 * omt.powi(2) * t).mul_add(p1x, omt.powi(3) * sx)));
+                    let by = t.powi(3).mul_add(ey, (3.0 * omt * t.powi(2)).mul_add(p2y, (3.0 * omt.powi(2) * t).mul_add(p1y, omt.powi(3) * sy)));
                     Coordinate::from_mercator(bx, by)
                 })
                 .collect()
         }
 
-        pub(crate) fn link_stations_tfl(
+        pub fn link_stations_tfl(
             stations: &[Station],
             philosophy: &str,
             routing_graph: &RoutingGraph,
@@ -4047,7 +3999,7 @@ mod routing {
                     } else if idx == 2 {
                         "AI Branch South".to_owned()
                     } else {
-                        format!("AI Shuttle {}", idx)
+                        format!("AI Shuttle {idx}")
                     }
                 } else {
                     if is_trunk {
@@ -4140,11 +4092,11 @@ mod routing {
 
                 let segments: Vec<RouteSegment> = curved_geometry
                     .windows(2)
-                    .map(|w| RouteSegment::new(w[0], w[1], format!("ai_{}_{}", ts, idx)))
+                    .map(|w| RouteSegment::new(w[0], w[1], format!("ai_{ts}_{idx}")))
                     .collect();
 
                 lines.push(Line {
-                    id: format!("ai_link_{}_{}", ts, idx),
+                    id: format!("ai_link_{ts}_{idx}"),
                     name,
                     color,
                     stations: line_stations,
@@ -4182,14 +4134,14 @@ mod routing {
         // ============================================================================
 
         #[derive(Debug, Clone)]
-        pub(crate) struct Node {
+        pub struct Node {
             pub(crate) id: usize,
             pub coord: Coordinate,
             pub(crate) neighbors: Vec<(usize, f64)>,
         }
 
         #[derive(Debug, Clone, PartialEq)]
-        pub(crate) struct PriorityQueueItem {
+        pub struct PriorityQueueItem {
             pub(crate) cost: f64,
             pub(crate) node_id: usize,
         }
@@ -4246,7 +4198,7 @@ mod routing {
         /// `Copy + Clone` — passed by value, never borrowed. At 16 bytes (two `usize`),
         /// it fits in a single cache line and hashes in O(1).
         #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
-        pub(crate) struct EdgeKey(pub(crate) usize, pub(crate) usize);
+        pub struct EdgeKey(pub(crate) usize, pub(crate) usize);
 
         /// Graph-based routing engine for A* pathfinding across London's transport network.
         ///
@@ -4288,7 +4240,7 @@ mod routing {
         /// let path = graph.find_path(&start_coord, &end_coord);
         /// ```
         #[derive(Clone)]
-        pub(crate) struct RoutingGraph {
+        pub struct RoutingGraph {
             /// Station nodes with edges to adjacent stations.
             pub(crate) nodes: HashMap<usize, Node>,
             /// Spatial grid index for O(1) nearest-node lookup.
@@ -4342,13 +4294,11 @@ mod routing {
 
             pub(crate) fn add_edge(&mut self, from: usize, to: usize, weight: f64) {
                 log_trace(&format!(
-                    "RoutingGraph::add_edge called - from={}, to={}, weight={:.2}m",
-                    from, to, weight
+                    "RoutingGraph::add_edge called - from={from}, to={to}, weight={weight:.2}m"
                 ));
                 if !self.nodes.contains_key(&to) {
                     log_error(&format!(
-                        "RoutingGraph::add_edge failed - target node {} not found",
-                        to
+                        "RoutingGraph::add_edge failed - target node {to} not found"
                     ));
                     return;
                 }
@@ -4356,8 +4306,7 @@ mod routing {
                     node.neighbors.push((to, weight));
                 } else {
                     log_error(&format!(
-                        "RoutingGraph::add_edge failed - source node {} not found",
-                        from
+                        "RoutingGraph::add_edge failed - source node {from} not found"
                     ));
                 }
             }
@@ -4386,11 +4335,9 @@ mod routing {
                 let start_node = self.find_nearest_node(start);
                 let end_node = self.find_nearest_node(end);
 
-                match (start_node, end_node) {
-                    (Some(s), Some(e)) => {
+                if let (Some(s), Some(e)) = (start_node, end_node) {
                         log_debug(&format!(
-                    "RoutingGraph::find_path_with_disruptions - found start node {}, end node {}",
-                    s, e
+                    "RoutingGraph::find_path_with_disruptions - found start node {s}, end node {e}"
                 ));
                         let path = if disrupted_nodes.is_empty() {
                             self.astar(s, e)
@@ -4402,11 +4349,9 @@ mod routing {
                             path.len()
                         ));
                         path
-                    }
-                    _ => {
-                        log_error("RoutingGraph::find_path_with_disruptions - could not find nearest nodes for routing");
-                        Vec::new()
-                    }
+                    } else {
+                    log_error("RoutingGraph::find_path_with_disruptions - could not find nearest nodes for routing");
+                    Vec::new()
                 }
             }
 
@@ -4428,7 +4373,7 @@ mod routing {
                 log_info("RoutingGraph::rebuild_spatial_indices called");
                 // Rebuild grid index
                 self.grid_index.clear();
-                for (&id, node) in self.nodes.iter() {
+                for (&id, node) in &self.nodes {
                     let grid_x = (node.coord.lon * 1000.0).round() as i32;
                     let grid_y = (node.coord.lat * 1000.0).round() as i32;
                     self.grid_index
@@ -4488,8 +4433,7 @@ mod routing {
                 if let Some(node_id) = result {
                     let distance = self.nodes[&node_id].coord.distance_to(coord);
                     log_trace(&format!(
-                        "RoutingGraph::find_nearest_node result - node {} at distance {:.2}m",
-                        node_id, distance
+                        "RoutingGraph::find_nearest_node result - node {node_id} at distance {distance:.2}m"
                     ));
                 } else {
                     log_warn("RoutingGraph::find_nearest_node - no nodes found in graph");
@@ -4509,7 +4453,7 @@ mod routing {
         // ============================================================================
 
         #[derive(Clone)]
-        pub(crate) struct NetworkManager {
+        pub struct NetworkManager {
             pub(crate) client: Arc<Client>,
         }
 
@@ -4532,13 +4476,12 @@ mod routing {
                 &self,
                 url: &str,
             ) -> Result<String, Box<dyn std::error::Error>> {
-                log_info(&format!("NetworkManager::get called - URL: {}", url));
+                log_info(&format!("NetworkManager::get called - URL: {url}"));
                 let start = Utc::now();
                 let response = self.client.get(url).send().await?;
                 let status = response.status();
                 log_debug(&format!(
-                    "NetworkManager::get - response status: {}",
-                    status
+                    "NetworkManager::get - response status: {status}"
                 ));
                 let text = response.text().await?;
                 let elapsed = (Utc::now() - start).num_milliseconds();
@@ -4555,7 +4498,7 @@ mod routing {
                 url: &str,
             ) -> Result<Value, Box<dyn std::error::Error>> {
                 log_info_with_context(
-                    &format!("NetworkManager::get_json called - URL: {}", url),
+                    &format!("NetworkManager::get_json called - URL: {url}"),
                     "network",
                 );
                 let start = Utc::now();
@@ -4564,8 +4507,7 @@ mod routing {
                 let elapsed = (Utc::now() - start).num_milliseconds();
                 log_info_with_context(
                     &format!(
-                        "NetworkManager::get_json completed - JSON received in {}ms",
-                        elapsed
+                        "NetworkManager::get_json completed - JSON received in {elapsed}ms"
                     ),
                     "network",
                 );
@@ -4580,7 +4522,7 @@ mod routing {
         }
 
         #[derive(Clone)]
-        pub(crate) struct TflApiClient {
+        pub struct TflApiClient {
             pub(crate) network: NetworkManager,
             pub(crate) base_url: String,
         }
@@ -4588,8 +4530,7 @@ mod routing {
         impl TflApiClient {
             pub(crate) fn new(base_url: String) -> Self {
                 log_info(&format!(
-                    "TflApiClient::new called - base_url: {}",
-                    base_url
+                    "TflApiClient::new called - base_url: {base_url}"
                 ));
                 Self {
                     network: NetworkManager::new(),
@@ -4603,10 +4544,9 @@ mod routing {
             ) -> Result<Value, Box<dyn std::error::Error>> {
                 let url = format!("{}/Line/{}/Route/Sequence/outbound", self.base_url, line_id);
                 log_info(&format!(
-                    "TflApiClient::fetch_line_routes called - line_id: {}",
-                    line_id
+                    "TflApiClient::fetch_line_routes called - line_id: {line_id}"
                 ));
-                log_debug(&format!("TflApiClient::fetch_line_routes - URL: {}", url));
+                log_debug(&format!("TflApiClient::fetch_line_routes - URL: {url}"));
                 let result = retry_with_backoff(2, || async {
                     self.network
                         .get_json(&url)
@@ -4617,14 +4557,12 @@ mod routing {
                 match &result {
                     Ok(_) => log_debug_with_context(
                         &format!(
-                            "TflApiClient::fetch_line_routes success - line_id: {}",
-                            line_id
+                            "TflApiClient::fetch_line_routes success - line_id: {line_id}"
                         ),
                         "tfl_api",
                     ),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_line_routes failed - line_id: {}, error: {}",
-                        line_id, e
+                        "TflApiClient::fetch_line_routes failed - line_id: {line_id}, error: {e}"
                     )),
                 }
                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -4636,8 +4574,7 @@ mod routing {
             ) -> Result<Value, Box<dyn std::error::Error>> {
                 let url = format!("{}/Line/{}/Route/Sequence/inbound", self.base_url, line_id);
                 log_info(&format!(
-                    "TflApiClient::fetch_line_routes_inbound called - line_id: {}",
-                    line_id
+                    "TflApiClient::fetch_line_routes_inbound called - line_id: {line_id}"
                 ));
                 let result = retry_with_backoff(2, || async {
                     self.network
@@ -4648,12 +4585,10 @@ mod routing {
                 .await;
                 match &result {
                     Ok(_) => log_debug(&format!(
-                        "TflApiClient::fetch_line_routes_inbound success - line_id: {}",
-                        line_id
+                        "TflApiClient::fetch_line_routes_inbound success - line_id: {line_id}"
                     )),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_line_routes_inbound failed - line_id: {}, error: {}",
-                        line_id, e
+                        "TflApiClient::fetch_line_routes_inbound failed - line_id: {line_id}, error: {e}"
                     )),
                 }
                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -4674,8 +4609,7 @@ mod routing {
                 match &result {
                     Ok(_) => log_debug("TflApiClient::fetch_stop_points success"),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_stop_points failed - error: {}",
-                        e
+                        "TflApiClient::fetch_stop_points failed - error: {e}"
                     )),
                 }
                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -4687,8 +4621,7 @@ mod routing {
             ) -> Result<Value, Box<dyn std::error::Error>> {
                 let url = format!("{}/Line/{}/Arrivals", self.base_url, line_id);
                 log_info(&format!(
-                    "TflApiClient::fetch_arrivals called - line_id: {}",
-                    line_id
+                    "TflApiClient::fetch_arrivals called - line_id: {line_id}"
                 ));
                 let result = retry_with_backoff(2, || async {
                     self.network
@@ -4699,12 +4632,10 @@ mod routing {
                 .await;
                 match &result {
                     Ok(_) => log_debug(&format!(
-                        "TflApiClient::fetch_arrivals success - line_id: {}",
-                        line_id
+                        "TflApiClient::fetch_arrivals success - line_id: {line_id}"
                     )),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_arrivals failed - line_id: {}, error: {}",
-                        line_id, e
+                        "TflApiClient::fetch_arrivals failed - line_id: {line_id}, error: {e}"
                     )),
                 }
                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -4716,8 +4647,7 @@ mod routing {
             ) -> Result<Value, Box<dyn std::error::Error>> {
                 let url = format!("{}/StopPoint/{}/Arrivals", self.base_url, stop_point_id);
                 log_info(&format!(
-                    "TflApiClient::fetch_stop_point_arrivals called - stop_point_id: {}",
-                    stop_point_id
+                    "TflApiClient::fetch_stop_point_arrivals called - stop_point_id: {stop_point_id}"
                 ));
                 let result = retry_with_backoff(2, || async {
                     self.network
@@ -4728,12 +4658,10 @@ mod routing {
                 .await;
                 match &result {
                     Ok(_) => log_debug(&format!(
-                        "TflApiClient::fetch_stop_point_arrivals success - stop_point_id: {}",
-                        stop_point_id
+                        "TflApiClient::fetch_stop_point_arrivals success - stop_point_id: {stop_point_id}"
                     )),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_stop_point_arrivals failed - stop_point_id: {}, error: {}",
-                        stop_point_id, e
+                        "TflApiClient::fetch_stop_point_arrivals failed - stop_point_id: {stop_point_id}, error: {e}"
                     )),
                 }
                 result.map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
@@ -4751,8 +4679,7 @@ mod routing {
                 match &result {
                     Ok(_) => log_debug("TflApiClient::fetch_disruptions success"),
                     Err(e) => log_error(&format!(
-                        "TflApiClient::fetch_disruptions failed - error: {}",
-                        e
+                        "TflApiClient::fetch_disruptions failed - error: {e}"
                     )),
                 }
                 result
@@ -4769,7 +4696,7 @@ mod routing {
         // be wired in during the service-layer extraction phase.
 
         #[derive(Clone)]
-        pub(crate) struct OverpassApiClient {
+        pub struct OverpassApiClient {
             pub(crate) network: NetworkManager,
             pub(crate) base_url: String,
             pub(crate) fallback_urls: Vec<String>,
@@ -4778,8 +4705,7 @@ mod routing {
         impl OverpassApiClient {
             pub(crate) fn new(base_url: String) -> Self {
                 log_info(&format!(
-                    "OverpassApiClient::new called - base_url: {}",
-                    base_url
+                    "OverpassApiClient::new called - base_url: {base_url}"
                 ));
                 // Fix #4: Provide fallback Overpass mirrors
                 Self {
@@ -4799,20 +4725,19 @@ mod routing {
                 max_lat: f64,
                 max_lon: f64,
             ) -> Result<Vec<RailwayTrack>, Box<dyn std::error::Error>> {
-                log_info(&format!("OverpassApiClient::fetch_railway_tracks called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", min_lat, max_lat, min_lon, max_lon));
+                log_info(&format!("OverpassApiClient::fetch_railway_tracks called - bounds: lat {min_lat:.6} to {max_lat:.6}, lon {min_lon:.6} to {max_lon:.6}"));
                 let clamped_min_lat = min_lat.clamp(50.5, 52.5);
                 let clamped_min_lon = min_lon.clamp(-1.5, 1.0);
                 let clamped_max_lat = max_lat.clamp(50.5, 52.5);
                 let clamped_max_lon = max_lon.clamp(-1.5, 1.0);
-                log_debug(&format!("OverpassApiClient::fetch_railway_tracks - clamped bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", clamped_min_lat, clamped_max_lat, clamped_min_lon, clamped_max_lon));
+                log_debug(&format!("OverpassApiClient::fetch_railway_tracks - clamped bounds: lat {clamped_min_lat:.6} to {clamped_max_lat:.6}, lon {clamped_min_lon:.6} to {clamped_max_lon:.6}"));
 
                 let query = format!(
                     r#"[out:json][timeout:180];
 (
-  way["railway"~"."]({},{},{},{});
+  way["railway"~"."]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
 );
-out body; >; out skel qt;"#,
-                    clamped_min_lat, clamped_min_lon, clamped_max_lat, clamped_max_lon
+out body; >; out skel qt;"#
                 );
                 log_trace(&format!(
                     "OverpassApiClient::fetch_railway_tracks - query length: {} chars",
@@ -4844,23 +4769,22 @@ out body; >; out skel qt;"#,
                         {
                             Ok(r) => r,
                             Err(e) => {
-                                let err_msg = format!("Overpass request to {} failed: {}", url, e);
+                                let err_msg = format!("Overpass request to {url} failed: {e}");
                                 log_warn(&err_msg);
                                 last_error = Some(err_msg);
                                 if retry < max_retries - 1 {
                                     tokio::time::sleep(Duration::from_millis(500 * (1 << retry)))
                                         .await;
                                     continue;
-                                } else {
-                                    break; // try next URL
                                 }
+                                break; // try next URL
                             }
                         };
 
                         let status = response.status();
                         if !status.is_success() {
                             let body = response.text().await.unwrap_or_default();
-                            let err_msg = format!("Overpass {} returned {}: {}", url, status, body);
+                            let err_msg = format!("Overpass {url} returned {status}: {body}");
                             log_warn(&err_msg);
                             last_error = Some(err_msg);
                             if (status == 429 || status == 503) && retry < max_retries - 1 {
@@ -4875,7 +4799,7 @@ out body; >; out skel qt;"#,
                             Ok(j) => j,
                             Err(e) => {
                                 let err_msg =
-                                    format!("Overpass response from {} is not JSON: {}", url, e);
+                                    format!("Overpass response from {url} is not JSON: {e}");
                                 log_error(&err_msg);
                                 last_error = Some(err_msg);
                                 break; // try next URL
@@ -4884,15 +4808,14 @@ out body; >; out skel qt;"#,
 
                         if let Some(elements) = json.get("elements").and_then(|v| v.as_array()) {
                             if elements.is_empty() {
-                                log_warn(&format!("Overpass {} returned empty element list", url));
+                                log_warn(&format!("Overpass {url} returned empty element list"));
                             }
                         }
 
                         let tracks = Self::parse_tracks_from_json(&json)?;
                         if !tracks.is_empty() {
                             log_info(&format!(
-                                "OverpassApiClient::fetch_railway_tracks success using {}",
-                                url
+                                "OverpassApiClient::fetch_railway_tracks success using {url}"
                             ));
                             return Ok(tracks);
                         }
@@ -4900,7 +4823,7 @@ out body; >; out skel qt;"#,
                 }
 
                 if let Some(err) = last_error {
-                    log_info(&format!("OverpassApiClient::fetch_railway_tracks - all endpoints exhausted; last error: {}. Falling back to embedded railway data", err));
+                    log_info(&format!("OverpassApiClient::fetch_railway_tracks - all endpoints exhausted; last error: {err}. Falling back to embedded railway data"));
                 } else {
                     log_info("OverpassApiClient::fetch_railway_tracks - all endpoints exhausted; falling back to embedded railway data");
                 }
@@ -4914,15 +4837,14 @@ out body; >; out skel qt;"#,
                 max_lat: f64,
                 max_lon: f64,
             ) -> Result<Value, Box<dyn std::error::Error>> {
-                log_info(&format!("OverpassApiClient::fetch_residential_areas called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", min_lat, max_lat, min_lon, max_lon));
+                log_info(&format!("OverpassApiClient::fetch_residential_areas called - bounds: lat {min_lat:.6} to {max_lat:.6}, lon {min_lon:.6} to {max_lon:.6}"));
                 let query = format!(
                     "[out:json][timeout:90];\
             (\
-              way[\"landuse\"=\"residential\"]({},{},{},{});\
-              relation[\"landuse\"=\"residential\"]({},{},{},{});\
+              way[\"landuse\"=\"residential\"]({min_lat},{min_lon},{max_lat},{max_lon});\
+              relation[\"landuse\"=\"residential\"]({min_lat},{min_lon},{max_lat},{max_lon});\
             );\
-            out geom;",
-                    min_lat, min_lon, max_lat, max_lon, min_lat, min_lon, max_lat, max_lon
+            out geom;"
                 );
 
                 let all_urls: Vec<&str> = std::iter::once(self.base_url.as_str())
@@ -4942,8 +4864,7 @@ out body; >; out skel qt;"#,
                             Ok(r) => r,
                             Err(e) => {
                                 log_warn(&format!(
-                                    "OverpassApiClient::fetch_residential_areas - {} failed: {}",
-                                    url, e
+                                    "OverpassApiClient::fetch_residential_areas - {url} failed: {e}"
                                 ));
                                 if retry < 2 {
                                     tokio::time::sleep(Duration::from_millis(
@@ -4957,14 +4878,13 @@ out body; >; out skel qt;"#,
                         let status = resp.status();
                         if status == 429 || status == 503 {
                             let delay = 2u64.pow(retry + 1) * 2;
-                            log_warn(&format!("OverpassApiClient::fetch_residential_areas - {} rate limited ({}), retry in {}s", url, status, delay));
+                            log_warn(&format!("OverpassApiClient::fetch_residential_areas - {url} rate limited ({status}), retry in {delay}s"));
                             tokio::time::sleep(Duration::from_secs(delay)).await;
                             continue;
                         }
                         if !status.is_success() {
                             log_warn(&format!(
-                                "OverpassApiClient::fetch_residential_areas - {} returned {}",
-                                url, status
+                                "OverpassApiClient::fetch_residential_areas - {url} returned {status}"
                             ));
                             break;
                         }
@@ -4974,7 +4894,7 @@ out body; >; out skel qt;"#,
                                 return Ok(json);
                             }
                             Err(e) => {
-                                log_error(&format!("OverpassApiClient::fetch_residential_areas - JSON parse error from {}: {}", url, e));
+                                log_error(&format!("OverpassApiClient::fetch_residential_areas - JSON parse error from {url}: {e}"));
                                 break;
                             }
                         }
@@ -4992,7 +4912,7 @@ out body; >; out skel qt;"#,
                 max_lat: f64,
                 max_lon: f64,
             ) -> Result<Vec<Station>, Box<dyn std::error::Error>> {
-                log_info(&format!("OverpassApiClient::fetch_stations called - bounds: lat {:.6} to {:.6}, lon {:.6} to {:.6}", min_lat, max_lat, min_lon, max_lon));
+                log_info(&format!("OverpassApiClient::fetch_stations called - bounds: lat {min_lat:.6} to {max_lat:.6}, lon {min_lon:.6} to {max_lon:.6}"));
                 let clamped_min_lat = min_lat.clamp(50.5, 52.5);
                 let clamped_min_lon = min_lon.clamp(-1.5, 1.0);
                 let clamped_max_lat = max_lat.clamp(50.5, 52.5);
@@ -5001,33 +4921,13 @@ out body; >; out skel qt;"#,
                 let query = format!(
                     r#"[out:json][timeout:90];
 (
-  node["railway"="station"]({},{},{},{});
-  node["historic"="station"]({},{},{},{});
-  node["disused"="yes"]({},{},{},{});
-  node["ceremonial"="yes"]({},{},{},{});
-  node["railway"="disused"]({},{},{},{});
+  node["railway"="station"]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
+  node["historic"="station"]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
+  node["disused"="yes"]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
+  node["ceremonial"="yes"]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
+  node["railway"="disused"]({clamped_min_lat},{clamped_min_lon},{clamped_max_lat},{clamped_max_lon});
 );
-out body;"#,
-                    clamped_min_lat,
-                    clamped_min_lon,
-                    clamped_max_lat,
-                    clamped_max_lon,
-                    clamped_min_lat,
-                    clamped_min_lon,
-                    clamped_max_lat,
-                    clamped_max_lon,
-                    clamped_min_lat,
-                    clamped_min_lon,
-                    clamped_max_lat,
-                    clamped_max_lon,
-                    clamped_min_lat,
-                    clamped_min_lon,
-                    clamped_max_lat,
-                    clamped_max_lon,
-                    clamped_min_lat,
-                    clamped_min_lon,
-                    clamped_max_lat,
-                    clamped_max_lon
+out body;"#
                 );
 
                 let all_urls = std::iter::once(&self.base_url).chain(self.fallback_urls.iter());
@@ -5058,7 +4958,7 @@ out body;"#,
                             continue;
                         }
                         if !status.is_success() {
-                            last_error = Some(format!("HTTP status {}", status));
+                            last_error = Some(format!("HTTP status {status}"));
                             break;
                         }
 
@@ -5081,8 +4981,7 @@ out body;"#,
 
                 if let Some(err) = last_error {
                     log_warn(&format!(
-                        "OverpassApiClient::fetch_stations failed: {}",
-                        err
+                        "OverpassApiClient::fetch_stations failed: {err}"
                     ));
                 }
                 Ok(Vec::new())
@@ -5103,7 +5002,7 @@ out body;"#,
                             let name = tags
                                 .and_then(|t| t.get("name"))
                                 .and_then(|v| v.as_str())
-                                .map_or_else(|| format!("Unnamed Station {}", id_num), ToString::to_string);
+                                .map_or_else(|| format!("Unnamed Station {id_num}"), ToString::to_string);
 
                             let is_historic = tags
                                 .is_some_and(|t| {
@@ -5127,7 +5026,7 @@ out body;"#,
                             }
 
                             let st = Station {
-                                id: format!("overpass_{}", id_num),
+                                id: format!("overpass_{id_num}"),
                                 name,
                                 coord: Coordinate::new(lat, lon),
                                 lines: station_lines,
@@ -5171,8 +5070,7 @@ out body;"#,
                         }
                     }
                     log_debug(&format!(
-                "OverpassApiClient::parse_tracks_from_json - Phase 1: extracted {} nodes to lookup map",
-                nodes_extracted
+                "OverpassApiClient::parse_tracks_from_json - Phase 1: extracted {nodes_extracted} nodes to lookup map"
             ));
 
                     let mut ways_processed = 0_usize;
@@ -5205,7 +5103,9 @@ out body;"#,
                                 }
                             }
 
-                            if !geometry.is_empty() {
+                            if geometry.is_empty() {
+                                skipped_count += 1;
+                            } else {
                                 let id = element
                                     .get("id")
                                     .and_then(serde_json::Value::as_i64)
@@ -5223,8 +5123,6 @@ out body;"#,
                                     geometry,
                                     is_abandoned: false,
                                 });
-                            } else {
-                                skipped_count += 1;
                             }
                         }
                     }
@@ -5248,8 +5146,7 @@ out body;"#,
 
                 if skipped_count > 0 {
                     log_warn(&format!(
-                "OverpassApiClient::parse_tracks_from_json - skipped {} track elements due to missing data",
-                skipped_count
+                "OverpassApiClient::parse_tracks_from_json - skipped {skipped_count} track elements due to missing data"
             ));
                 }
 
@@ -5266,7 +5163,7 @@ out body;"#,
                         .map(|&[lat, lon]| Coordinate::new(lat, lon))
                         .collect();
                     tracks.push(RailwayTrack {
-                        id: format!("embedded_{}", idx),
+                        id: format!("embedded_{idx}"),
                         operator_name: seg.g.clone(),
                         geometry,
                         is_abandoned: false,
@@ -5278,10 +5175,10 @@ out body;"#,
     }
 
     mod astar {
-        use super::graph::*;
-        use crate::logger::*;
-        use crate::primitives::*;
-        use crate::spatial::*;
+        use super::graph::{RoutingGraph, PriorityQueueItem, EdgeKey, RailwayTrack, SpatialPoint};
+        use crate::logger::{log_trace, log_error, log_warn, log_debug, log_info};
+        use crate::primitives::Coordinate;
+        use crate::spatial::MortonSpatialIndex;
         use rayon::prelude::*;
         use rstar::RTree;
         use std::collections::HashSet;
@@ -5290,8 +5187,7 @@ out body;"#,
         impl RoutingGraph {
             pub(crate) fn astar(&self, start: usize, end: usize) -> Vec<Coordinate> {
                 log_trace(&format!(
-                    "RoutingGraph::astar called - start={}, end={}",
-                    start, end
+                    "RoutingGraph::astar called - start={start}, end={end}"
                 ));
                 let mut g_score: HashMap<usize, f64> = HashMap::new();
                 let mut f_score: HashMap<usize, f64> = HashMap::new();
@@ -5299,24 +5195,17 @@ out body;"#,
                 let mut open_set = BinaryHeap::new();
                 let mut closed_set = HashSet::new();
 
-                let end_coord = match self.nodes.get(&end) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!("RoutingGraph::astar - end node {} not found", end));
-                        return Vec::new();
-                    }
+                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
+                    log_error(&format!("RoutingGraph::astar - end node {end} not found"));
+                    return Vec::new();
                 };
 
                 g_score.insert(start, 0.0);
-                let start_coord = match self.nodes.get(&start) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar - start node {} not found",
-                            start
-                        ));
-                        return Vec::new();
-                    }
+                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
+                    log_error(&format!(
+                        "RoutingGraph::astar - start node {start} not found"
+                    ));
+                    return Vec::new();
                 };
 
                 let crow_flies = start_coord.distance_to(&end_coord);
@@ -5342,8 +5231,7 @@ out body;"#,
                         .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
-                            "RoutingGraph::astar aborted after {} iterations (limit: {})",
-                            iterations, max_iter
+                            "RoutingGraph::astar aborted after {iterations} iterations (limit: {max_iter})"
                         ));
                         return Vec::new();
                     }
@@ -5356,14 +5244,12 @@ out body;"#,
                         return Vec::new();
                     }
                     log_trace(&format!(
-                        "RoutingGraph::astar iteration {} - processing node {}",
-                        iterations, current_id
+                        "RoutingGraph::astar iteration {iterations} - processing node {current_id}"
                     ));
 
                     if current_id == end {
                         log_trace(&format!(
-                            "RoutingGraph::astar reached goal after {} iterations",
-                            iterations
+                            "RoutingGraph::astar reached goal after {iterations} iterations"
                         ));
                         return self.reconstruct_path(&came_from, current_id);
                     }
@@ -5380,8 +5266,7 @@ out body;"#,
                         for &(neighbor, weight) in &node.neighbors {
                             if closed_set.contains(&neighbor) {
                                 log_trace(&format!(
-                            "RoutingGraph::astar - skipping neighbor {} (already in closed set)",
-                            neighbor
+                            "RoutingGraph::astar - skipping neighbor {neighbor} (already in closed set)"
                         ));
                                 continue;
                             }
@@ -5391,7 +5276,7 @@ out body;"#,
 
                             if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
                             {
-                                log_trace(&format!("RoutingGraph::astar - updating path to neighbor {} with tentative_g_score={:.2}", neighbor, tentative_g_score));
+                                log_trace(&format!("RoutingGraph::astar - updating path to neighbor {neighbor} with tentative_g_score={tentative_g_score:.2}"));
                                 came_from.insert(neighbor, current_id);
                                 g_score.insert(neighbor, tentative_g_score);
 
@@ -5411,8 +5296,7 @@ out body;"#,
                 }
 
                 log_error(&format!(
-                    "RoutingGraph::astar failed to find path after {} iterations",
-                    iterations
+                    "RoutingGraph::astar failed to find path after {iterations} iterations"
                 ));
                 Vec::new()
             }
@@ -5444,27 +5328,19 @@ out body;"#,
                     .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
                     .unwrap_or(50_000);
 
-                let end_coord = match self.nodes.get(&end) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_with_disruptions - end node {} not found",
-                            end
-                        ));
-                        return Vec::new();
-                    }
+                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
+                    log_error(&format!(
+                        "RoutingGraph::astar_with_disruptions - end node {end} not found"
+                    ));
+                    return Vec::new();
                 };
 
                 g_score.insert(start, 0.0);
-                let start_coord = match self.nodes.get(&start) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_with_disruptions - start node {} not found",
-                            start
-                        ));
-                        return Vec::new();
-                    }
+                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
+                    log_error(&format!(
+                        "RoutingGraph::astar_with_disruptions - start node {start} not found"
+                    ));
+                    return Vec::new();
                 };
 
                 let crow_flies = start_coord.distance_to(&end_coord);
@@ -5489,8 +5365,7 @@ out body;"#,
                         .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
-                    "RoutingGraph::astar_with_disruptions aborted after {} iterations (limit: {})",
-                    iterations, max_iter
+                    "RoutingGraph::astar_with_disruptions aborted after {iterations} iterations (limit: {max_iter})"
                 ));
                         return Vec::new();
                     }
@@ -5505,8 +5380,7 @@ out body;"#,
 
                     if current_id == end {
                         log_trace(&format!(
-                    "RoutingGraph::astar_with_disruptions reached goal after {} iterations ({} disruptions avoided)",
-                    iterations, disruptions_avoided
+                    "RoutingGraph::astar_with_disruptions reached goal after {iterations} iterations ({disruptions_avoided} disruptions avoided)"
                 ));
                         return self.reconstruct_path(&came_from, current_id);
                     }
@@ -5548,8 +5422,7 @@ out body;"#,
                 }
 
                 log_error(&format!(
-                    "RoutingGraph::astar_with_disruptions failed to find path after {} iterations",
-                    iterations
+                    "RoutingGraph::astar_with_disruptions failed to find path after {iterations} iterations"
                 ));
                 Vec::new()
             }
@@ -5659,8 +5532,7 @@ out body;"#,
 
                 let num_edges = index_to_edge.len();
                 log_debug(&format!(
-                    "RoutingGraph::simulate_network_load - {} unique directed edges indexed",
-                    num_edges
+                    "RoutingGraph::simulate_network_load - {num_edges} unique directed edges indexed"
                 ));
 
                 // Generate deterministic synthetic demand (O-D pairs)
@@ -5694,7 +5566,7 @@ out body;"#,
                     let num_threads = num_threads.max(1);
                     rayon::ThreadPoolBuilder::new()
                         .num_threads(num_threads)
-                        .thread_name(|i| format!("mc-sim-{}", i))
+                        .thread_name(|i| format!("mc-sim-{i}"))
                         .build()
                         .unwrap_or_else(|_| {
                             rayon::ThreadPoolBuilder::new()
@@ -5914,27 +5786,19 @@ out body;"#,
                 let mut congestion_bypasses = 0_usize;
                 let mut interchange_penalties = 0_usize;
 
-                let end_coord = match self.nodes.get(&end) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_kinematic - end node {} not found",
-                            end
-                        ));
-                        return Vec::new();
-                    }
+                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
+                    log_error(&format!(
+                        "RoutingGraph::astar_kinematic - end node {end} not found"
+                    ));
+                    return Vec::new();
                 };
 
                 g_score.insert(start, 0.0);
-                let start_coord = match self.nodes.get(&start) {
-                    Some(n) => n.coord,
-                    None => {
-                        log_error(&format!(
-                            "RoutingGraph::astar_kinematic - start node {} not found",
-                            start
-                        ));
-                        return Vec::new();
-                    }
+                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
+                    log_error(&format!(
+                        "RoutingGraph::astar_kinematic - start node {start} not found"
+                    ));
+                    return Vec::new();
                 };
                 let crow_flies = start_coord.distance_to(&end_coord);
                 f_score.insert(start, crow_flies);
@@ -5954,8 +5818,7 @@ out body;"#,
                         .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
-                            "RoutingGraph::astar_kinematic aborted after {} iterations (limit: {})",
-                            iterations, max_iter
+                            "RoutingGraph::astar_kinematic aborted after {iterations} iterations (limit: {max_iter})"
                         ));
                         return Vec::new();
                     }
@@ -5970,8 +5833,7 @@ out body;"#,
 
                     if current_id == end {
                         log_trace(&format!(
-                    "RoutingGraph::astar_kinematic reached goal after {} iterations ({} congestion bypasses, {} interchange penalties)",
-                    iterations, congestion_bypasses, interchange_penalties
+                    "RoutingGraph::astar_kinematic reached goal after {iterations} iterations ({congestion_bypasses} congestion bypasses, {interchange_penalties} interchange penalties)"
                 ));
                         return self.reconstruct_path(&came_from, current_id);
                     }
@@ -6013,11 +5875,11 @@ out body;"#,
                                     let v2x = nx - cx;
                                     let v2y = ny - cy;
 
-                                    let mag1 = (v1x * v1x + v1y * v1y).sqrt();
-                                    let mag2 = (v2x * v2x + v2y * v2y).sqrt();
+                                    let mag1 = v1x.hypot(v1y);
+                                    let mag2 = v2x.hypot(v2y);
 
                                     if mag1 > 1.0 && mag2 > 1.0 {
-                                        let cos_theta = (v1x * v2x + v1y * v2y) / (mag1 * mag2);
+                                        let cos_theta = v1y.mul_add(v2y, v1x * v2x) / (mag1 * mag2);
                                         // cos(theta) < 0.5 implies angle > 60°.
                                         // Real trains cannot make 60° turns — this is
                                         // physically a pedestrian interchange walk.
@@ -6031,7 +5893,7 @@ out body;"#,
 
                             // ── FUSE Physics and Topology ───────────────────
                             let dynamic_weight =
-                                (base_weight * congestion_penalty) + interchange_penalty_m;
+                                base_weight.mul_add(congestion_penalty, interchange_penalty_m);
                             let tentative_g_score =
                                 g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
 
@@ -6056,8 +5918,7 @@ out body;"#,
                 }
 
                 log_error(&format!(
-                    "RoutingGraph::astar_kinematic failed after {} iterations",
-                    iterations
+                    "RoutingGraph::astar_kinematic failed after {iterations} iterations"
                 ));
                 Vec::new()
             }
@@ -6068,8 +5929,7 @@ out body;"#,
                 mut current: usize,
             ) -> Vec<Coordinate> {
                 log_trace(&format!(
-                    "RoutingGraph::reconstruct_path called - starting from node {}",
-                    current
+                    "RoutingGraph::reconstruct_path called - starting from node {current}"
                 ));
                 let mut path = Vec::new();
 
@@ -6077,8 +5937,7 @@ out body;"#,
                     path.push(node.coord);
                 } else {
                     log_error(&format!(
-                        "RoutingGraph::reconstruct_path - node {} not found",
-                        current
+                        "RoutingGraph::reconstruct_path - node {current} not found"
                     ));
                     return Vec::new();
                 }
@@ -6090,8 +5949,7 @@ out body;"#,
                         path.push(node.coord);
                     } else {
                         log_error(&format!(
-                            "RoutingGraph::reconstruct_path - predecessor node {} not found",
-                            prev
+                            "RoutingGraph::reconstruct_path - predecessor node {prev} not found"
                         ));
                         break;
                     }
@@ -6187,7 +6045,7 @@ out body;"#,
         }
     }
 
-    pub(crate) fn roundel_svg_for_line(line_id: &str) -> Option<String> {
+    pub fn roundel_svg_for_line(line_id: &str) -> Option<String> {
         use std::collections::HashMap;
         use std::sync::LazyLock;
 
@@ -6222,27 +6080,27 @@ out body;"#,
 }
 
 mod network {
-    use crate::config::*;
-    use crate::logger::*;
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::config::LondonBounds;
+    use crate::logger::{log_trace, log_debug, log_error, log_warn};
+    use crate::primitives::{Station, Coordinate, DEG_TO_RAD, EARTH_RADIUS};
+    use crate::routing::{Line, RailwayTrack};
     use chrono::Utc;
-    pub(crate) fn compute_stats() -> NetworkStatsResponse { NetworkStatsResponse::default() }
-    pub(crate) fn get_stations_snapshot() -> Vec<Station> { vec![] }
+    pub fn compute_stats() -> NetworkStatsResponse { NetworkStatsResponse::default() }
+    pub const fn get_stations_snapshot() -> Vec<Station> { vec![] }
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::cmp::Ordering as CmpOrdering;
     use std::collections::{HashMap, HashSet};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ApiResponse<T> {
+    pub struct ApiResponse<T> {
         pub success: bool,
         pub data: Option<T>,
         pub error: Option<String>,
     }
 
     impl<T: Serialize> ApiResponse<T> {
-        pub(crate) fn success(data: T) -> Self {
+        pub(crate) const fn success(data: T) -> Self {
             Self {
                 success: true,
                 data: Some(data),
@@ -6260,40 +6118,40 @@ mod network {
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct LoadLineRequest {
+    pub struct LoadLineRequest {
         pub line_id: String,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct SaveLineRequest {
+    pub struct SaveLineRequest {
         pub(crate) line: Line,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct SaveStationRequest {
+    pub struct SaveStationRequest {
         pub(crate) station: Station,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct RouteRequest {
+    pub struct RouteRequest {
         pub start: Coordinate,
         pub end: Coordinate,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct TransitDesertsRequest {
+    pub struct TransitDesertsRequest {
         pub bounds: LondonBounds,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct AiAddStationRequest {
+    pub struct AiAddStationRequest {
         pub bounds: LondonBounds,
         #[serde(default)]
         pub max_stations: usize,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct AiAddStationResponse {
+    pub struct AiAddStationResponse {
         pub stations: Vec<Station>,
         pub deserts_before: usize,
         pub deserts_after: usize,
@@ -6301,7 +6159,7 @@ mod network {
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct AiLinkStationsRequest {
+    pub struct AiLinkStationsRequest {
         #[serde(default)]
         pub philosophy: String,
         /// Optional explicit set of station ids to connect. When empty, every
@@ -6311,7 +6169,7 @@ mod network {
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct CoverageStatsResponse {
+    pub struct CoverageStatsResponse {
         pub total_residential: usize,
         pub served: usize,
         pub deserts: usize,
@@ -6320,13 +6178,13 @@ mod network {
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
-    pub(crate) struct IdeWriteRequest {
+    pub struct IdeWriteRequest {
         pub file_path: String,
         pub raw_content: String,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct JourneyPlanResponse {
+    pub struct JourneyPlanResponse {
         pub(crate) legs: Vec<JourneyLeg>,
         pub(crate) total_distance_m: f64,
         pub(crate) total_time_min: f64,
@@ -6343,7 +6201,7 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct JourneyPlanRequest {
+    pub struct JourneyPlanRequest {
         pub(crate) from_lat: f64,
         pub(crate) from_lon: f64,
         pub(crate) to_lat: f64,
@@ -6351,12 +6209,12 @@ mod network {
         #[serde(default = "default_journey_mode")]
         pub(crate) mode: String,
     }
-    pub(crate) fn default_journey_mode() -> String {
+    pub fn default_journey_mode() -> String {
         "fastest".to_owned()
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct IsochroneRequest {
+    pub struct IsochroneRequest {
         pub(crate) lat: f64,
         pub(crate) lon: f64,
         pub(crate) time_minutes: f64,
@@ -6365,7 +6223,7 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct IsochroneResponse {
+    pub struct IsochroneResponse {
         pub(crate) reachable_stations: Vec<ReachableStation>,
         pub(crate) boundary_polygon: Vec<Coordinate>,
         pub(crate) center: Coordinate,
@@ -6374,7 +6232,7 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ReachableStation {
+    pub struct ReachableStation {
         pub(crate) station: Station,
         pub(crate) travel_time_min: f64,
         pub(crate) hops: usize,
@@ -6382,13 +6240,13 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TransitScoreRequest {
+    pub struct TransitScoreRequest {
         pub(crate) lat: f64,
         pub(crate) lon: f64,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TransitScoreResponse {
+    pub struct TransitScoreResponse {
         pub(crate) score: f64,
         pub(crate) grade: String,
         pub(crate) nearby_stations: Vec<NearbyStation>,
@@ -6401,7 +6259,7 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct NearbyStation {
+    pub struct NearbyStation {
         pub(crate) name: String,
         pub(crate) distance_m: f64,
         pub(crate) walk_minutes: f64,
@@ -6410,18 +6268,18 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TunnelCostRequest {
+    pub struct TunnelCostRequest {
         pub(crate) geometry: Vec<Coordinate>,
         pub(crate) line_name: String,
         #[serde(default = "default_bore_type")]
         pub(crate) bore_type: String,
     }
-    pub(crate) fn default_bore_type() -> String {
+    pub fn default_bore_type() -> String {
         "twin_bore".to_owned()
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TunnelCostResponse {
+    pub struct TunnelCostResponse {
         pub(crate) total_distance_m: f64,
         pub(crate) estimated_cost_gbp_millions: f64,
         pub(crate) cost_per_km_gbp_millions: f64,
@@ -6436,7 +6294,7 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct GeoJsonExportRequest {
+    pub struct GeoJsonExportRequest {
         pub(crate) include_lines: bool,
         pub(crate) include_stations: bool,
         pub(crate) include_tracks: bool,
@@ -6444,24 +6302,24 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationSearchRequest {
+    pub struct StationSearchRequest {
         pub(crate) query: String,
         #[serde(default = "default_search_limit")]
         pub(crate) limit: usize,
     }
-    pub(crate) fn default_search_limit() -> usize {
+    pub const fn default_search_limit() -> usize {
         10
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationSearchResult {
+    pub struct StationSearchResult {
         pub(crate) station: Station,
         pub(crate) score: f64,
         pub(crate) match_type: String,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-    pub(crate) struct NetworkStatsResponse {
+    pub struct NetworkStatsResponse {
         pub(crate) total_lines: usize,
         pub(crate) total_stations: usize,
         pub(crate) total_track_km: f64,
@@ -6478,13 +6336,13 @@ mod network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DemandGridRequest {
+    pub struct DemandGridRequest {
         pub(crate) bounds: LondonBounds,
         pub(crate) resolution: usize,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DemandCell {
+    pub struct DemandCell {
         pub(crate) lat: f64,
         pub(crate) lon: f64,
         pub(crate) demand_score: f64,
@@ -6497,14 +6355,14 @@ mod network {
     // ============================================================================
 
     /// Walk speed in m/min — 80m/min ~ 4.8 km/h is average urban pedestrian
-    pub(crate) const WALK_SPEED_M_PER_MIN: f64 = 80.0;
+    pub const WALK_SPEED_M_PER_MIN: f64 = 80.0;
     /// Rail speed on tube/rail in m/min — average including dwell time
-    pub(crate) const RAIL_SPEED_M_PER_MIN: f64 = 550.0;
+    pub const RAIL_SPEED_M_PER_MIN: f64 = 550.0;
     /// Max walking distance to/from a station for journey planning
-    pub(crate) const MAX_WALK_M: f64 = 900.0;
+    pub const MAX_WALK_M: f64 = 900.0;
 
     /// Estimate fare based on distance and zones crossed. `TfL` pricing model.
-    pub(crate) fn estimate_fare_gbp(distance_m: f64, zones: &[i32]) -> f64 {
+    pub fn estimate_fare_gbp(distance_m: f64, zones: &[i32]) -> f64 {
         let zone_count = zones.iter().collect::<std::collections::HashSet<_>>().len();
         let base = 2.80_f64;
         let distance_factor = (distance_m / 1000.0) * 0.04;
@@ -6518,27 +6376,25 @@ mod network {
         let total = base + distance_factor + zone_factor;
         let fare = (total * 100.0).round() / 100.0;
         log_trace(&format!(
-            "estimate_fare_gbp - dist={:.0}m, zones={}, fare=£{:.2}",
-            distance_m, zone_count, fare
+            "estimate_fare_gbp - dist={distance_m:.0}m, zones={zone_count}, fare=£{fare:.2}"
         ));
         fare
     }
 
     /// CO₂ saved versus single-occupancy car trip in kg
-    pub(crate) fn co2_saved_vs_car(distance_m: f64) -> f64 {
+    pub fn co2_saved_vs_car(distance_m: f64) -> f64 {
         let car_kg_per_km = 0.171;
         let tube_kg_per_km = 0.0028;
         let km = distance_m / 1000.0;
         let saved = (car_kg_per_km - tube_kg_per_km) * km;
         log_trace(&format!(
-            "co2_saved_vs_car - {:.1}km -> {:.2}kg CO₂ saved",
-            km, saved
+            "co2_saved_vs_car - {km:.1}km -> {saved:.2}kg CO₂ saved"
         ));
         saved
     }
 
     /// Fuzzy string match score 0.0–1.0 between query and target (case-insensitive)
-    pub(crate) fn fuzzy_score(query: &str, target: &str) -> f64 {
+    pub fn fuzzy_score(query: &str, target: &str) -> f64 {
         let q = query.to_lowercase();
         let t = target.to_lowercase();
         if t == q {
@@ -6573,7 +6429,7 @@ mod network {
     /// Compute a transit connectivity score 0–100 for a coordinate.
     /// Weights: proximity (40pts), line frequency (25pts), coverage breadth (20pts),
     /// interchange access (15pts).
-    pub(crate) fn compute_transit_score(
+    pub fn compute_transit_score(
         coord: Coordinate,
         stations: &[Station],
     ) -> TransitScoreResponse {
@@ -6679,8 +6535,7 @@ mod network {
             .collect();
 
         let breakdown = format!(
-            "Proximity {:.0}/40 | Frequency {:.0}/25 | Coverage {:.0}/20 | Interchange {:.0}/15",
-            proximity, frequency, coverage, interchange_bonus
+            "Proximity {proximity:.0}/40 | Frequency {frequency:.0}/25 | Coverage {coverage:.0}/20 | Interchange {interchange_bonus:.0}/15"
         );
 
         let result = TransitScoreResponse {
@@ -6703,7 +6558,7 @@ mod network {
 
     /// Tunnel construction cost model.
     /// Based on Crossrail cost data: ~£500M/km bored tunnel; deep Tube ~£300M/km.
-    pub(crate) fn estimate_tunnel_cost(
+    pub fn estimate_tunnel_cost(
         geometry: &[Coordinate],
         bore_type: &str,
         num_stations: usize,
@@ -6742,8 +6597,8 @@ mod network {
         let contingency = (civil + stations + systems) * 0.30;
         let total = civil + stations + systems + contingency;
 
-        let years = (km / 5.0 + num_stations as f64 * 0.5).max(3.0);
-        let co2_kt = km * 12.0 + num_stations as f64 * 8.0;
+        let years = (num_stations as f64).mul_add(0.5, km / 5.0).max(3.0);
+        let co2_kt = (num_stations as f64).mul_add(8.0, km * 12.0);
 
         let comparison = if total < 500.0 {
             "Cheaper than a new London Bridge station refurbishment (£500M)".to_owned()
@@ -6776,7 +6631,7 @@ mod network {
     }
 
     /// BFS isochrone: reachable stations within `time_minutes` from a seed coordinate.
-    pub(crate) fn compute_isochrone(
+    pub fn compute_isochrone(
         seed: Coordinate,
         time_minutes: f64,
         stations: &[Station],
@@ -6805,8 +6660,7 @@ mod network {
         }
         if time_minutes <= 0.0 {
             log_warn(&format!(
-                "compute_isochrone - invalid time_minutes={} — clamping to 1.0",
-                time_minutes
+                "compute_isochrone - invalid time_minutes={time_minutes} — clamping to 1.0"
             ));
         }
         let time_minutes = time_minutes.max(1.0);
@@ -6862,10 +6716,10 @@ mod network {
                         .ok()
                         .and_then(|c| c.as_ref().map(|c| c.interchange_penalty_min))
                         .unwrap_or(3.5);
-                    let interchange = if !stations[nbr].lines.iter().any(|l| line_ids.contains(l)) {
-                        penalty
-                    } else {
+                    let interchange = if stations[nbr].lines.iter().any(|l| line_ids.contains(l)) {
                         0.0
+                    } else {
+                        penalty
                     };
                     let new_elapsed = elapsed + travel_time + interchange;
                     if new_elapsed <= time_minutes {
@@ -6907,7 +6761,7 @@ mod network {
     }
 
     /// Compute convex hull using Andrew's monotone chain algorithm.
-    pub(crate) fn convex_hull_coords(points: &[Coordinate]) -> Vec<Coordinate> {
+    pub fn convex_hull_coords(points: &[Coordinate]) -> Vec<Coordinate> {
         log_trace(&format!(
             "convex_hull_coords - {} input points",
             points.len()
@@ -6923,7 +6777,7 @@ mod network {
         }
 
         let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
-            (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+            (a.1 - o.1).mul_add(-(b.0 - o.0), (a.0 - o.0) * (b.1 - o.1))
         };
 
         let mut lower: Vec<(f64, f64)> = Vec::new();
@@ -6954,7 +6808,7 @@ mod network {
     }
 
     /// Approximate polygon area in km² using shoelace formula (spherical approximation).
-    pub(crate) fn polygon_area_km2(poly: &[Coordinate]) -> f64 {
+    pub fn polygon_area_km2(poly: &[Coordinate]) -> f64 {
         if poly.len() < 3 {
             return 0.0;
         }
@@ -6967,14 +6821,14 @@ mod network {
             let cos_lat = lat_m.cos().max(0.001);
             let dlon = (poly[j].lon - poly[i].lon) * DEG_TO_RAD * EARTH_RADIUS * cos_lat;
             let dlat = (poly[j].lat - poly[i].lat) * DEG_TO_RAD * EARTH_RADIUS;
-            area += poly[i].lat * DEG_TO_RAD * dlon;
+            area = (poly[i].lat * DEG_TO_RAD).mul_add(dlon, area);
             let _ = dlat;
         }
         (area.abs() / 2.0) / 1_000_000.0
     }
 
     /// Export the full network state as a `GeoJSON` `FeatureCollection` string.
-    pub(crate) fn export_geojson(
+    pub fn export_geojson(
         lines: &[Line],
         stations: &[Station],
         tracks: &[RailwayTrack],
@@ -7067,7 +6921,7 @@ mod network {
         result
     }
 
-    pub(crate) fn enrich_arrivals_with_positions(
+    pub fn enrich_arrivals_with_positions(
         arrivals: &Value,
         geometry: &[Coordinate],
     ) -> Value {
@@ -7094,94 +6948,87 @@ mod network {
         // Average train speed for interpolation: ~33 km/h (London Underground average)
         const TRAIN_SPEED_M_PER_SEC: f64 = 9.2;
 
-        match arrivals.as_array() {
-            Some(arr) => {
-                let enriched: Vec<Value> = arr
-                    .iter()
-                    .map(|arrival| {
-                        let mut enriched = arrival.clone();
-                        // timeToStation is in seconds from now
-                        if let Some(tts) = arrival.get("timeToStation").and_then(serde_json::Value::as_f64) {
-                            if tts > 0.0 {
-                                // Distance the train will travel in timeToStation seconds
-                                // (negative because the train is approaching)
-                                let distance_m = tts * TRAIN_SPEED_M_PER_SEC;
-                                // Clamp to geometry bounds
-                                let target_dist = distance_m.min(total_line_m * 0.95);
+        if let Some(arr) = arrivals.as_array() {
+            let enriched: Vec<Value> = arr
+                .iter()
+                .map(|arrival| {
+                    let mut enriched = arrival.clone();
+                    // timeToStation is in seconds from now
+                    if let Some(tts) = arrival.get("timeToStation").and_then(serde_json::Value::as_f64) {
+                        if tts > 0.0 {
+                            // Distance the train will travel in timeToStation seconds
+                            // (negative because the train is approaching)
+                            let distance_m = tts * TRAIN_SPEED_M_PER_SEC;
+                            // Clamp to geometry bounds
+                            let target_dist = distance_m.min(total_line_m * 0.95);
 
-                                // Find the segment containing target_dist via binary search
-                                if let Ok(seg_idx) = cumulative_distances.binary_search_by(|d| {
-                                    d.partial_cmp(&target_dist)
-                                        .unwrap_or(std::cmp::Ordering::Equal)
-                                }) {
-                                    // Exact match on a vertex
-                                    if seg_idx < geometry.len() {
-                                        if let Some(obj) = enriched.as_object_mut() {
-                                            obj.insert(
-                                                "live_lat".to_owned(),
-                                                serde_json::json!(geometry[seg_idx].lat),
-                                            );
-                                            obj.insert(
-                                                "live_lon".to_owned(),
-                                                serde_json::json!(geometry[seg_idx].lon),
-                                            );
-                                        }
+                            // Find the segment containing target_dist via binary search
+                            if let Ok(seg_idx) = cumulative_distances.binary_search_by(|d| {
+                                d.partial_cmp(&target_dist)
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            }) {
+                                // Exact match on a vertex
+                                if seg_idx < geometry.len() {
+                                    if let Some(obj) = enriched.as_object_mut() {
+                                        obj.insert(
+                                            "live_lat".to_owned(),
+                                            serde_json::json!(geometry[seg_idx].lat),
+                                        );
+                                        obj.insert(
+                                            "live_lon".to_owned(),
+                                            serde_json::json!(geometry[seg_idx].lon),
+                                        );
                                     }
-                                } else {
-                                    // Between two vertices - interpolate
-                                    let seg_idx = cumulative_distances
-                                        .iter()
-                                        .rposition(|d| *d < target_dist)
-                                        .unwrap_or(0);
-                                    if seg_idx + 1 < geometry.len() {
-                                        let seg_start = cumulative_distances[seg_idx];
-                                        let seg_end = cumulative_distances[seg_idx + 1];
-                                        let seg_len = seg_end - seg_start;
-                                        let ratio = if seg_len > 0.0 {
-                                            ((target_dist - seg_start) / seg_len).clamp(0.0, 1.0)
-                                        } else {
-                                            0.0
-                                        };
-                                        let lat = geometry[seg_idx].lat
-                                            + (geometry[seg_idx + 1].lat - geometry[seg_idx].lat)
-                                                * ratio;
-                                        let lon = geometry[seg_idx].lon
-                                            + (geometry[seg_idx + 1].lon - geometry[seg_idx].lon)
-                                                * ratio;
-                                        if let Some(obj) = enriched.as_object_mut() {
-                                            obj.insert(
-                                                "live_lat".to_owned(),
-                                                serde_json::json!((lat * 1e6).round() / 1e6),
-                                            );
-                                            obj.insert(
-                                                "live_lon".to_owned(),
-                                                serde_json::json!((lon * 1e6).round() / 1e6),
-                                            );
-                                        }
+                                }
+                            } else {
+                                // Between two vertices - interpolate
+                                let seg_idx = cumulative_distances
+                                    .iter()
+                                    .rposition(|d| *d < target_dist)
+                                    .unwrap_or(0);
+                                if seg_idx + 1 < geometry.len() {
+                                    let seg_start = cumulative_distances[seg_idx];
+                                    let seg_end = cumulative_distances[seg_idx + 1];
+                                    let seg_len = seg_end - seg_start;
+                                    let ratio = if seg_len > 0.0 {
+                                        ((target_dist - seg_start) / seg_len).clamp(0.0, 1.0)
+                                    } else {
+                                        0.0
+                                    };
+                                    let lat = (geometry[seg_idx + 1].lat - geometry[seg_idx].lat).mul_add(ratio, geometry[seg_idx].lat);
+                                    let lon = (geometry[seg_idx + 1].lon - geometry[seg_idx].lon).mul_add(ratio, geometry[seg_idx].lon);
+                                    if let Some(obj) = enriched.as_object_mut() {
+                                        obj.insert(
+                                            "live_lat".to_owned(),
+                                            serde_json::json!((lat * 1e6).round() / 1e6),
+                                        );
+                                        obj.insert(
+                                            "live_lon".to_owned(),
+                                            serde_json::json!((lon * 1e6).round() / 1e6),
+                                        );
                                     }
                                 }
                             }
                         }
-                        enriched
-                    })
-                    .collect();
-                let enriched_count = enriched
-                    .iter()
-                    .filter(|e| e.get("live_lat").is_some())
-                    .count();
-                log_debug(&format!("enrich_arrivals_with_positions - enriched {}/{} arrivals with live coordinates", enriched_count, enriched.len()));
-                serde_json::Value::Array(enriched)
-            }
-            None => {
-                log_warn(
-                    "enrich_arrivals_with_positions - arrivals is not an array, returning as-is",
-                );
-                arrivals.clone()
-            }
+                    }
+                    enriched
+                })
+                .collect();
+            let enriched_count = enriched
+                .iter()
+                .filter(|e| e.get("live_lat").is_some())
+                .count();
+            log_debug(&format!("enrich_arrivals_with_positions - enriched {}/{} arrivals with live coordinates", enriched_count, enriched.len()));
+            serde_json::Value::Array(enriched)
+        } else {
+            log_warn(
+                "enrich_arrivals_with_positions - arrivals is not an array, returning as-is",
+            );
+            arrivals.clone()
         }
     }
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct JourneyLeg {
+    pub struct JourneyLeg {
         pub(crate) from_station: String,
         pub(crate) to_station: String,
         pub(crate) line_id: String,
@@ -7194,15 +7041,15 @@ mod network {
     }
 }
 mod server {
-    pub(crate) use handlers::*;
+    pub use handlers::*;
     #[cfg(feature = "desktop")]
-    pub(crate) use router::*;
-    pub(crate) use state::*;
+    pub use router::*;
+    pub use state::*;
 
     /// Returns true if a process with the given PID is still alive (without
     /// killing it). Used by the single-instance lock-file check so we don't
     /// mistake a stale PID from a crashed previous run for a live instance.
-    pub(crate) fn process_is_alive(pid: u32) -> bool {
+    pub fn process_is_alive(pid: u32) -> bool {
         #[cfg(windows)]
         {
             use std::os::windows::io::RawHandle;
@@ -7235,7 +7082,7 @@ mod server {
 
     /// Best-effort cleanup hook: remove `path` when the process exits. Wrapped so
     /// a failure here never aborts shutdown.
-    pub(crate) fn libc_at_exit(path: std::path::PathBuf) {
+    pub fn libc_at_exit(path: std::path::PathBuf) {
         // Spawn a tiny monitor-free approach: register via std::sync once we can.
         // Simplest robust option on all platforms: a dedicated thread that waits
         // for the parent to exit is overkill, so we just attempt deletion on a
@@ -7257,11 +7104,11 @@ mod server {
     }
 
     mod state {
-        use crate::config::*;
-        use crate::logger::*;
-        use crate::primitives::*;
-        use crate::routing::*;
-        use crate::spatial::*;
+        use crate::config::{CACHE_SCHEMA_VERSION, LondonBounds, Config};
+        use crate::logger::{log_info, log_debug, log_trace, log_warn, log_error, log_race, log_warn_with_context};
+        use crate::primitives::{Station, Coordinate, ResidentialArea, embedded_rail_segments, embedded_residential, STATION_MERGE_THRESHOLD};
+        use crate::routing::{Line, RailwayTrack, ConstructionState, TflApiClient, OverpassApiClient, GeometryEngine, RoutingGraph, EdgeKey, RouteSegment, chaikin_smooth_path, curved_tunnel_fallback, subsample_coords};
+        use crate::spatial::TransitNetworkGrid;
         use crate::TFL_COLOR_REGISTRY;
         use chrono::Utc;
         use rusqlite::{params, Connection};
@@ -7284,8 +7131,7 @@ mod server {
             pub fn new<P: Into<PathBuf>>(path: P) -> Self {
                 let path_buf = path.into();
                 log_info(&format!(
-                    "SqliteConnectionManager::new called - path: {:?}",
-                    path_buf
+                    "SqliteConnectionManager::new called - path: {path_buf:?}"
                 ));
                 Self { path: path_buf }
             }
@@ -7320,10 +7166,9 @@ mod server {
                 log_trace("SqliteConnectionManager::is_valid called - checking connection health");
                 let result = conn.query_row("SELECT 1", [], |_| Ok(()));
                 match &result {
-                    Ok(_) => log_trace("SqliteConnectionManager::is_valid - connection is valid"),
+                    Ok(()) => log_trace("SqliteConnectionManager::is_valid - connection is valid"),
                     Err(e) => log_warn(&format!(
-                        "SqliteConnectionManager::is_valid - connection check failed: {}",
-                        e
+                        "SqliteConnectionManager::is_valid - connection check failed: {e}"
                     )),
                 }
                 result
@@ -7335,7 +7180,7 @@ mod server {
         }
 
         #[derive(Clone)]
-        pub(crate) struct CacheManager {
+        pub struct CacheManager {
             pub(crate) pool: r2d2::Pool<SqliteConnectionManager>,
         }
 
@@ -7347,14 +7192,13 @@ mod server {
                     .join("london_transport");
 
                 log_debug(&format!(
-                    "CacheManager::new - creating cache directory at {:?}",
-                    cache_dir
+                    "CacheManager::new - creating cache directory at {cache_dir:?}"
                 ));
                 std::fs::create_dir_all(&cache_dir)?;
-                log_debug(&format!("Cache directory: {:?}", cache_dir));
+                log_debug(&format!("Cache directory: {cache_dir:?}"));
 
                 let db_path = cache_dir.join("cache.db");
-                log_info(&format!("CacheManager::new - database path: {:?}", db_path));
+                log_info(&format!("CacheManager::new - database path: {db_path:?}"));
                 let manager = SqliteConnectionManager::new(db_path);
                 let pool = r2d2::Pool::builder()
                     .max_size(16) // Scale resource channels out dynamically across core pools
@@ -7377,8 +7221,7 @@ mod server {
                     let journal_mode: String =
                         conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
                     log_info(&format!(
-                        "CacheManager::new - SQLite journal mode confirmed: {}",
-                        journal_mode
+                        "CacheManager::new - SQLite journal mode confirmed: {journal_mode}"
                     ));
                 }
 
@@ -7440,10 +7283,13 @@ mod server {
                 let stored_version: Option<String> = stmt.query_row([], |row| row.get(0)).ok();
 
                 if let Some(ref ver) = stored_version {
-                    if ver != CACHE_SCHEMA_VERSION {
+                    if ver == CACHE_SCHEMA_VERSION {
+                        log_debug(
+                            "CacheManager::initialize_tables - schema version matches, caches are valid",
+                        );
+                    } else {
                         log_warn(&format!(
-                            "CacheManager::initialize_tables - schema version changed from {} to {}; clearing all caches",
-                            ver, CACHE_SCHEMA_VERSION
+                            "CacheManager::initialize_tables - schema version changed from {ver} to {CACHE_SCHEMA_VERSION}; clearing all caches"
                         ));
                         conn.execute("DELETE FROM api_cache", [])?;
                         conn.execute(
@@ -7451,10 +7297,6 @@ mod server {
                             params![CACHE_SCHEMA_VERSION],
                         )?;
                         log_info("CacheManager::initialize_tables - all caches cleared due to schema version change");
-                    } else {
-                        log_debug(
-                            "CacheManager::initialize_tables - schema version matches, caches are valid",
-                        );
                     }
                 } else {
                     log_debug("CacheManager::initialize_tables - no previous schema version found, inserting current version");
@@ -7493,8 +7335,7 @@ mod server {
                 )?;
 
                 log_debug(&format!(
-                    "CacheManager::put completed - cached key: {} (expires at {})",
-                    key, expiry
+                    "CacheManager::put completed - cached key: {key} (expires at {expiry})"
                 ));
                 Ok(())
             }
@@ -7503,7 +7344,7 @@ mod server {
                 &self,
                 key: &str,
             ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-                log_info(&format!("CacheManager::get called - key: {}", key));
+                log_info(&format!("CacheManager::get called - key: {key}"));
                 let conn = self.pool.get()?;
                 log_trace("CacheManager::get - acquired database connection");
                 let now = Utc::now().timestamp_millis();
@@ -7536,13 +7377,12 @@ mod server {
                         }
                     }
                     Err(rusqlite::Error::QueryReturnedNoRows) => {
-                        log_debug(&format!("CacheManager::get - CACHE MISS for key: {}", key));
+                        log_debug(&format!("CacheManager::get - CACHE MISS for key: {key}"));
                         Ok(None)
                     }
                     Err(e) => {
                         log_error(&format!(
-                            "CacheManager::get - DATABASE ERROR for key {}: {}",
-                            key, e
+                            "CacheManager::get - DATABASE ERROR for key {key}: {e}"
                         ));
                         Err(Box::new(e))
                     }
@@ -7650,8 +7490,7 @@ mod server {
                         Err(e) => {
                             parse_errors += 1;
                             log_error(&format!(
-                                "CacheManager::load_custom_lines - failed to parse line: {}",
-                                e
+                                "CacheManager::load_custom_lines - failed to parse line: {e}"
                             ));
                         }
                     }
@@ -7682,8 +7521,7 @@ mod server {
                     let lon: f64 = row.get(3)?;
 
                     log_trace(&format!(
-                        "CacheManager::load_free_stations - parsing station: {} at lat={:.6}, lon={:.6}",
-                        id, lat, lon
+                        "CacheManager::load_free_stations - parsing station: {id} at lat={lat:.6}, lon={lon:.6}"
                     ));
                     Ok(Station::new(id, name, Coordinate::new(lat, lon)))
                 })?;
@@ -7696,8 +7534,7 @@ mod server {
                         Err(e) => {
                             parse_errors += 1;
                             log_error(&format!(
-                                "CacheManager::load_free_stations - failed to parse station: {}",
-                                e
+                                "CacheManager::load_free_stations - failed to parse station: {e}"
                             ));
                         }
                     }
@@ -7788,7 +7625,7 @@ mod server {
         type DesertCache = Arc<std::sync::Mutex<Option<(LondonBounds, Vec<ResidentialArea>)>>>;
 
         #[derive(Clone)]
-        pub(crate) struct AppState {
+        pub struct AppState {
             /// All transport lines. Lock-free read via `.load()`.
             pub(crate) lines: Arc<arc_swap::ArcSwap<Vec<Line>>>,
             /// All stations. Lock-free read via `.load()`.
@@ -7878,8 +7715,7 @@ mod server {
                 line_id: &str,
             ) -> Result<Line, Box<dyn std::error::Error>> {
                 log_info(&format!(
-                    "AppState::load_line_routes called - line_id: {}",
-                    line_id
+                    "AppState::load_line_routes called - line_id: {line_id}"
                 ));
                 let cache_key = format!(
                     "line_routes_v{}_{}",
@@ -7888,8 +7724,7 @@ mod server {
                     line_id
                 );
                 log_debug(&format!(
-                    "AppState::load_line_routes - cache_key: {}",
-                    cache_key
+                    "AppState::load_line_routes - cache_key: {cache_key}"
                 ));
 
                 let cache_clone = self.cache.clone();
@@ -7900,24 +7735,21 @@ mod server {
                     let res = cache_clone.get(&cache_key_db).map_err(|e| e.to_string());
                     let elapsed = (Utc::now() - start_ts).num_milliseconds();
                     log_info(&format!(
-                        "[PERF] AppState::load_line_routes - SQLite Cache query executed in {}ms",
-                        elapsed
+                        "[PERF] AppState::load_line_routes - SQLite Cache query executed in {elapsed}ms"
                     ));
                     res
                 })
                 .await
                 .map_err(|e| {
                     log_error(&format!(
-                        "AppState::load_line_routes - task spawn error: {}",
-                        e
+                        "AppState::load_line_routes - task spawn error: {e}"
                     ));
                     Box::new(std::io::Error::other(e.to_string()))
                 })?;
 
                 let cached_opt = get_res.map_err(|e| {
                     log_error(&format!(
-                        "AppState::load_line_routes - cache get error: {}",
-                        e
+                        "AppState::load_line_routes - cache get error: {e}"
                     ));
                     Box::new(std::io::Error::other(e))
                 })?;
@@ -7928,8 +7760,7 @@ mod server {
                         // treat it as a cache miss and re-fetch from the live API instead of returning an error.
                         if line.stations.is_empty() || line.geometry.is_empty() {
                             log_warn(&format!(
-                                "AppState::load_line_routes - cached line {} has empty stations/geometry; treating as cache miss, re-fetching from API",
-                                line_id
+                                "AppState::load_line_routes - cached line {line_id} has empty stations/geometry; treating as cache miss, re-fetching from API"
                             ));
                             // Fall through to API fetch below
                         } else {
@@ -7946,30 +7777,26 @@ mod server {
                                 // Fall through to API fetch below so the routing graph re-curves it
                             } else {
                                 log_info(&format!(
-                                    "AppState::load_line_routes - cache hit validated for {}",
-                                    line_id
+                                    "AppState::load_line_routes - cache hit validated for {line_id}"
                                 ));
                                 return Ok(line);
                             }
                         }
                     } else {
                         log_warn(&format!(
-                            "AppState::load_line_routes - failed to deserialize cached line: {}",
-                            line_id
+                            "AppState::load_line_routes - failed to deserialize cached line: {line_id}"
                         ));
                     }
                 }
 
                 log_debug(&format!(
-                    "AppState::load_line_routes - cache miss, fetching from API: {}",
-                    line_id
+                    "AppState::load_line_routes - cache miss, fetching from API: {line_id}"
                 ));
                 let data = match self.tfl_client.fetch_line_routes(line_id).await {
                     Ok(data) => data,
                     Err(err) => {
                         log_error(&format!(
-                            "AppState::load_line_routes - TfL API error for {}: {}",
-                            line_id, err
+                            "AppState::load_line_routes - TfL API error for {line_id}: {err}"
                         ));
                         return Err(Box::new(std::io::Error::other(format!(
                             "TfL API fetch failed for {line_id}: {err}"
@@ -7977,15 +7804,13 @@ mod server {
                     }
                 };
                 log_debug(&format!(
-                    "AppState::load_line_routes - parsing line data for: {}",
-                    line_id
+                    "AppState::load_line_routes - parsing line data for: {line_id}"
                 ));
                 let mut line = match self.parse_line_data(&data, line_id) {
                     Ok(line) => line,
                     Err(err) => {
                         log_error(&format!(
-                            "AppState::load_line_routes - parse error for {}: {}",
-                            line_id, err
+                            "AppState::load_line_routes - parse error for {line_id}: {err}"
                         ));
                         return Err(err);
                     }
@@ -7993,8 +7818,7 @@ mod server {
 
                 if line.stations.is_empty() {
                     log_error(&format!(
-                        "AppState::load_line_routes - parsed line {} has no stations; rejecting",
-                        line_id
+                        "AppState::load_line_routes - parsed line {line_id} has no stations; rejecting"
                     ));
                     return Err(Box::new(std::io::Error::other(format!(
                         "Parsed line {line_id} has no stations"
@@ -8068,7 +7892,7 @@ mod server {
                     }
 
                     line.sub_geometries = sub_geoms;
-                    line.geometry = line.sub_geometries.iter().flatten().cloned().collect();
+                    line.geometry = line.sub_geometries.iter().flatten().copied().collect();
                 }
 
                 self.register_line_stations_in_global_state(&line);
@@ -8083,8 +7907,7 @@ mod server {
                 let cache_key_clone = cache_key.clone();
                 let cached_clone = cached.clone();
                 log_race(&format!(
-                    "AppState::load_line_routes - concurrent cache write for line: {}",
-                    line_id
+                    "AppState::load_line_routes - concurrent cache write for line: {line_id}"
                 ));
                 let put_res = tokio::task::spawn_blocking(move || {
                     log_trace("AppState::load_line_routes - spawning blocking cache put task");
@@ -8095,18 +7918,16 @@ mod server {
                 .await;
 
                 match put_res {
-                    Ok(Ok(_)) => log_debug("AppState::load_line_routes - cache put successful"),
+                    Ok(Ok(())) => log_debug("AppState::load_line_routes - cache put successful"),
                     Ok(Err(e)) => {
                         log_error(&format!(
-                            "AppState::load_line_routes - cache put error: {}",
-                            e
+                            "AppState::load_line_routes - cache put error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e)));
                     }
                     Err(e) => {
                         log_error(&format!(
-                            "AppState::load_line_routes - cache put task error: {}",
-                            e
+                            "AppState::load_line_routes - cache put task error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e.to_string())));
                     }
@@ -8159,8 +7980,7 @@ mod server {
                         }
                         Err(err) => {
                             log_warn(&format!(
-                                "ensure_sample_network_state - failed to seed {}: {}",
-                                line_id, err
+                                "ensure_sample_network_state - failed to seed {line_id}: {err}"
                             ));
                         }
                     }
@@ -8179,19 +7999,17 @@ mod server {
                 line_id: &str,
             ) -> Result<Line, Box<dyn std::error::Error>> {
                 log_info(&format!(
-                    "AppState::parse_line_data called - line_id: {}",
-                    line_id
+                    "AppState::parse_line_data called - line_id: {line_id}"
                 ));
                 let line_name = data
                     .get("lineName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown");
                 log_debug(&format!(
-                    "AppState::parse_line_data - line_name: {}",
-                    line_name
+                    "AppState::parse_line_data - line_name: {line_name}"
                 ));
                 let color = self.get_line_color(line_id);
-                log_debug(&format!("AppState::parse_line_data - color: {}", color));
+                log_debug(&format!("AppState::parse_line_data - color: {color}"));
 
                 let mut line = Line::new(line_id.to_string(), line_name.to_string(), color);
 
@@ -8210,7 +8028,7 @@ mod server {
                             st_val.get("lon").and_then(serde_json::Value::as_f64),
                         ) {
                             if lat.abs() > 90.0 || lon.abs() > 180.0 {
-                                log_warn(&format!("AppState::parse_line_data - station {} has invalid coords lat={}, lon={}; skipping", name, lat, lon));
+                                log_warn(&format!("AppState::parse_line_data - station {name} has invalid coords lat={lat}, lon={lon}; skipping"));
                                 skipped += 1;
                                 continue;
                             }
@@ -8227,10 +8045,10 @@ mod server {
                         }
                     }
                     if skipped > 0 {
-                        log_warn(&format!("AppState::parse_line_data - {} station entries skipped/malformed for line {}", skipped, line_id));
+                        log_warn(&format!("AppState::parse_line_data - {skipped} station entries skipped/malformed for line {line_id}"));
                     }
                 } else {
-                    log_warn(&format!("AppState::parse_line_data - NO 'stations' array in API response for line {}", line_id));
+                    log_warn(&format!("AppState::parse_line_data - NO 'stations' array in API response for line {line_id}"));
                 }
 
                 // 2. Extract geometry from "lineStrings" array of JSON strings
@@ -8245,32 +8063,31 @@ mod server {
                             if let Ok(parsed_ls) = serde_json::from_str::<Value>(ls_str) {
                                 let mut coords = Vec::new();
                                 extract_coordinates_from_val(&parsed_ls, &mut coords);
-                                if !coords.is_empty() {
+                                if coords.is_empty() {
+                                    empty_geoms += 1;
+                                } else {
                                     line.geometry.extend(coords.clone());
                                     line.sub_geometries.push(coords);
-                                } else {
-                                    empty_geoms += 1;
                                 }
                             } else {
-                                log_warn(&format!("AppState::parse_line_data - failed to parse lineString JSON for line {}", line_id));
+                                log_warn(&format!("AppState::parse_line_data - failed to parse lineString JSON for line {line_id}"));
                             }
                         }
                     }
                     if empty_geoms > 0 {
-                        log_warn(&format!("AppState::parse_line_data - {} lineStrings produced zero coordinates for line {}", empty_geoms, line_id));
+                        log_warn(&format!("AppState::parse_line_data - {empty_geoms} lineStrings produced zero coordinates for line {line_id}"));
                     }
                 } else {
-                    log_warn(&format!("AppState::parse_line_data - NO 'lineStrings' array in API response for line {}", line_id));
+                    log_warn(&format!("AppState::parse_line_data - NO 'lineStrings' array in API response for line {line_id}"));
                 }
 
                 if line.stations.is_empty() {
                     log_error(&format!(
-                        "AppState::parse_line_data - line {} has ZERO stations after parsing!",
-                        line_id
+                        "AppState::parse_line_data - line {line_id} has ZERO stations after parsing!"
                     ));
                 }
                 if line.geometry.is_empty() {
-                    log_warn(&format!("AppState::parse_line_data - line {} has ZERO geometry points after parsing!", line_id));
+                    log_warn(&format!("AppState::parse_line_data - line {line_id} has ZERO geometry points after parsing!"));
                 }
 
                 log_info(&format!(
@@ -8283,7 +8100,7 @@ mod server {
             }
         }
 
-        pub(crate) fn extract_coordinates_from_val(val: &Value, out: &mut Vec<Coordinate>) {
+        pub fn extract_coordinates_from_val(val: &Value, out: &mut Vec<Coordinate>) {
             if let Some(arr) = val.as_array() {
                 if arr.len() == 2 && arr[0].is_number() && arr[1].is_number() {
                     if let (Some(lon), Some(lat)) = (arr[0].as_f64(), arr[1].as_f64()) {
@@ -8300,14 +8117,13 @@ mod server {
         impl AppState {
             pub(crate) fn get_line_color(&self, line_id: &str) -> String {
                 log_trace(&format!(
-                    "AppState::get_line_color called - line_id: {}",
-                    line_id
+                    "AppState::get_line_color called - line_id: {line_id}"
                 ));
                 let color = TFL_COLOR_REGISTRY
                     .get(line_id)
                     .unwrap_or(&"#888888")
                     .to_string();
-                log_trace(&format!("AppState::get_line_color result: {}", color));
+                log_trace(&format!("AppState::get_line_color result: {color}"));
                 color
             }
 
@@ -8326,11 +8142,10 @@ mod server {
                     bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
                 );
                 log_debug(&format!(
-                    "AppState::fetch_railway_tracks - cache_key: {}",
-                    cache_key
+                    "AppState::fetch_railway_tracks - cache_key: {cache_key}"
                 ));
                 let cache_clone = self.cache.clone();
-                let cache_key_clone = cache_key.to_string();
+                let cache_key_clone = cache_key.clone();
 
                 let get_res = tokio::task::spawn_blocking(move || {
                     log_trace("AppState::fetch_railway_tracks - spawning blocking cache get task");
@@ -8342,15 +8157,13 @@ mod server {
                     Ok(Ok(opt)) => opt,
                     Ok(Err(e)) => {
                         log_error(&format!(
-                            "AppState::fetch_railway_tracks - cache get error: {}",
-                            e
+                            "AppState::fetch_railway_tracks - cache get error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e)));
                     }
                     Err(e) => {
                         log_error(&format!(
-                            "AppState::fetch_railway_tracks - task spawn error: {}",
-                            e
+                            "AppState::fetch_railway_tracks - task spawn error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e.to_string())));
                     }
@@ -8379,7 +8192,7 @@ mod server {
                 log_debug(
                     "AppState::fetch_railway_tracks - cache miss, fetching from Overpass API",
                 );
-                let tracks = match tokio::time::timeout(
+                let tracks = if let Ok(Ok(t)) = tokio::time::timeout(
                     std::time::Duration::from_secs(3),
                     self.overpass_client.fetch_railway_tracks(
                         bounds.min_lat,
@@ -8388,41 +8201,39 @@ mod server {
                         bounds.max_lon,
                     ),
                 )
-                .await
-                {
-                    Ok(Ok(t)) => {
-                        if t.is_empty() {
-                            log_warn("AppState::fetch_railway_tracks - Overpass API returned EMPTY track list! Falling back to embedded tracks.");
-                        } else {
-                            log_debug(&format!(
-                                "AppState::fetch_railway_tracks - Overpass returned {} tracks",
-                                t.len()
-                            ));
-                        }
-                        t
+                .await {
+                    if t.is_empty() {
+                        log_warn("AppState::fetch_railway_tracks - Overpass API returned EMPTY track list! Falling back to embedded tracks.");
+                    } else {
+                        log_debug(&format!(
+                            "AppState::fetch_railway_tracks - Overpass returned {} tracks",
+                            t.len()
+                        ));
                     }
-                    _ => {
-                        log_warn("Overpass API failed or timed out. Falling back to embedded tracks immediately.");
-                        let segments = embedded_rail_segments();
-                        segments
-                            .iter()
-                            .enumerate()
-                            .map(|(i, seg)| RailwayTrack {
-                                id: format!("embedded_{}", i),
-                                operator_name: seg.n.clone(),
-                                geometry: seg
-                                    .p
-                                    .iter()
-                                    .map(|&[lat, lon]| Coordinate::new(lat, lon))
-                                    .collect(),
-                                is_abandoned: false,
-                            })
-                            .collect()
-                    }
+                    t
+                } else {
+                    log_warn("Overpass API failed or timed out. Falling back to embedded tracks immediately.");
+                    let segments = embedded_rail_segments();
+                    segments
+                        .iter()
+                        .enumerate()
+                        .map(|(i, seg)| RailwayTrack {
+                            id: format!("embedded_{i}"),
+                            operator_name: seg.n.clone(),
+                            geometry: seg
+                                .p
+                                .iter()
+                                .map(|&[lat, lon]| Coordinate::new(lat, lon))
+                                .collect(),
+                            is_abandoned: false,
+                        })
+                        .collect()
                 };
 
                 // Fix #2: Only cache if we actually got tracks ? don't persist empty results
-                if !tracks.is_empty() {
+                if tracks.is_empty() {
+                    log_warn("AppState::fetch_railway_tracks - Empty dataset rejected. Skipped write operation to safeguard local cache.");
+                } else {
                     log_debug(&format!(
                         "AppState::fetch_railway_tracks - caching {} tracks ({} bytes)",
                         tracks.len(),
@@ -8430,7 +8241,7 @@ mod server {
                     ));
                     let cached = serde_json::to_string(&tracks)?;
                     let cache_clone = self.cache.clone();
-                    let cache_key_clone = cache_key.to_string();
+                    let cache_key_clone = cache_key.clone();
                     let cached_clone = cached.clone();
                     let put_res = tokio::task::spawn_blocking(move || {
                         log_trace(
@@ -8443,26 +8254,22 @@ mod server {
                     .await;
 
                     match put_res {
-                        Ok(Ok(_)) => {
-                            log_debug("AppState::fetch_railway_tracks - cache put successful")
+                        Ok(Ok(())) => {
+                            log_debug("AppState::fetch_railway_tracks - cache put successful");
                         }
                         Ok(Err(e)) => {
                             log_error(&format!(
-                                "AppState::fetch_railway_tracks - cache put error: {}",
-                                e
+                                "AppState::fetch_railway_tracks - cache put error: {e}"
                             ));
                             return Err(Box::new(std::io::Error::other(e)));
                         }
                         Err(e) => {
                             log_error(&format!(
-                                "AppState::fetch_railway_tracks - cache put task error: {}",
-                                e
+                                "AppState::fetch_railway_tracks - cache put task error: {e}"
                             ));
                             return Err(Box::new(std::io::Error::other(e.to_string())));
                         }
                     }
-                } else {
-                    log_warn("AppState::fetch_railway_tracks - Empty dataset rejected. Skipped write operation to safeguard local cache.");
                 }
 
                 log_info(&format!(
@@ -8484,8 +8291,7 @@ mod server {
                     bounds.min_lat, bounds.min_lon, bounds.max_lat, bounds.max_lon
                 );
                 log_debug(&format!(
-                    "AppState::fetch_residential_coordinates - cache_key: {}",
-                    cache_key
+                    "AppState::fetch_residential_coordinates - cache_key: {cache_key}"
                 ));
                 let cache_clone = self.cache.clone();
                 let cache_key_clone = cache_key.clone();
@@ -8500,15 +8306,13 @@ mod server {
                     Ok(Ok(opt)) => opt,
                     Ok(Err(e)) => {
                         log_error(&format!(
-                            "AppState::fetch_residential_coordinates - cache get error: {}",
-                            e
+                            "AppState::fetch_residential_coordinates - cache get error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e)));
                     }
                     Err(e) => {
                         log_error(&format!(
-                            "AppState::fetch_residential_coordinates - task spawn error: {}",
-                            e
+                            "AppState::fetch_residential_coordinates - task spawn error: {e}"
                         ));
                         return Err(Box::new(std::io::Error::other(e.to_string())));
                     }
@@ -8519,9 +8323,8 @@ mod server {
                     if let Ok(coords) = serde_json::from_str::<Vec<ResidentialArea>>(&cached) {
                         log_info(&format!("AppState::fetch_residential_coordinates - loaded {} residential coordinates from cache", coords.len()));
                         return Ok(coords);
-                    } else {
-                        log_warn_with_context("AppState::fetch_residential_coordinates - failed to deserialize cached coordinates", "cache");
                     }
+                    log_warn_with_context("AppState::fetch_residential_coordinates - failed to deserialize cached coordinates", "cache");
                 }
 
                 log_debug(
@@ -8543,8 +8346,7 @@ mod server {
                     Ok(d) => Some(d),
                     Err(e) => {
                         log_warn(&format!(
-                            "AppState::fetch_residential_coordinates - Overpass unavailable ({}); using embedded residential fallback",
-                            e
+                            "AppState::fetch_residential_coordinates - Overpass unavailable ({e}); using embedded residential fallback"
                         ));
                         None
                     }
@@ -8631,8 +8433,8 @@ mod server {
                             // Degenerate case: only 2 points, use midpoint
                             used_vertex_centroid += 1;
                             Some(Coordinate::new(
-                                (polygon[0].lat + polygon[1].lat) / 2.0,
-                                (polygon[0].lon + polygon[1].lon) / 2.0,
+                                f64::midpoint(polygon[0].lat, polygon[1].lat),
+                                f64::midpoint(polygon[0].lon, polygon[1].lon),
                             ))
                         } else if polygon.len() == 1 {
                             used_vertex_centroid += 1;
@@ -8664,8 +8466,7 @@ mod server {
                         }
                     }
                     log_info(&format!(
-                        "AppState::fetch_residential_coordinates - centroid stats: {} from top-level, {} from vertices, {} skipped (no geometry)",
-                        used_toplevel_centroid, used_vertex_centroid, skipped_no_geom
+                        "AppState::fetch_residential_coordinates - centroid stats: {used_toplevel_centroid} from top-level, {used_vertex_centroid} from vertices, {skipped_no_geom} skipped (no geometry)"
                     ));
                 }
                 log_debug(&format!(
@@ -8771,42 +8572,38 @@ mod server {
                 })
                 .await;
 
-                let overpass_stations = match get_res {
-                    Ok(Ok(Some(cached_str))) => {
-                        log_info(
-                            "AppState::initialize_routing_graph - using CACHED overpass stations",
-                        );
-                        serde_json::from_str(&cached_str).unwrap_or_else(|_| Vec::new())
-                    }
-                    _ => {
-                        log_info("AppState::initialize_routing_graph - fetching live Overpass stations (not cached)");
-                        let s = match self
-                            .overpass_client
-                            .fetch_stations(
-                                bounds.min_lat,
-                                bounds.min_lon,
-                                bounds.max_lat,
-                                bounds.max_lon,
-                            )
-                            .await
-                        {
-                            Ok(s) => s,
-                            Err(e) => {
-                                log_warn(&format!(
-                                    "AppState::initialize_routing_graph - fetch_stations error: {}",
-                                    e
-                                ));
-                                Vec::new()
-                            }
-                        };
-                        let s_json = serde_json::to_string(&s).unwrap_or_default();
-                        let cache_clone = self.cache.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            let _ = cache_clone.put(&cache_key, &s_json, 30 * 24 * 3600 * 1000);
-                        })
-                        .await;
-                        s
-                    }
+                let overpass_stations = if let Ok(Ok(Some(cached_str))) = get_res {
+                    log_info(
+                        "AppState::initialize_routing_graph - using CACHED overpass stations",
+                    );
+                    serde_json::from_str(&cached_str).unwrap_or_else(|_| Vec::new())
+                } else {
+                    log_info("AppState::initialize_routing_graph - fetching live Overpass stations (not cached)");
+                    let s = match self
+                        .overpass_client
+                        .fetch_stations(
+                            bounds.min_lat,
+                            bounds.min_lon,
+                            bounds.max_lat,
+                            bounds.max_lon,
+                        )
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            log_warn(&format!(
+                                "AppState::initialize_routing_graph - fetch_stations error: {e}"
+                            ));
+                            Vec::new()
+                        }
+                    };
+                    let s_json = serde_json::to_string(&s).unwrap_or_default();
+                    let cache_clone = self.cache.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = cache_clone.put(&cache_key, &s_json, 30 * 24 * 3600 * 1000);
+                    })
+                    .await;
+                    s
                 };
 
                 log_info(&format!("AppState::initialize_routing_graph - merging {} Overpass stations with existing stations list", overpass_stations.len()));
@@ -8821,8 +8618,7 @@ mod server {
                 station_index_engine.clear();
                 station_index_engine.build_station_index(&stations_clone);
                 log_debug(&format!(
-                    "AppState::initialize_routing_graph - built station index for {} stations",
-                    total_stations
+                    "AppState::initialize_routing_graph - built station index for {total_stations} stations"
                 ));
 
                 if let Some(first_station) = stations_clone.first() {
@@ -8841,8 +8637,7 @@ mod server {
                     ];
                     let inside = new_engine.point_in_polygon(&first_station.coord, &london_box);
                     log_debug(&format!(
-                        "AppState::initialize_routing_graph - first station inside London bounds: {}",
-                        inside
+                        "AppState::initialize_routing_graph - first station inside London bounds: {inside}"
                     ));
                 }
 
@@ -8855,8 +8650,7 @@ mod server {
 
                 log_debug("AppState::initialize_routing_graph - merging stations");
                 log_debug(&format!(
-                    "AppState::initialize_routing_graph - merging {} stations with threshold {:.6}",
-                    total_stations, STATION_MERGE_THRESHOLD
+                    "AppState::initialize_routing_graph - merging {total_stations} stations with threshold {STATION_MERGE_THRESHOLD:.6}"
                 ));
                 let merged_stations = self
                     .geometry_engine
@@ -8890,13 +8684,13 @@ mod server {
         }
     }
 
-    mod handlers {
-        use super::state::*;
-        use crate::logger::*;
+    pub mod handlers {
+        use super::state::AppState;
+        use crate::logger::{log_debug, log_warn, log_info, log_error, log_error_with_context, log_trace, get_all_logs};
         use crate::network::JourneyLeg;
-        use crate::network::*;
-        use crate::primitives::*;
-        use crate::routing::*;
+        use crate::network::{IdeWriteRequest, ApiResponse, JourneyPlanRequest, JourneyPlanResponse, RAIL_SPEED_M_PER_MIN, WALK_SPEED_M_PER_MIN, estimate_fare_gbp, co2_saved_vs_car, IsochroneRequest, IsochroneResponse, compute_isochrone, TransitScoreRequest, TransitScoreResponse, compute_transit_score, TunnelCostRequest, TunnelCostResponse, estimate_tunnel_cost, GeoJsonExportRequest, export_geojson, StationSearchRequest, StationSearchResult, fuzzy_score, NetworkStatsResponse, DemandGridRequest, DemandCell, LoadLineRequest, SaveLineRequest, SaveStationRequest, RouteRequest, TransitDesertsRequest, CoverageStatsResponse, AiAddStationRequest, AiAddStationResponse, AiLinkStationsRequest, enrich_arrivals_with_positions};
+        use crate::primitives::{TILE_SIZE, DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM, CATCHMENT_RADIUS, STATION_MERGE_THRESHOLD, Coordinate, embedded_residential, EmbeddedLinesFile, EMBEDDED_LINES_JSON, normalize_line_name, Station, RailSegment, embedded_rail_segments, ResidentialArea, StationArrival};
+        use crate::routing::{Line, RailwayTrack, ConstructionState, plan_infill_stations, snap_station_to_buildable_corridor, RoutingGraph, link_stations_tfl, handle_disruption};
         use crate::validate_bounds;
         use crate::validate_coordinate;
         use crate::validate_line_id;
@@ -8935,13 +8729,12 @@ mod server {
         /// Resolve a user-provided path against a workspace base directory, verifying
         /// that the canonical (fully resolved) path stays within the workspace.
         /// This prevents path-traversal attacks (e.g. `../../etc/passwd`).
-        pub(crate) fn verify_secure_path(
+        pub fn verify_secure_path(
             base_dir: &Path,
             user_path: &Path,
         ) -> Result<PathBuf, std::io::Error> {
             log_debug(&format!(
-                "verify_secure_path - base={:?}, target={:?}",
-                base_dir, user_path
+                "verify_secure_path - base={base_dir:?}, target={user_path:?}"
             ));
             let canonical_target = std::fs::canonicalize(user_path)?;
             let canonical_workspace = std::fs::canonicalize(base_dir)?;
@@ -8951,8 +8744,7 @@ mod server {
                 Ok(canonical_target)
             } else {
                 log_warn(&format!(
-                    "verify_secure_path - BLOCKED path traversal: {:?} escapes {:?}",
-                    canonical_target, canonical_workspace
+                    "verify_secure_path - BLOCKED path traversal: {canonical_target:?} escapes {canonical_workspace:?}"
                 ));
                 Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -8962,14 +8754,13 @@ mod server {
         }
 
         #[tracing::instrument(name = "write_to_ide_workspace", skip_all)]
-        pub(crate) async fn write_to_ide_workspace(
+        pub async fn write_to_ide_workspace(
             Json(payload): Json<IdeWriteRequest>,
         ) -> Json<ApiResponse<bool>> {
             // Security: sanitise user-controlled path before logging to prevent log injection
             let safe_path_display = payload.file_path.replace(['\n', '\r'], "?");
             log_info(&format!(
-                "IDE Workspace Overwrite Request received for: {}",
-                safe_path_display
+                "IDE Workspace Overwrite Request received for: {safe_path_display}"
             ));
 
             // Security: validate file path length to prevent path exhaustion attacks
@@ -9009,8 +8800,8 @@ mod server {
             let target_path = match verify_secure_path(workspace_root, user_path) {
                 Ok(p) => p,
                 Err(e) => {
-                    log_error(&format!("Path traversal blocked: {}", e));
-                    return Json(ApiResponse::error(format!("Security violation: {}", e)));
+                    log_error(&format!("Path traversal blocked: {e}"));
+                    return Json(ApiResponse::error(format!("Security violation: {e}")));
                 }
             };
 
@@ -9031,18 +8822,16 @@ mod server {
                     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
                     let backup_dir = Path::new("target").join("backups");
                     if let Err(e) = std::fs::create_dir_all(&backup_dir) {
-                        log_warn(&format!("Failed to create backup directory: {}", e));
+                        log_warn(&format!("Failed to create backup directory: {e}"));
                     } else {
-                        let filename = format!("main_{}.rs", timestamp);
+                        let filename = format!("main_{timestamp}.rs");
                         if let Err(e) = std::fs::write(backup_dir.join(&filename), &content) {
                             log_warn(&format!(
-                                "Failed to write timestamped backup to {}: {}",
-                                filename, e
+                                "Failed to write timestamped backup to {filename}: {e}"
                             ));
                         } else {
                             log_info(&format!(
-                                "Saved safety backup to target/backups/{}",
-                                filename
+                                "Saved safety backup to target/backups/{filename}"
                             ));
                         }
                     }
@@ -9063,12 +8852,12 @@ mod server {
             }
 
             match std::fs::write(&target_path, &payload.raw_content) {
-                Ok(_) => {
+                Ok(()) => {
                     log_info("IDE Workspace update committed successfully. Workspace reloading.");
                     Json(ApiResponse::success(true))
                 }
                 Err(e) => {
-                    log_error(&format!("Failed to write modifications to disk: {}", e));
+                    log_error(&format!("Failed to write modifications to disk: {e}"));
                     // Security: scrub OS error details (may reveal filesystem paths or permissions)
                     Json(ApiResponse::error(
                         "Failed to write file. Please check permissions and try again.".to_owned(),
@@ -9079,7 +8868,7 @@ mod server {
 
         /// Detect whether a User-Agent string belongs to a known web crawler or bot.
         /// Used by the root `/` route to serve rich static HTML for SEO embeds.
-        pub(crate) fn is_crawler_ua(ua: &str) -> bool {
+        pub fn is_crawler_ua(ua: &str) -> bool {
             let ua_lower = ua.to_lowercase();
             const BOTS: &[&str] = &[
                 "googlebot",
@@ -9118,7 +8907,7 @@ mod server {
         /// Includes the Leaflet map, all JavaScript (`MAP_INIT_JS`, `MAP_LOOP_JS`),
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
         /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
-        pub(crate) fn build_webapp_html() -> String {
+        pub fn build_webapp_html() -> String {
             let head = crate::ui::build_webview_head("");
             format!(
                 r#"<!DOCTYPE html>
@@ -9160,7 +8949,7 @@ mod server {
         /// Contains all Open Graph, Twitter Card, Schema.org, and canonical metadata
         /// so that Discord, Twitter/X, Slack, iMessage, `WhatsApp`, and search engines
         /// render a rich preview card without executing JavaScript.
-        pub(crate) fn build_crawler_html() -> String {
+        pub fn build_crawler_html() -> String {
             let mut html = String::with_capacity(8192);
             html.push_str("<!DOCTYPE html>\n<html lang=\"en-GB\">\n<head>\n");
             html.push_str("<meta charset=\"UTF-8\" />\n");
@@ -9213,7 +9002,7 @@ mod server {
         /// Detects crawler User-Agents and serves rich static HTML for embed previews.
         /// Normal browsers receive the full interactive map web application.
         #[tracing::instrument(name = "serve_root", skip_all)]
-        pub(crate) async fn serve_root(headers: axum::http::HeaderMap) -> axum::response::Response {
+        pub async fn serve_root(headers: axum::http::HeaderMap) -> axum::response::Response {
             let ua = headers
                 .get(axum::http::header::USER_AGENT)
                 .and_then(|v| v.to_str().ok())
@@ -9234,12 +9023,12 @@ mod server {
         /// Axum handler for the `/map` route - alternative entry point for the web app.
         /// Always serves the full interactive map, regardless of User-Agent.
         #[tracing::instrument(name = "serve_web_app", skip_all)]
-        pub(crate) async fn serve_web_app() -> axum::response::Html<String> {
+        pub async fn serve_web_app() -> axum::response::Html<String> {
             log_debug("Map route: serving interactive web app");
             axum::response::Html(build_webapp_html())
         }
         #[tracing::instrument(name = "get_config", skip_all)]
-        pub(crate) async fn get_config() -> Json<Value> {
+        pub async fn get_config() -> Json<Value> {
             log_info("GET /api/config called - returning configuration constants");
             Json(serde_json::json!({
                 "TILE_SIZE": TILE_SIZE,
@@ -9252,7 +9041,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_health", skip_all)]
-        pub(crate) async fn get_health() -> Json<ApiResponse<Value>> {
+        pub async fn get_health() -> Json<ApiResponse<Value>> {
             log_info("GET /api/health called - health probe");
             Json(ApiResponse::success(serde_json::json!({
                 "status": "ok",
@@ -9269,7 +9058,7 @@ mod server {
         // ============================================================================
 
         #[tracing::instrument(name = "journey_plan", skip_all)]
-        pub(crate) async fn journey_plan(
+        pub async fn journey_plan(
             State(state): State<AppState>,
             Json(req): Json<JourneyPlanRequest>,
         ) -> Json<ApiResponse<JourneyPlanResponse>> {
@@ -9321,12 +9110,9 @@ mod server {
                 let path = {
                     let start_node = routing.find_nearest_node(&from);
                     let end_node = routing.find_nearest_node(&to);
-                    match (start_node, end_node) {
-                        (Some(s), Some(e)) => routing.astar_kinematic(s, e, &live_loads, 5000),
-                        _ => {
-                            log_warn("POST /api/journey - could not find nearest nodes, falling back to basic find_path");
-                            routing.find_path(&from, &to)
-                        }
+                    if let (Some(s), Some(e)) = (start_node, end_node) { routing.astar_kinematic(s, e, &live_loads, 5000) } else {
+                        log_warn("POST /api/journey - could not find nearest nodes, falling back to basic find_path");
+                        routing.find_path(&from, &to)
                     }
                 };
                 if path.is_empty() {
@@ -9357,7 +9143,7 @@ mod server {
                     }
                 }
                 let mut zones_crossed: Vec<i32> = zones_seen.into_iter().collect();
-                zones_crossed.sort();
+                zones_crossed.sort_unstable();
 
                 // Find which line covers this route (nearest matching line)
                 let (line_name, line_color, line_id) = lines_arc
@@ -9411,15 +9197,14 @@ mod server {
 
                 let mut notes: Vec<String> = Vec::new();
                 if walk_to_start > 300.0 {
-                    notes.push(format!("Walk {:.0}m to nearest station", walk_to_start));
+                    notes.push(format!("Walk {walk_to_start:.0}m to nearest station"));
                 }
                 if walk_from_end > 300.0 {
                     notes.push(format!(
-                        "Walk {:.0}m from destination station",
-                        walk_from_end
+                        "Walk {walk_from_end:.0}m from destination station"
                     ));
                 }
-                notes.push(format!("Saves {:.2}kg CO₂ vs driving", co2));
+                notes.push(format!("Saves {co2:.2}kg CO₂ vs driving"));
 
                 // ── ROUTE UTILITY SCORE (Catchment Intersection) ─────────
                 // Count how many residential areas fall within 800m of this route.
@@ -9440,7 +9225,7 @@ mod server {
                     }
                     unique_served.len()
                 };
-                log_debug(&format!("POST /api/journey - route utility: {} residential areas within 800m", population_served));
+                log_debug(&format!("POST /api/journey - route utility: {population_served} residential areas within 800m"));
 
                 JourneyPlanResponse {
                     legs: vec![leg],
@@ -9473,7 +9258,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_isochrone", skip_all)]
-        pub(crate) async fn get_isochrone(
+        pub async fn get_isochrone(
             State(state): State<AppState>,
             Json(req): Json<IsochroneRequest>,
         ) -> Json<ApiResponse<IsochroneResponse>> {
@@ -9511,7 +9296,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_transit_score", skip_all)]
-        pub(crate) async fn get_transit_score(
+        pub async fn get_transit_score(
             State(state): State<AppState>,
             Json(req): Json<TransitScoreRequest>,
         ) -> Json<ApiResponse<TransitScoreResponse>> {
@@ -9542,7 +9327,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "estimate_cost", skip_all)]
-        pub(crate) async fn estimate_cost(
+        pub async fn estimate_cost(
             State(_state): State<AppState>,
             Json(req): Json<TunnelCostRequest>,
         ) -> Json<ApiResponse<TunnelCostResponse>> {
@@ -9559,7 +9344,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "export_network", skip_all)]
-        pub(crate) async fn export_network(
+        pub async fn export_network(
             State(state): State<AppState>,
             Json(req): Json<GeoJsonExportRequest>,
         ) -> axum::response::Response {
@@ -9593,7 +9378,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "search_stations", skip_all)]
-        pub(crate) async fn search_stations(
+        pub async fn search_stations(
             State(state): State<AppState>,
             Json(req): Json<StationSearchRequest>,
         ) -> Json<ApiResponse<Vec<StationSearchResult>>> {
@@ -9656,7 +9441,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_network_stats", skip_all)]
-        pub(crate) async fn get_network_stats(
+        pub async fn get_network_stats(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<NetworkStatsResponse>> {
             log_info("GET /api/network-stats called");
@@ -9728,12 +9513,12 @@ mod server {
             let edge_count: usize = routing.nodes.values().map(|n| n.neighbors.len()).sum();
 
             // Efficiency: ratio of interchanges to total stations, weighted
-            let efficiency = if !stations.is_empty() {
+            let efficiency = if stations.is_empty() {
+                0.0
+            } else {
                 let connectivity = interchange_count as f64 / stations.len() as f64;
                 let coverage = (total_track_km / 100.0).min(1.0);
-                ((connectivity * 0.5 + coverage * 0.5) * 100.0).min(100.0)
-            } else {
-                0.0
+                (connectivity.mul_add(0.5, coverage * 0.5) * 100.0).min(100.0)
             };
 
             let resp = NetworkStatsResponse {
@@ -9759,7 +9544,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_demand_grid", skip_all)]
-        pub(crate) async fn get_demand_grid(
+        pub async fn get_demand_grid(
             State(state): State<AppState>,
             Json(req): Json<DemandGridRequest>,
         ) -> Json<ApiResponse<Vec<DemandCell>>> {
@@ -9779,8 +9564,7 @@ mod server {
                 let lon_step = (bounds.max_lon - bounds.min_lon) / res as f64;
                 let total_cells = res * res;
                 log_debug(&format!(
-                    "POST /api/demand-grid - parallelising {} cells across Rayon threadpool",
-                    total_cells
+                    "POST /api/demand-grid - parallelising {total_cells} cells across Rayon threadpool"
                 ));
 
                 (0..total_cells)
@@ -9789,8 +9573,8 @@ mod server {
                         let row = idx / res;
                         let col = idx % res;
 
-                        let lat = bounds.min_lat + (row as f64 + 0.5) * lat_step;
-                        let lon = bounds.min_lon + (col as f64 + 0.5) * lon_step;
+                        let lat = (row as f64 + 0.5).mul_add(lat_step, bounds.min_lat);
+                        let lon = (col as f64 + 0.5).mul_add(lon_step, bounds.min_lon);
                         let coord = Coordinate::new(lat, lon);
 
                         let nearest_m = stations
@@ -9830,7 +9614,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_lines", skip_all)]
-        pub(crate) async fn get_lines(
+        pub async fn get_lines(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<Line>>> {
             let state_lines = state.lines.load();
@@ -9847,8 +9631,7 @@ mod server {
                     Ok(f) => f,
                     Err(e) => {
                         log_error(&format!(
-                            "get_lines - failed to parse embedded lines: {}",
-                            e
+                            "get_lines - failed to parse embedded lines: {e}"
                         ));
                         return Json(ApiResponse::success(Vec::new()));
                     }
@@ -9893,7 +9676,7 @@ mod server {
                     // straight-line cross-connections between distant rail fragments.
                     // The frontend uses sub_geometries for rendering; geometry is left empty.
                     Line {
-                        id: format!("embedded_{}", i),
+                        id: format!("embedded_{i}"),
                         name,
                         color,
                         stations: Vec::new(),
@@ -9911,7 +9694,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "load_line", skip_all)]
-        pub(crate) async fn load_line(
+        pub async fn load_line(
             State(state): State<AppState>,
             Json(req): Json<LoadLineRequest>,
         ) -> Json<ApiResponse<Line>> {
@@ -9960,7 +9743,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "save_line", skip_all)]
-        pub(crate) async fn save_line(
+        pub async fn save_line(
             State(state): State<AppState>,
             Json(req): Json<SaveLineRequest>,
         ) -> Json<ApiResponse<Line>> {
@@ -9991,7 +9774,7 @@ mod server {
             .map_err(|e| e.to_string());
 
             match save_result {
-                Ok(Ok(_)) => {
+                Ok(Ok(())) => {
                     log_debug("POST /api/lines/save - database save successful");
                     let mut lines = (**state.lines.load()).clone();
                     lines.push(req.line.clone());
@@ -10005,15 +9788,13 @@ mod server {
                 }
                 Ok(Err(e)) => {
                     log_error(&format!(
-                        "POST /api/lines/save failed - database error: {}",
-                        e
+                        "POST /api/lines/save failed - database error: {e}"
                     ));
                     Json(ApiResponse::error(e))
                 }
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/lines/save failed - thread error: {}",
-                        e
+                        "POST /api/lines/save failed - thread error: {e}"
                     ));
                     Json(ApiResponse::error(e))
                 }
@@ -10021,7 +9802,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_stations", skip_all)]
-        pub(crate) async fn get_stations(
+        pub async fn get_stations(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<Station>>> {
             log_info("GET /api/stations called");
@@ -10039,7 +9820,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_tracks", skip_all)]
-        pub(crate) async fn get_tracks(
+        pub async fn get_tracks(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<RailwayTrack>>> {
             log_info("GET /api/tracks called - syncing infrastructure tracks");
@@ -10054,7 +9835,7 @@ mod server {
         /// colour + National Rail coloured by operator). This is the offline-first
         /// basemap that guarantees the lines always render.
         #[tracing::instrument(name = "get_basemap_lines", skip_all)]
-        pub(crate) async fn get_basemap_lines(
+        pub async fn get_basemap_lines(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<RailSegment>>> {
             let mut segs = embedded_rail_segments().clone();
@@ -10207,7 +9988,7 @@ mod server {
 
         /// Fix #2: Manual "Refresh Tracks" endpoint to force a fresh Overpass query
         #[tracing::instrument(name = "refresh_tracks", skip_all)]
-        pub(crate) async fn refresh_tracks(
+        pub async fn refresh_tracks(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<RailwayTrack>>> {
             log_info(
@@ -10215,23 +9996,19 @@ mod server {
             );
 
             let cache = state.cache.clone();
-            let cache_clear = tokio::task::spawn_blocking(move || match cache.pool.get() {
-                Ok(conn) => conn.execute(
-                    "DELETE FROM api_cache WHERE key = 'railway_tracks_london'",
-                    [],
-                ),
-                _ => {
-                    log_error(
-                        "POST /api/tracks/refresh - failed to get DB connection for cache clear",
-                    );
-                    Err(rusqlite::Error::ExecuteReturnedResults)
-                }
+            let cache_clear = tokio::task::spawn_blocking(move || if let Ok(conn) = cache.pool.get() { conn.execute(
+                "DELETE FROM api_cache WHERE key = 'railway_tracks_london'",
+                [],
+            ) } else {
+                log_error(
+                    "POST /api/tracks/refresh - failed to get DB connection for cache clear",
+                );
+                Err(rusqlite::Error::ExecuteReturnedResults)
             })
             .await;
             if let Err(e) = cache_clear {
                 log_error(&format!(
-                    "POST /api/tracks/refresh - spawn_blocking JoinError clearing cache: {}",
-                    e
+                    "POST /api/tracks/refresh - spawn_blocking JoinError clearing cache: {e}"
                 ));
             }
 
@@ -10248,14 +10025,14 @@ mod server {
                     axum::Json(ApiResponse::success(tracks))
                 }
                 Err(e) => {
-                    log_error(&format!("POST /api/tracks/refresh failed: {}", e));
+                    log_error(&format!("POST /api/tracks/refresh failed: {e}"));
                     axum::Json(ApiResponse::<Vec<RailwayTrack>>::error(e.to_string()))
                 }
             }
         }
 
         #[tracing::instrument(name = "delete_line", skip_all)]
-        pub(crate) async fn delete_line(
+        pub async fn delete_line(
             State(state): State<AppState>,
             axum::extract::Path(id): axum::extract::Path<String>,
         ) -> impl axum::response::IntoResponse {
@@ -10264,8 +10041,7 @@ mod server {
             }
             let id_clone = id.clone();
             log_info(&format!(
-                "POST /api/lines/delete called for target custom line reference: {}",
-                id
+                "POST /api/lines/delete called for target custom line reference: {id}"
             ));
             let cache = state.cache.clone();
 
@@ -10276,16 +10052,13 @@ mod server {
             .await;
             match db_res {
                 Ok(Ok(rows)) => log_debug(&format!(
-                    "POST /api/lines/delete - DB removed {} rows for '{}'",
-                    rows, id_clone
+                    "POST /api/lines/delete - DB removed {rows} rows for '{id_clone}'"
                 )),
                 Ok(Err(e)) => log_error(&format!(
-                    "POST /api/lines/delete - DB error deleting '{}': {}",
-                    id_clone, e
+                    "POST /api/lines/delete - DB error deleting '{id_clone}': {e}"
                 )),
                 Err(e) => log_error(&format!(
-                    "POST /api/lines/delete - spawn_blocking JoinError for '{}': {}",
-                    id_clone, e
+                    "POST /api/lines/delete - spawn_blocking JoinError for '{id_clone}': {e}"
                 )),
             }
 
@@ -10295,18 +10068,17 @@ mod server {
             let after_count = current_lines.len();
             state.lines.store(Arc::new(current_lines));
             if before_count == after_count {
-                log_warn(&format!("POST /api/lines/delete - line '{}' NOT FOUND in current lines. No deletion occurred.", id_clone));
+                log_warn(&format!("POST /api/lines/delete - line '{id_clone}' NOT FOUND in current lines. No deletion occurred."));
             }
             log_info(&format!(
-                "POST /api/lines/delete completed - removed line '{}', lines {} -> {}",
-                id_clone, before_count, after_count
+                "POST /api/lines/delete completed - removed line '{id_clone}', lines {before_count} -> {after_count}"
             ));
 
             axum::Json(ApiResponse::success(true))
         }
 
         #[tracing::instrument(name = "save_station", skip_all)]
-        pub(crate) async fn save_station(
+        pub async fn save_station(
             State(state): State<AppState>,
             Json(req): Json<SaveStationRequest>,
         ) -> Json<ApiResponse<Station>> {
@@ -10347,7 +10119,7 @@ mod server {
             .map_err(|e| e.to_string());
 
             match save_result {
-                Ok(Ok(_)) => {
+                Ok(Ok(())) => {
                     log_debug("POST /api/stations/save - database save successful");
                     let mut stations = (**state.stations.load()).clone();
                     stations.push(req.station.clone());
@@ -10361,15 +10133,13 @@ mod server {
                 }
                 Ok(Err(e)) => {
                     log_error(&format!(
-                        "POST /api/stations/save failed - database error: {}",
-                        e
+                        "POST /api/stations/save failed - database error: {e}"
                     ));
                     Json(ApiResponse::error(e))
                 }
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/stations/save failed - thread error: {}",
-                        e
+                        "POST /api/stations/save failed - thread error: {e}"
                     ));
                     Json(ApiResponse::error(e))
                 }
@@ -10377,7 +10147,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "clear_ai_stations", skip_all)]
-        pub(crate) async fn clear_ai_stations(
+        pub async fn clear_ai_stations(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<bool>> {
             log_info("POST /api/stations/clear-ai called");
@@ -10400,30 +10170,25 @@ mod server {
             ));
             // Wipe the entire free_stations table ? it only contains user/AI-created stations
             let cache = state.cache.clone();
-            let db_clear = tokio::task::spawn_blocking(move || match cache.pool.get() {
-                Ok(conn) => conn.execute("DELETE FROM free_stations", ()),
-                _ => {
-                    log_error("POST /api/stations/clear - failed to get DB connection");
-                    Err(rusqlite::Error::ExecuteReturnedResults)
-                }
+            let db_clear = tokio::task::spawn_blocking(move || if let Ok(conn) = cache.pool.get() { conn.execute("DELETE FROM free_stations", ()) } else {
+                log_error("POST /api/stations/clear - failed to get DB connection");
+                Err(rusqlite::Error::ExecuteReturnedResults)
             })
             .await;
             match db_clear {
                 Ok(Ok(rows)) => log_debug(&format!(
-                    "POST /api/stations/clear - DB deleted {} free station rows",
-                    rows
+                    "POST /api/stations/clear - DB deleted {rows} free station rows"
                 )),
-                Ok(Err(e)) => log_error(&format!("POST /api/stations/clear - DB error: {}", e)),
+                Ok(Err(e)) => log_error(&format!("POST /api/stations/clear - DB error: {e}")),
                 Err(e) => log_error(&format!(
-                    "POST /api/stations/clear - spawn_blocking JoinError: {}",
-                    e
+                    "POST /api/stations/clear - spawn_blocking JoinError: {e}"
                 )),
             }
             Json(ApiResponse::success(true))
         }
 
         #[tracing::instrument(name = "get_construction_state", skip_all)]
-        pub(crate) async fn get_construction_state(
+        pub async fn get_construction_state(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<ConstructionState>> {
             log_info("GET /api/construction called");
@@ -10433,7 +10198,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "update_construction_state", skip_all)]
-        pub(crate) async fn update_construction_state(
+        pub async fn update_construction_state(
             State(state): State<AppState>,
             Json(new_state): Json<ConstructionState>,
         ) -> Json<ApiResponse<ConstructionState>> {
@@ -10444,7 +10209,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "find_route", skip_all)]
-        pub(crate) async fn find_route(
+        pub async fn find_route(
             State(state): State<AppState>,
             Json(req): Json<RouteRequest>,
         ) -> Json<ApiResponse<Vec<Coordinate>>> {
@@ -10481,7 +10246,7 @@ mod server {
                 log_warn("POST /api/route - start and end are essentially the same point (<1m)");
             }
             if route_distance > 500_000.0 {
-                log_warn(&format!("POST /api/route - very long route requested: {:.0}m (>500km). This may be a coordinate error.", route_distance));
+                log_warn(&format!("POST /api/route - very long route requested: {route_distance:.0}m (>500km). This may be a coordinate error."));
             }
             let path = routing.find_path(&req.start, &req.end);
             if path.is_empty() {
@@ -10535,7 +10300,7 @@ mod server {
         /// # → {"success":true,"data":{"42-99":1234,"99-42":987,...}}
         /// ```
         #[tracing::instrument(name = "simulate_congestion", skip_all)]
-        pub(crate) async fn simulate_congestion(
+        pub async fn simulate_congestion(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<HashMap<String, usize>>> {
             log_info("POST /api/simulate-congestion called - running Monte Carlo network load simulation");
@@ -10569,7 +10334,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_transit_deserts", skip_all)]
-        pub(crate) async fn get_transit_deserts(
+        pub async fn get_transit_deserts(
             State(state): State<AppState>,
             Json(req): Json<TransitDesertsRequest>,
         ) -> Json<ApiResponse<Vec<ResidentialArea>>> {
@@ -10612,18 +10377,17 @@ mod server {
             let lat_span = req.bounds.max_lat - req.bounds.min_lat;
             let lon_span = req.bounds.max_lon - req.bounds.min_lon;
             let padded_bounds = LondonBounds {
-                min_lat: req.bounds.min_lat - lat_span * 0.15,
-                max_lat: req.bounds.max_lat + lat_span * 0.15,
-                min_lon: req.bounds.min_lon - lon_span * 0.15,
-                max_lon: req.bounds.max_lon + lon_span * 0.15,
+                min_lat: lat_span.mul_add(-0.15, req.bounds.min_lat),
+                max_lat: lat_span.mul_add(0.15, req.bounds.max_lat),
+                min_lon: lon_span.mul_add(-0.15, req.bounds.min_lon),
+                max_lon: lon_span.mul_add(0.15, req.bounds.max_lon),
             };
 
             let res_areas = match state.fetch_residential_coordinates(&padded_bounds).await {
                 Ok(c) => c,
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/transit-deserts failed - error fetching coordinates: {}",
-                        e
+                        "POST /api/transit-deserts failed - error fetching coordinates: {e}"
                     ));
                     return Json(ApiResponse::error(e.to_string()));
                 }
@@ -10665,8 +10429,7 @@ mod server {
                 Ok(d) => d,
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/transit-deserts failed to spawn blocking task: {}",
-                        e
+                        "POST /api/transit-deserts failed to spawn blocking task: {e}"
                     ));
                     return Json(ApiResponse::error(e.to_string()));
                 }
@@ -10701,7 +10464,7 @@ mod server {
         /// Network coverage summary for the current viewport: how much residential land
         /// is within the catchment of an existing station versus stranded in a desert.
         #[tracing::instrument(name = "get_coverage_stats", skip_all)]
-        pub(crate) async fn get_coverage_stats(
+        pub async fn get_coverage_stats(
             State(state): State<AppState>,
             Json(req): Json<TransitDesertsRequest>,
         ) -> Json<ApiResponse<CoverageStatsResponse>> {
@@ -10719,8 +10482,7 @@ mod server {
                 Ok(c) => c,
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/coverage-stats failed - error fetching coordinates: {}",
-                        e
+                        "POST /api/coverage-stats failed - error fetching coordinates: {e}"
                     ));
                     return Json(ApiResponse::error(e.to_string()));
                 }
@@ -10748,8 +10510,7 @@ mod server {
                 Ok(d) => d,
                 Err(e) => {
                     log_error(&format!(
-                        "POST /api/coverage-stats failed to spawn blocking task: {}",
-                        e
+                        "POST /api/coverage-stats failed to spawn blocking task: {e}"
                     ));
                     return Json(ApiResponse::error(e.to_string()));
                 }
@@ -10762,8 +10523,7 @@ mod server {
                 100.0
             };
             log_info(&format!(
-                "POST /api/coverage-stats completed - {} residential, {} deserts, {:.1}% coverage",
-                total, desert_n, coverage_pct
+                "POST /api/coverage-stats completed - {total} residential, {desert_n} deserts, {coverage_pct:.1}% coverage"
             ));
             Json(ApiResponse::success(CoverageStatsResponse {
                 total_residential: total,
@@ -10875,7 +10635,7 @@ mod server {
                 }
 
                 // Respect Nominatim rate limit (1 request/sec max)
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
                 let count = name_counts.entry(base_name.clone()).or_insert(0);
                 *count += 1;
@@ -10895,7 +10655,7 @@ mod server {
                     base_name.clone()
                 };
 
-                let mut st = Station::new(format!("ai_station_{}_{}", ts, i), final_name, *coord);
+                let mut st = Station::new(format!("ai_station_{ts}_{i}"), final_name, *coord);
                 st.zone = 0; // zone 0 flags an AI-proposed station for the UI
                 st.lines = vec!["AI Plan".to_owned()];
                 new_stations.push(st);
@@ -10952,7 +10712,7 @@ mod server {
             Ok((deserts_after_len, coverage_gain))
         }
 
-        pub(crate) async fn ai_add_station(
+        pub async fn ai_add_station(
             State(state): State<AppState>,
             Json(req): Json<AiAddStationRequest>,
         ) -> Json<ApiResponse<AiAddStationResponse>> {
@@ -11026,7 +10786,7 @@ mod server {
         /// Transport-for-London layout philosophy, persist the resulting service lines,
         /// and return them.
         #[tracing::instrument(name = "ai_link_stations", skip_all)]
-        pub(crate) async fn ai_link_stations(
+        pub async fn ai_link_stations(
             State(state): State<AppState>,
             Json(req): Json<AiLinkStationsRequest>,
         ) -> Json<ApiResponse<Vec<Line>>> {
@@ -11048,14 +10808,7 @@ mod server {
             // Selection: explicit ids if provided, else every AI-proposed / free
             // station (those not anchored to an official line) so we connect the new
             // infrastructure rather than re-drawing the whole tube map.
-            let selected: Vec<Station> = if !req.station_ids.is_empty() {
-                let want: HashSet<&String> = req.station_ids.iter().collect();
-                all_stations
-                    .iter()
-                    .filter(|s| want.contains(&s.id))
-                    .cloned()
-                    .collect()
-            } else {
+            let selected: Vec<Station> = if req.station_ids.is_empty() {
                 let mut chosen: Vec<Station> = all_stations
                     .iter()
                     .filter(|s| {
@@ -11091,6 +10844,13 @@ mod server {
                     }
                 }
                 chosen
+            } else {
+                let want: HashSet<&String> = req.station_ids.iter().collect();
+                all_stations
+                    .iter()
+                    .filter(|s| want.contains(&s.id))
+                    .cloned()
+                    .collect()
             };
 
             if selected.len() < 2 {
@@ -11142,7 +10902,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_disruptions", skip_all)]
-        pub(crate) async fn get_disruptions(
+        pub async fn get_disruptions(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Value>> {
             log_info("GET /api/disruptions called - fetching TfL disruptions");
@@ -11154,8 +10914,7 @@ mod server {
                 Err(e) => {
                     log_error_with_context(
                         &format!(
-                            "GET /api/disruptions failed - error fetching disruptions: {}",
-                            e
+                            "GET /api/disruptions failed - error fetching disruptions: {e}"
                         ),
                         "api",
                     );
@@ -11170,7 +10929,7 @@ mod server {
             pub source: String,
         }
 
-        pub(crate) async fn fetch_london_weather() -> Option<(f64, String)> {
+        pub async fn fetch_london_weather() -> Option<(f64, String)> {
             let client = reqwest::Client::builder()
                 .user_agent("AlexsTube/1.0.0 (contact: point@gemini.com)")
                 .build()
@@ -11204,10 +10963,10 @@ mod server {
 
             match (temp1, temp2) {
                 (Some(t1), Some(t2)) => {
-                    let avg = (t1 + t2) / 2.0;
+                    let avg = f64::midpoint(t1, t2);
                     Some((
                         avg,
-                        format!("Avg of Open-Meteo ({:.1}°C) & Yr.no ({:.1}°C)", t1, t2),
+                        format!("Avg of Open-Meteo ({t1:.1}°C) & Yr.no ({t2:.1}°C)"),
                     ))
                 }
                 (Some(t), None) => Some((t, "Open-Meteo".to_owned())),
@@ -11216,7 +10975,7 @@ mod server {
             }
         }
 
-        pub(crate) async fn get_weather(
+        pub async fn get_weather(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Option<WeatherResponse>>> {
             let w = state.weather.load();
@@ -11229,7 +10988,7 @@ mod server {
 
         /// POST /api/disruptions/apply — apply a disruption by removing a line's nodes from the routing graph.
         #[tracing::instrument(name = "apply_disruption", skip_all)]
-        pub(crate) async fn apply_disruption(
+        pub async fn apply_disruption(
             State(state): State<AppState>,
             axum::extract::Path(line_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<String>> {
@@ -11237,23 +10996,22 @@ mod server {
                 return Json(ApiResponse::error(e.to_string()));
             }
             log_info(&format!(
-                "POST /api/disruptions/apply called for line '{}'",
-                line_id
+                "POST /api/disruptions/apply called for line '{line_id}'"
             ));
             match handle_disruption(&state, &line_id).await {
                 Ok(msg) => {
-                    log_info(&format!("apply_disruption - success: {}", msg));
+                    log_info(&format!("apply_disruption - success: {msg}"));
                     Json(ApiResponse::success(msg))
                 }
                 Err(e) => {
-                    log_error(&format!("apply_disruption - failed: {}", e));
+                    log_error(&format!("apply_disruption - failed: {e}"));
                     Json(ApiResponse::error(e.to_string()))
                 }
             }
         }
 
         /// GET /live-congestion — bincode-serialized edge loads for zero-copy IPC.
-        pub(crate) async fn get_live_congestion_bincode(
+        pub async fn get_live_congestion_bincode(
             State(state): State<AppState>,
         ) -> axum::response::Response {
             let loads = state.edge_loads.load();
@@ -11269,8 +11027,7 @@ mod server {
                     }),
                 Err(e) => {
                     log_error(&format!(
-                        "/live-congestion - bincode serialize failed: {}",
-                        e
+                        "/live-congestion - bincode serialize failed: {e}"
                     ));
                     axum::response::Response::builder()
                         .status(500)
@@ -11283,7 +11040,7 @@ mod server {
         }
 
         /// GET /network-state — bincode-serialized station/line data for zero-copy IPC.
-        pub(crate) async fn get_network_state_bincode(
+        pub async fn get_network_state_bincode(
             State(state): State<AppState>,
         ) -> axum::response::Response {
             let stations = state.stations.load();
@@ -11300,7 +11057,7 @@ mod server {
                             .unwrap()
                     }),
                 Err(e) => {
-                    log_error(&format!("/network-state - bincode serialize failed: {}", e));
+                    log_error(&format!("/network-state - bincode serialize failed: {e}"));
                     axum::response::Response::builder()
                         .status(500)
                         .body(axum::body::Body::from("internal error"))
@@ -11312,43 +11069,43 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_line_routes_inbound", skip_all)]
-        pub(crate) async fn get_line_routes_inbound(
+        pub async fn get_line_routes_inbound(
             State(state): State<AppState>,
             axum::extract::Path(line_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<Value>> {
-            log_info(&format!("GET /api/lines/inbound/{} called", line_id));
+            log_info(&format!("GET /api/lines/inbound/{line_id} called"));
             if let Err(e) = validate_line_id(&line_id) {
                 return Json(ApiResponse::error(e.to_string()));
             }
             match state.tfl_client.fetch_line_routes_inbound(&line_id).await {
                 Ok(data) => Json(ApiResponse::success(data)),
                 Err(e) => {
-                    log_error(&format!("GET /api/lines/inbound/{} failed: {}", line_id, e));
+                    log_error(&format!("GET /api/lines/inbound/{line_id} failed: {e}"));
                     Json(ApiResponse::error(e.to_string()))
                 }
             }
         }
 
         #[tracing::instrument(name = "get_stop_points", skip_all)]
-        pub(crate) async fn get_stop_points(
+        pub async fn get_stop_points(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Value>> {
             log_info("GET /api/stops called - fetching TfL stop points");
             match state.tfl_client.fetch_stop_points().await {
                 Ok(data) => Json(ApiResponse::success(data)),
                 Err(e) => {
-                    log_error(&format!("GET /api/stops failed: {}", e));
+                    log_error(&format!("GET /api/stops failed: {e}"));
                     Json(ApiResponse::error(e.to_string()))
                 }
             }
         }
 
         #[tracing::instrument(name = "get_arrivals", skip_all)]
-        pub(crate) async fn get_arrivals(
+        pub async fn get_arrivals(
             State(state): State<AppState>,
             axum::extract::Path(line_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<Value>> {
-            log_info(&format!("GET /api/arrivals/{} called", line_id));
+            log_info(&format!("GET /api/arrivals/{line_id} called"));
             if let Err(e) = validate_line_id(&line_id) {
                 return Json(ApiResponse::error(e.to_string()));
             }
@@ -11371,15 +11128,14 @@ mod server {
                         enrich_arrivals_with_positions(&data, &geom)
                     } else {
                         log_debug(&format!(
-                            "GET /api/arrivals/{} - no geometry available for interpolation",
-                            line_id
+                            "GET /api/arrivals/{line_id} - no geometry available for interpolation"
                         ));
                         data
                     };
                     Json(ApiResponse::success(enriched))
                 }
                 Err(e) => {
-                    log_error(&format!("GET /api/arrivals/{} failed: {}", line_id, e));
+                    log_error(&format!("GET /api/arrivals/{line_id} failed: {e}"));
                     Json(ApiResponse::error(e.to_string()))
                 }
             }
@@ -11390,14 +11146,14 @@ mod server {
         /// gets a `live_lat`/`live_lon` pair injected into its JSON properties.
 
         #[tracing::instrument(name = "get_station_arrivals", skip_all)]
-        pub(crate) async fn get_station_arrivals(
+        pub async fn get_station_arrivals(
             State(state): State<AppState>,
             axum::extract::Path(station_id): axum::extract::Path<String>,
         ) -> Json<ApiResponse<Vec<StationArrival>>> {
             if let Err(e) = validate_string_input(&station_id, 100, "station_id") {
                 return Json(ApiResponse::error(e.to_string()));
             }
-            log_info(&format!("GET /api/stations/{}/arrivals called", station_id));
+            log_info(&format!("GET /api/stations/{station_id}/arrivals called"));
 
             // Check if this is a known station to see if it is historical
             let is_historical = {
@@ -11465,8 +11221,7 @@ mod server {
                     }
                     Err(e) => {
                         log_error(&format!(
-                            "GET /api/stations/{}/arrivals failed: {}",
-                            station_id, e
+                            "GET /api/stations/{station_id}/arrivals failed: {e}"
                         ));
                         Json(ApiResponse::error(e.to_string()))
                     }
@@ -11486,8 +11241,8 @@ mod server {
                 for (idx, line) in station_lines.iter().enumerate() {
                     arrivals.push(StationArrival {
                         line_name: line.clone(),
-                        destination_name: format!("{} Terminus", line),
-                        time_to_station_min: (3.0 + idx as f64 * 5.0),
+                        destination_name: format!("{line} Terminus"),
+                        time_to_station_min: (idx as f64).mul_add(5.0, 3.0),
                         platform_name: format!("Platform {}", idx + 1),
                     });
                 }
@@ -11496,7 +11251,7 @@ mod server {
         }
 
         #[tracing::instrument(name = "get_logs", skip_all)]
-        pub(crate) async fn get_logs() -> Json<ApiResponse<String>> {
+        pub async fn get_logs() -> Json<ApiResponse<String>> {
             // Intentionally silent ? no log_info/log_debug here to avoid endless echo loop
             Json(ApiResponse::success(get_all_logs()))
         }
@@ -11508,30 +11263,30 @@ mod server {
         // ====================================================================
 
         /// GET /api/metrics — Prometheus-formatted performance metrics
-        pub(crate) async fn get_metrics() -> (axum::http::StatusCode, String) {
+        pub async fn get_metrics() -> (axum::http::StatusCode, String) {
             let prom = crate::metrics_collector::render_prometheus();
             (axum::http::StatusCode::OK, prom)
         }
 
         /// GET /api/occupancy — Live occupancy snapshot
-        pub(crate) async fn get_occupancy() -> Json<ApiResponse<crate::occupancy_engine::OccupancySnapshot>> {
+        pub async fn get_occupancy() -> Json<ApiResponse<crate::occupancy_engine::OccupancySnapshot>> {
             let snapshot = crate::occupancy_engine::OCCUPANCY.load().as_ref().clone();
             Json(ApiResponse::success(snapshot))
         }
 
         /// POST /api/disruptions/simulate — Monte Carlo disruption simulation
         #[derive(Debug, Deserialize)]
-        pub(crate) struct SimulateDisruptionRequest {
+        pub struct SimulateDisruptionRequest {
             pub(crate) line_id: String,
             #[serde(default = "default_severity")]
             pub(crate) severity: f64,
             #[serde(default = "default_iterations")]
             pub(crate) iterations: usize,
         }
-        fn default_severity() -> f64 { 0.5 }
-        fn default_iterations() -> usize { 100 }
+        const fn default_severity() -> f64 { 0.5 }
+        const fn default_iterations() -> usize { 100 }
 
-        pub(crate) async fn simulate_disruption_handler(
+        pub async fn simulate_disruption_handler(
             State(state): State<AppState>,
             Json(req): Json<SimulateDisruptionRequest>,
         ) -> Json<ApiResponse<crate::disruption_simulator::DisruptionSimulationResult>> {
@@ -11545,7 +11300,7 @@ mod server {
         }
 
         /// GET /api/forecast — Demand forecast for all stations
-        pub(crate) async fn get_demand_forecast(
+        pub async fn get_demand_forecast(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<crate::demand_forecaster::StationForecast>>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11555,14 +11310,14 @@ mod server {
 
         /// GET /api/pois — Query POIs near a location
         #[derive(Debug, Deserialize)]
-        pub(crate) struct PoiQuery {
+        pub struct PoiQuery {
             pub(crate) lat: Option<f64>,
             pub(crate) lon: Option<f64>,
             pub(crate) radius_m: Option<f64>,
             pub(crate) category: Option<String>,
             pub(crate) station_id: Option<String>,
         }
-        pub(crate) async fn get_pois(
+        pub async fn get_pois(
             Query(query): Query<PoiQuery>,
         ) -> Json<ApiResponse<Vec<crate::poi_database::PointOfInterest>>> {
             let pois = if let Some(st_id) = &query.station_id {
@@ -11578,17 +11333,17 @@ mod server {
         }
 
         /// GET /api/pois/categories — List all POI categories
-        pub(crate) async fn get_poi_categories() -> Json<ApiResponse<Vec<String>>> {
+        pub async fn get_poi_categories() -> Json<ApiResponse<Vec<String>>> {
             Json(ApiResponse::success(crate::poi_database::get_poi_categories()))
         }
 
         /// GET /api/accessibility — All stations accessibility data
-        pub(crate) async fn get_accessibility_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::StationAccessibility>>> {
+        pub async fn get_accessibility_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::StationAccessibility>>> {
             Json(ApiResponse::success(crate::accessibility_db::get_all_accessibility()))
         }
 
         /// GET /api/accessibility/{id} — Single station accessibility
-        pub(crate) async fn get_station_accessibility(
+        pub async fn get_station_accessibility(
             AxumPath(id): AxumPath<String>,
         ) -> Json<ApiResponse<crate::accessibility_db::StationAccessibility>> {
             match crate::accessibility_db::get_accessibility(&id) {
@@ -11599,7 +11354,7 @@ mod server {
 
         /// POST /api/share — Share a route
         #[derive(Debug, Deserialize)]
-        pub(crate) struct ShareRouteRequest {
+        pub struct ShareRouteRequest {
             pub(crate) from_station: String,
             pub(crate) to_station: String,
             #[serde(default = "default_mode")]
@@ -11607,7 +11362,7 @@ mod server {
         }
         fn default_mode() -> String { "fastest".into() }
 
-        pub(crate) async fn share_route_handler(
+        pub async fn share_route_handler(
             Json(req): Json<ShareRouteRequest>,
         ) -> Json<ApiResponse<String>> {
             let code = crate::social_sharing::share_route(&req.from_station, &req.to_station, &req.mode);
@@ -11615,7 +11370,7 @@ mod server {
         }
 
         /// GET /api/share/{code} — Get a shared route
-        pub(crate) async fn get_shared_route_handler(
+        pub async fn get_shared_route_handler(
             AxumPath(code): AxumPath<String>,
         ) -> Json<ApiResponse<crate::social_sharing::SharedRoute>> {
             match crate::social_sharing::get_shared_route(&code) {
@@ -11625,7 +11380,7 @@ mod server {
         }
 
         /// GET /api/export/{format} — Export network in json/graphml/gtfs
-        pub(crate) async fn export_network_handler(
+        pub async fn export_network_handler(
             State(state): State<AppState>,
             AxumPath(format): AxumPath<String>,
         ) -> Json<ApiResponse<crate::data_exporter::ExportResult>> {
@@ -11641,21 +11396,21 @@ mod server {
         }
 
         /// GET /api/city — Current city info
-        pub(crate) async fn get_city_info() -> Json<ApiResponse<crate::city_config::CityDefinition>> {
+        pub async fn get_city_info() -> Json<ApiResponse<crate::city_config::CityDefinition>> {
             Json(ApiResponse::success(crate::city_config::current_city()))
         }
 
         /// GET /api/cities — List all cities
-        pub(crate) async fn list_cities() -> Json<ApiResponse<Vec<crate::city_config::CityDefinition>>> {
+        pub async fn list_cities() -> Json<ApiResponse<Vec<crate::city_config::CityDefinition>>> {
             Json(ApiResponse::success(crate::city_config::CITIES.clone()))
         }
 
         /// POST /api/city/set — Switch city
         #[derive(Debug, Deserialize)]
-        pub(crate) struct SetCityRequest {
+        pub struct SetCityRequest {
             pub(crate) city_id: String,
         }
-        pub(crate) async fn set_city_handler(
+        pub async fn set_city_handler(
             Json(req): Json<SetCityRequest>,
         ) -> Json<ApiResponse<String>> {
             if crate::city_config::set_city(&req.city_id) {
@@ -11667,10 +11422,10 @@ mod server {
 
         /// POST /api/lang — Set language
         #[derive(Debug, Deserialize)]
-        pub(crate) struct SetLanguageRequest {
+        pub struct SetLanguageRequest {
             pub(crate) lang: String,
         }
-        pub(crate) async fn set_language_handler(
+        pub async fn set_language_handler(
             Json(req): Json<SetLanguageRequest>,
         ) -> Json<ApiResponse<String>> {
             if crate::i18n::SUPPORTED_LANGUAGES.contains(&req.lang.as_str()) {
@@ -11682,7 +11437,7 @@ mod server {
         }
 
         /// GET /api/translations — Get all translations for current language
-        pub(crate) async fn get_translations() -> Json<ApiResponse<std::collections::HashMap<String, String>>> {
+        pub async fn get_translations() -> Json<ApiResponse<std::collections::HashMap<String, String>>> {
             use crate::i18n::SUPPORTED_LANGUAGES;
             let lang = crate::i18n::current_lang();
             let _lang_idx = SUPPORTED_LANGUAGES.iter().position(|l| **l == lang).unwrap_or(0);
@@ -11699,7 +11454,7 @@ mod server {
         }
 
         /// GET /api/reports — Citizen reports
-        pub(crate) async fn get_citizen_reports_handler(
+        pub async fn get_citizen_reports_handler(
             Query(query): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::citizen_reports::CitizenReport>>> {
             let include_resolved = query.get("include_resolved").is_some_and(|v| v == "true");
@@ -11707,7 +11462,7 @@ mod server {
         }
 
         /// POST /api/reports — Submit a citizen report
-        pub(crate) async fn submit_citizen_report_handler(
+        pub async fn submit_citizen_report_handler(
             Json(report): Json<crate::citizen_reports::CitizenReport>,
         ) -> Json<ApiResponse<String>> {
             let id = crate::citizen_reports::submit_report(
@@ -11722,26 +11477,26 @@ mod server {
         }
 
         /// POST /api/reports/{id}/upvote
-        pub(crate) async fn upvote_report_handler(
+        pub async fn upvote_report_handler(
             AxumPath(id): AxumPath<String>,
         ) -> Json<ApiResponse<bool>> {
             Json(ApiResponse::success(crate::citizen_reports::upvote_report(&id)))
         }
 
         /// GET /api/alerts — Unread smart alerts
-        pub(crate) async fn get_alerts_handler() -> Json<ApiResponse<Vec<crate::smart_alerts::AlertEvent>>> {
+        pub async fn get_alerts_handler() -> Json<ApiResponse<Vec<crate::smart_alerts::AlertEvent>>> {
             Json(ApiResponse::success(crate::smart_alerts::get_unread_alerts()))
         }
 
         /// POST /api/alerts/{id}/read — Mark alert as read
-        pub(crate) async fn mark_alert_read_handler(
+        pub async fn mark_alert_read_handler(
             AxumPath(id): AxumPath<String>,
         ) -> Json<ApiResponse<bool>> {
             Json(ApiResponse::success(crate::smart_alerts::mark_read(&id)))
         }
 
         /// GET /api/resilience — Network resilience scores
-        pub(crate) async fn get_network_resilience_handler(
+        pub async fn get_network_resilience_handler(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<crate::network_resilience::ResilienceScore>>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11752,11 +11507,11 @@ mod server {
 
         /// GET /api/fare — Fare estimate between two stations
         #[derive(Debug, Deserialize)]
-        pub(crate) struct FareRequest {
+        pub struct FareRequest {
             pub(crate) from_id: String,
             pub(crate) to_id: String,
         }
-        pub(crate) async fn estimate_fare_handler(
+        pub async fn estimate_fare_handler(
             State(state): State<AppState>,
             Query(query): Query<FareRequest>,
         ) -> Json<ApiResponse<crate::fare_calculator::FareEstimate>> {
@@ -11766,7 +11521,7 @@ mod server {
         }
 
         /// GET /api/popularity — Station popularity heatmap
-        pub(crate) async fn get_station_popularity_handler(
+        pub async fn get_station_popularity_handler(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<crate::station_popularity::StationPopularity>>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11775,7 +11530,7 @@ mod server {
         }
 
         /// GET /api/reliability — Journey time reliability
-        pub(crate) async fn get_journey_reliability_handler(
+        pub async fn get_journey_reliability_handler(
             State(state): State<AppState>,
             Query(query): Query<FareRequest>,
         ) -> Json<ApiResponse<crate::journey_reliability::JourneyReliability>> {
@@ -11789,11 +11544,11 @@ mod server {
 
         /// GET /api/carbon — Carbon footprint for a journey
         #[derive(Debug, Deserialize)]
-        pub(crate) struct CarbonRequest {
+        pub struct CarbonRequest {
             pub(crate) legs_json: Option<String>,
             pub(crate) walking_km: Option<f64>,
         }
-        pub(crate) async fn get_carbon_estimate(
+        pub async fn get_carbon_estimate(
             Query(query): Query<CarbonRequest>,
         ) -> Json<ApiResponse<crate::carbon_estimator::CarbonBreakdown>> {
             let legs = query.legs_json.as_deref()
@@ -11805,7 +11560,7 @@ mod server {
         }
 
         /// POST /api/occupancy/tick — Manually tick occupancy engine (for testing)
-        pub(crate) async fn tick_occupancy_handler(
+        pub async fn tick_occupancy_handler(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11816,7 +11571,7 @@ mod server {
         }
 
         /// POST /api/forecast/seed — Seed synthetic demand data
-        pub(crate) async fn seed_forecast_handler(
+        pub async fn seed_forecast_handler(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11830,7 +11585,7 @@ mod server {
 
         /// POST /api/journey/multimodal — Multi-modal journey planning
         #[derive(Debug, Deserialize)]
-        pub(crate) struct MultiModalRequest {
+        pub struct MultiModalRequest {
             pub(crate) from_lat: f64,
             pub(crate) from_lon: f64,
             pub(crate) to_lat: f64,
@@ -11840,9 +11595,9 @@ mod server {
             #[serde(default = "default_max_walk")]
             pub(crate) max_walk_km: f64,
         }
-        fn default_max_walk() -> f64 { 2.0 }
+        const fn default_max_walk() -> f64 { 2.0 }
 
-        pub(crate) async fn plan_multi_modal_handler(
+        pub async fn plan_multi_modal_handler(
             State(state): State<AppState>,
             Json(req): Json<MultiModalRequest>,
         ) -> Json<ApiResponse<crate::multi_modal_router::MultiModalJourney>> {
@@ -11880,7 +11635,7 @@ mod server {
         }
 
         /// GET /api/journey/compare — Compare modes for a journey
-        pub(crate) async fn compare_modes_handler(
+        pub async fn compare_modes_handler(
             State(state): State<AppState>,
             Json(req): Json<MultiModalRequest>,
         ) -> Json<ApiResponse<Vec<crate::multi_modal_router::MultiModalJourney>>> {
@@ -11911,13 +11666,13 @@ mod server {
         }
 
         /// GET /api/realtime/vehicles — Live vehicle positions
-        pub(crate) async fn get_realtime_vehicles() -> Json<ApiResponse<Vec<crate::realtime_integration::VehiclePosition>>> {
+        pub async fn get_realtime_vehicles() -> Json<ApiResponse<Vec<crate::realtime_integration::VehiclePosition>>> {
             let vehicles = crate::realtime_integration::RT_VEHICLES.lock().unwrap().clone();
             Json(ApiResponse::success(vehicles))
         }
 
         /// GET /`api/realtime/arrivals/{station_id`} — Real-time arrival predictions
-        pub(crate) async fn get_realtime_arrivals(
+        pub async fn get_realtime_arrivals(
             State(state): State<AppState>,
             AxumPath(station_id): AxumPath<String>,
         ) -> Json<ApiResponse<Vec<crate::realtime_integration::RTPrediction>>> {
@@ -11927,7 +11682,7 @@ mod server {
         }
 
         /// POST /api/realtime/tick — Trigger realtime simulation tick
-        pub(crate) async fn tick_realtime_handler(
+        pub async fn tick_realtime_handler(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let lines = state.lines.load().as_ref().clone();
@@ -11938,7 +11693,7 @@ mod server {
         // ========================================================================
         // 3D WebGL Scene
         // ========================================================================
-        pub(crate) async fn get_webgl_scene(
+        pub async fn get_webgl_scene(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<crate::webgl_visualization::WebGLScene>> {
             let stations = state.stations.load().as_ref().clone();
@@ -11950,7 +11705,7 @@ mod server {
         // ========================================================================
         // Offline Mode
         // ========================================================================
-        pub(crate) async fn set_offline_mode_handler(
+        pub async fn set_offline_mode_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let enabled = params.get("enabled").is_some_and(|s| s == "true" || s == "1");
@@ -11958,12 +11713,12 @@ mod server {
             Json(ApiResponse::success(format!("Offline mode {}", if enabled { "enabled" } else { "disabled" })))
         }
 
-        pub(crate) async fn get_offline_cache_stats() -> Json<ApiResponse<(usize, usize)>> {
+        pub async fn get_offline_cache_stats() -> Json<ApiResponse<(usize, usize)>> {
             let stats = crate::offline_mode::cache_stats();
             Json(ApiResponse::success(stats))
         }
 
-        pub(crate) async fn clear_offline_cache() -> Json<ApiResponse<String>> {
+        pub async fn clear_offline_cache() -> Json<ApiResponse<String>> {
             crate::offline_mode::clear_cache();
             Json(ApiResponse::success("Cache cleared".into()))
         }
@@ -11971,14 +11726,14 @@ mod server {
         // ========================================================================
         // On-the-Fly Drawing
         // ========================================================================
-        pub(crate) async fn start_drawing_handler(
+        pub async fn start_drawing_handler(
             State(_state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let id = crate::on_the_fly_drawing::start_drawing("New Line", "#00BFFF");
             Json(ApiResponse::success(id))
         }
 
-        pub(crate) async fn add_drawing_point(
+        pub async fn add_drawing_point(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
@@ -12004,7 +11759,7 @@ mod server {
             }
         }
 
-        pub(crate) async fn finalize_drawing_handler(
+        pub async fn finalize_drawing_handler(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
@@ -12021,18 +11776,18 @@ mod server {
                     let mut lines = state.lines.load().as_ref().clone();
                     lines.push(line);
                     state.lines.store(Arc::new(lines));
-                    Json(ApiResponse::success(format!("Line {} created", line_id)))
+                    Json(ApiResponse::success(format!("Line {line_id} created")))
                 }
                 None => Json(ApiResponse::error("Failed to finalize line")),
             }
         }
 
-        pub(crate) async fn list_drawing_sessions() -> Json<ApiResponse<Vec<crate::on_the_fly_drawing::DrawingSession>>> {
+        pub async fn list_drawing_sessions() -> Json<ApiResponse<Vec<crate::on_the_fly_drawing::DrawingSession>>> {
             let sessions = crate::on_the_fly_drawing::list_sessions();
             Json(ApiResponse::success(sessions))
         }
 
-        pub(crate) async fn delete_drawing_session(
+        pub async fn delete_drawing_session(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let session_id = match params.get("session_id") {
@@ -12040,7 +11795,7 @@ mod server {
                 None => return Json(ApiResponse::error("Missing session_id")),
             };
             if crate::on_the_fly_drawing::delete_session(session_id) {
-                Json(ApiResponse::success(format!("Session {} deleted", session_id)))
+                Json(ApiResponse::success(format!("Session {session_id} deleted")))
             } else {
                 Json(ApiResponse::error("Session not found"))
             }
@@ -12049,7 +11804,7 @@ mod server {
         // ========================================================================
         // Weather
         // ========================================================================
-        pub(crate) async fn get_weather_forecast(
+        pub async fn get_weather_forecast(
             State(_state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let weather = crate::weather_integration::WEATHER_STATE.lock().unwrap().clone();
@@ -12059,7 +11814,7 @@ mod server {
             }
         }
 
-        pub(crate) async fn fetch_weather_handler(
+        pub async fn fetch_weather_handler(
             State(_state): State<AppState>,
         ) -> Json<ApiResponse<String>> {
             let api_key = std::env::var("OPENWEATHER_API_KEY").unwrap_or_else(|_| "demo".into());
@@ -12070,7 +11825,7 @@ mod server {
             }
         }
 
-        pub(crate) async fn get_weather_advisory() -> Json<ApiResponse<String>> {
+        pub async fn get_weather_advisory() -> Json<ApiResponse<String>> {
             let advisory = crate::weather_integration::weather_advisory().unwrap_or_else(|| "No advisory".into());
             Json(ApiResponse::success(advisory))
         }
@@ -12078,16 +11833,16 @@ mod server {
         // ========================================================================
         // Historical Archive
         // ========================================================================
-        pub(crate) async fn get_timeline() -> Json<ApiResponse<Vec<crate::historical_archive::HistoricalEvent>>> {
-            use crate::historical_archive::*;
+        pub async fn get_timeline() -> Json<ApiResponse<Vec<crate::historical_archive::HistoricalEvent>>> {
+            use crate::historical_archive::get_timeline;
             let events = get_timeline();
             Json(ApiResponse::success(events.into_iter().cloned().collect()))
         }
 
-        pub(crate) async fn get_history_by_year_handler(
+        pub async fn get_history_by_year_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::historical_archive::HistoricalEvent>>> {
-            use crate::historical_archive::*;
+            use crate::historical_archive::get_history_by_year;
             let year: i32 = params.get("year").and_then(|v| v.parse().ok()).unwrap_or(1863);
             let events = get_history_by_year(year);
             Json(ApiResponse::success(events.into_iter().cloned().collect()))
@@ -12096,7 +11851,7 @@ mod server {
         // ========================================================================
         // Deep Analytics
         // ========================================================================
-        pub(crate) async fn run_analytics_handler(
+        pub async fn run_analytics_handler(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<crate::deep_analytics::AnalyticsResult>> {
@@ -12115,12 +11870,12 @@ mod server {
         // ========================================================================
         // ML Predictor
         // ========================================================================
-        pub(crate) async fn get_delay_predictions(
+        pub async fn get_delay_predictions(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<crate::ml_predictor::DelayPrediction>>> {
             let lines = state.lines.load().as_ref().clone();
             let weather = state.weather.load();
-            let (temp, _source) = weather.as_ref().as_ref().cloned().unwrap_or((15.0, "default".to_owned()));
+            let (temp, _source) = weather.as_ref().clone().unwrap_or((15.0, "default".to_owned()));
             let predictions = crate::ml_predictor::predict_all_lines(&lines, Some(temp), None, None);
             Json(ApiResponse::success(predictions))
         }
@@ -12128,7 +11883,7 @@ mod server {
         // ========================================================================
         // Scenario Planner
         // ========================================================================
-        pub(crate) async fn evaluate_scenario_handler(
+        pub async fn evaluate_scenario_handler(
             State(state): State<AppState>,
             Json(scenario): Json<crate::scenario_planner::ScenarioDefinition>,
         ) -> Json<ApiResponse<crate::scenario_planner::ScenarioImpact>> {
@@ -12141,7 +11896,7 @@ mod server {
         // ========================================================================
         // Accessible Route Planner
         // ========================================================================
-        pub(crate) async fn plan_accessible_route_handler(
+        pub async fn plan_accessible_route_handler(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<crate::accessibility_route_planner::AccessibleRoute>> {
@@ -12159,35 +11914,32 @@ mod server {
         // ========================================================================
         // TfL Live Integration
         // ========================================================================
-        pub(crate) async fn get_tfl_status(
+        pub async fn get_tfl_status(
             State(state): State<AppState>,
         ) -> Json<ApiResponse<Vec<crate::tfl_live_integration::TfLLineStatus>>> {
             let api_key = std::env::var("TFL_API_KEY").unwrap_or_else(|_| "demo".into());
             let lines = state.lines.load().as_ref().clone();
-            match crate::tfl_live_integration::fetch_line_status(&api_key).await {
-                Ok(status) => Json(ApiResponse::success(status)),
-                Err(_) => {
-                    let synthetic = crate::tfl_live_integration::synthetic_line_status(&lines);
-                    Json(ApiResponse::success(synthetic))
-                }
+            if let Ok(status) = crate::tfl_live_integration::fetch_line_status(&api_key).await { Json(ApiResponse::success(status)) } else {
+                let synthetic = crate::tfl_live_integration::synthetic_line_status(&lines);
+                Json(ApiResponse::success(synthetic))
             }
         }
 
-        pub(crate) async fn get_tfl_arrivals(
+        pub async fn get_tfl_arrivals(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::tfl_live_integration::TfLArrivalPrediction>>> {
             let station_id = params.get("station_id").cloned().unwrap_or_default();
             let api_key = std::env::var("TFL_API_KEY").unwrap_or_else(|_| "demo".into());
             match crate::tfl_live_integration::fetch_arrivals(&station_id, &api_key).await {
                 Ok(arrivals) => Json(ApiResponse::success(arrivals)),
-                Err(e) => Json(ApiResponse::error(format!("TfL error: {}", e))),
+                Err(e) => Json(ApiResponse::error(format!("TfL error: {e}"))),
             }
         }
 
         // ========================================================================
         // Eco Routing
         // ========================================================================
-        pub(crate) async fn plan_eco_route_handler(
+        pub async fn plan_eco_route_handler(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<crate::eco_routing::EcoRoute>> {
@@ -12204,7 +11956,7 @@ mod server {
         // ========================================================================
         // Crowd Sourcing
         // ========================================================================
-        pub(crate) async fn submit_contribution_handler(
+        pub async fn submit_contribution_handler(
             Json(contrib): Json<crate::crowd_sourcing::Contribution>,
         ) -> Json<ApiResponse<String>> {
             let id = crate::crowd_sourcing::submit_contribution(
@@ -12218,7 +11970,7 @@ mod server {
             Json(ApiResponse::success(id))
         }
 
-        pub(crate) async fn get_contributions_handler(
+        pub async fn get_contributions_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::crowd_sourcing::Contribution>>> {
             let status = params.get("status").map(String::as_str);
@@ -12226,13 +11978,13 @@ mod server {
             Json(ApiResponse::success(contribs))
         }
 
-        pub(crate) async fn vote_contribution_handler(
+        pub async fn vote_contribution_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let id = params.get("id").cloned().unwrap_or_default();
             let approve = params.get("approve").is_some_and(|v| v == "true");
             if crate::crowd_sourcing::vote_contribution(&id, approve) {
-                Json(ApiResponse::success(format!("Voted on {}", id)))
+                Json(ApiResponse::success(format!("Voted on {id}")))
             } else {
                 Json(ApiResponse::error("Contribution not found"))
             }
@@ -12241,7 +11993,7 @@ mod server {
         // ========================================================================
         // Parking
         // ========================================================================
-        pub(crate) async fn get_parking_handler(
+        pub async fn get_parking_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::parking_integration::ParkingFacility>>> {
             let station_id = params.get("station_id").cloned().unwrap_or_default();
@@ -12249,7 +12001,7 @@ mod server {
             Json(ApiResponse::success(facilities))
         }
 
-        pub(crate) async fn get_parking_by_type_handler(
+        pub async fn get_parking_by_type_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::parking_integration::ParkingFacility>>> {
             let facility_type = params.get("type").cloned().unwrap_or_else(|| "car".into());
@@ -12257,7 +12009,7 @@ mod server {
             Json(ApiResponse::success(facilities))
         }
 
-        pub(crate) async fn tick_parking_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_parking_handler() -> Json<ApiResponse<String>> {
             crate::parking_integration::tick_parking();
             Json(ApiResponse::success("Parking ticked".into()))
         }
@@ -12265,12 +12017,12 @@ mod server {
         // ========================================================================
         // Cycle Network
         // ========================================================================
-        pub(crate) async fn get_cycle_routes() -> Json<ApiResponse<Vec<crate::cycle_network::CycleRoute>>> {
+        pub async fn get_cycle_routes() -> Json<ApiResponse<Vec<crate::cycle_network::CycleRoute>>> {
             let routes = crate::cycle_network::CYCLE_ROUTES.clone();
             Json(ApiResponse::success(routes))
         }
 
-        pub(crate) async fn get_docking_stations(
+        pub async fn get_docking_stations(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::cycle_network::DockingStation>>> {
             let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
@@ -12280,13 +12032,13 @@ mod server {
             Json(ApiResponse::success(stations))
         }
 
-        pub(crate) async fn tick_docking_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_docking_handler() -> Json<ApiResponse<String>> {
             crate::cycle_network::tick_docking();
             Json(ApiResponse::success("Docking ticked".into()))
         }
 
         // === MaaS (Mobility as a Service) handlers ===
-        pub(crate) async fn get_maas_handler(
+        pub async fn get_maas_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::mobility_service::MaaSProvider>>> {
             let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
@@ -12297,13 +12049,13 @@ mod server {
             Json(ApiResponse::success(providers))
         }
 
-        pub(crate) async fn tick_maas_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_maas_handler() -> Json<ApiResponse<String>> {
             crate::mobility_service::tick_maas();
             Json(ApiResponse::success("MaaS ticked".into()))
         }
 
         // === Noise monitoring handlers ===
-        pub(crate) async fn get_noise_handler(
+        pub async fn get_noise_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::noise_monitoring::NoiseReading>>> {
             let station_id = params.get("station_id");
@@ -12316,13 +12068,13 @@ mod server {
             Json(ApiResponse::success(readings))
         }
 
-        pub(crate) async fn tick_noise_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_noise_handler() -> Json<ApiResponse<String>> {
             crate::noise_monitoring::tick_noise();
             Json(ApiResponse::success("Noise ticked".into()))
         }
 
         // === Station vendors handlers ===
-        pub(crate) async fn get_vendors_handler(
+        pub async fn get_vendors_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::station_vendors::StationVendor>>> {
             let station_id = params.get("station_id");
@@ -12333,13 +12085,13 @@ mod server {
             Json(ApiResponse::success(vendors))
         }
 
-        pub(crate) async fn tick_vendors_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_vendors_handler() -> Json<ApiResponse<String>> {
             crate::station_vendors::tick_vendors();
             Json(ApiResponse::success("Vendors ticked".into()))
         }
 
         // === Air quality monitoring ===
-        pub(crate) async fn get_air_quality_handler(
+        pub async fn get_air_quality_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::air_quality::AirQualityReading>>> {
             let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
@@ -12350,7 +12102,7 @@ mod server {
         }
 
         // === Crowd density real-time ===
-        pub(crate) async fn get_crowd_density_handler(
+        pub async fn get_crowd_density_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::crowd_density::CrowdDensityPoint>>> {
             let station_id = params.get("station_id");
@@ -12361,13 +12113,13 @@ mod server {
             Json(ApiResponse::success(points))
         }
 
-        pub(crate) async fn tick_crowd_density_handler() -> Json<ApiResponse<String>> {
+        pub async fn tick_crowd_density_handler() -> Json<ApiResponse<String>> {
             crate::crowd_density::tick_density();
             Json(ApiResponse::success("Crowd density ticked".into()))
         }
 
         // === Wi-Fi hotspot finder ===
-        pub(crate) async fn get_wifi_handler(
+        pub async fn get_wifi_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::wifi_finder::WifiHotspot>>> {
             let station_id = params.get("station_id");
@@ -12379,7 +12131,7 @@ mod server {
         }
 
         // === Step-free journey planner (enhanced accessibility) ===
-        pub(crate) async fn plan_step_free_handler(
+        pub async fn plan_step_free_handler(
             State(state): State<AppState>,
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<crate::accessibility_route_planner::AccessibleRoute>> {
@@ -12400,7 +12152,7 @@ mod server {
         // === Carbon footprint ===
 
         // === Live departure board ===
-        pub(crate) async fn get_departures_handler(
+        pub async fn get_departures_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::realtime_integration::Departure>>> {
             let station_id = params.get("station_id").cloned().unwrap_or_default();
@@ -12412,7 +12164,7 @@ mod server {
         // === Occupancy ===
 
         // === Transit deserts ===
-        pub(crate) async fn get_deserts_handler(
+        pub async fn get_deserts_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::transit_deserts::DesertCell>>> {
             let bounds_json = params.get("bounds").cloned().unwrap_or_else(|| "{}".into());
@@ -12429,7 +12181,7 @@ mod server {
         // === Social sharing ===
 
         // === Data export ===
-        pub(crate) async fn export_data_handler(
+        pub async fn export_data_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let format = params.get("format").cloned().unwrap_or_else(|| "geojson".into());
@@ -12438,7 +12190,7 @@ mod server {
         }
 
         // === Weather ===
-        pub(crate) async fn get_weather_handler(
+        pub async fn get_weather_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<crate::weather_integration::WeatherSnapshot>> {
             let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
@@ -12448,19 +12200,19 @@ mod server {
         }
 
         // === WebGL scene state ===
-        pub(crate) async fn get_webgl_state_handler() -> Json<ApiResponse<crate::webgl_visualization::SceneState>> {
+        pub async fn get_webgl_state_handler() -> Json<ApiResponse<crate::webgl_visualization::SceneState>> {
             let state = crate::webgl_visualization::get_scene_state();
             Json(ApiResponse::success(state))
         }
 
         // === Offline mode status ===
-        pub(crate) async fn get_offline_status_handler() -> Json<ApiResponse<crate::offline_mode::OfflineStatus>> {
+        pub async fn get_offline_status_handler() -> Json<ApiResponse<crate::offline_mode::OfflineStatus>> {
             let status = crate::offline_mode::get_status();
             Json(ApiResponse::success(status))
         }
 
         // === i18n strings ===
-        pub(crate) async fn get_i18n_handler(
+        pub async fn get_i18n_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<std::collections::HashMap<String, String>>> {
             let lang = params.get("lang").cloned().unwrap_or_else(|| "en".into());
@@ -12470,19 +12222,19 @@ mod server {
 
         // === Network stats ===
 
-        pub(crate) async fn get_network_stats_handler() -> Json<ApiResponse<crate::network::NetworkStatsResponse>> {
+        pub async fn get_network_stats_handler() -> Json<ApiResponse<crate::network::NetworkStatsResponse>> {
             let stats = crate::network::compute_stats();
             Json(ApiResponse::success(stats))
         }
 
         // === Accessibility DB ===
-        pub(crate) async fn get_accessibility_db_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::AccessibilityRecord>>> {
+        pub async fn get_accessibility_db_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::AccessibilityRecord>>> {
             let records = crate::accessibility_db::get_all_records();
             Json(ApiResponse::success(records))
         }
 
         // === Multi-modal route ===
-        pub(crate) async fn plan_multimodal_handler(
+        pub async fn plan_multimodal_handler(
             Json(body): Json<crate::multi_modal_router::MultiModalRequest>,
         ) -> Json<ApiResponse<crate::multi_modal_router::MultiModalResponse>> {
             let resp = crate::multi_modal_router::plan(body);
@@ -12490,7 +12242,7 @@ mod server {
         }
 
         // === Amenities summary ===
-        pub(crate) async fn get_amenities_handler(
+        pub async fn get_amenities_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Option<crate::station_amenities::AmenitySummary>>> {
             let station_id = params.get("station_id").cloned().unwrap_or_default();
@@ -12499,19 +12251,19 @@ mod server {
         }
 
         // === Energy grid ===
-        pub(crate) async fn get_energy_handler() -> Json<ApiResponse<crate::energy_grid::EnergyReport>> {
+        pub async fn get_energy_handler() -> Json<ApiResponse<crate::energy_grid::EnergyReport>> {
             let report = crate::energy_grid::get_report();
             Json(ApiResponse::success(report))
         }
 
         // === Signal optimizer ===
-        pub(crate) async fn get_signals_handler() -> Json<ApiResponse<Vec<crate::signal_optimizer::SignalPlan>>> {
+        pub async fn get_signals_handler() -> Json<ApiResponse<Vec<crate::signal_optimizer::SignalPlan>>> {
             let plans = crate::signal_optimizer::get_plans();
             Json(ApiResponse::success(plans))
         }
 
         // === Platform capacity ===
-        pub(crate) async fn get_platforms_handler(
+        pub async fn get_platforms_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::platform_capacity::PlatformStatus>>> {
             let station_id = params.get("station_id");
@@ -12523,7 +12275,7 @@ mod server {
         }
 
         // === Ticket machines ===
-        pub(crate) async fn get_ticket_machines_handler(
+        pub async fn get_ticket_machines_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::ticket_machines::TicketMachine>>> {
             let station_id = params.get("station_id");
@@ -12535,7 +12287,7 @@ mod server {
         }
 
         // === Emergency services ===
-        pub(crate) async fn get_emergency_handler(
+        pub async fn get_emergency_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::emergency_services::EmergencyPoint>>> {
             let station_id = params.get("station_id");
@@ -12547,7 +12299,7 @@ mod server {
         }
 
         // === Bike parking ===
-        pub(crate) async fn get_bike_parking_handler(
+        pub async fn get_bike_parking_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::bike_parking::BikeParking>>> {
             let station_id = params.get("station_id");
@@ -12559,13 +12311,13 @@ mod server {
         }
 
         // === River services ===
-        pub(crate) async fn get_river_handler() -> Json<ApiResponse<Vec<crate::river_services::Pier>>> {
+        pub async fn get_river_handler() -> Json<ApiResponse<Vec<crate::river_services::Pier>>> {
             let piers = crate::river_services::get_all_piers();
             Json(ApiResponse::success(piers))
         }
 
         // === Taxi ranks ===
-        pub(crate) async fn get_taxi_handler(
+        pub async fn get_taxi_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::taxi_ranks::TaxiRank>>> {
             let station_id = params.get("station_id");
@@ -12577,7 +12329,7 @@ mod server {
         }
 
         // === Lost property ===
-        pub(crate) async fn get_lost_property_handler(
+        pub async fn get_lost_property_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::lost_property::LostItem>>> {
             let query = params.get("q").cloned().unwrap_or_default();
@@ -12590,7 +12342,7 @@ mod server {
         }
 
         // === Station photos ===
-        pub(crate) async fn get_photos_handler(
+        pub async fn get_photos_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::station_photos::StationPhoto>>> {
             let station_id = params.get("station_id");
@@ -12602,7 +12354,7 @@ mod server {
         }
 
         // === Accessibility routes ===
-        pub(crate) async fn get_accessibility_routes_handler(
+        pub async fn get_accessibility_routes_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::accessibility_route_enhancer::RouteOption>>> {
             let from = params.get("from").cloned().unwrap_or_default();
@@ -12612,19 +12364,19 @@ mod server {
         }
 
         // === Night tube ===
-        pub(crate) async fn get_night_tube_handler() -> Json<ApiResponse<Vec<crate::night_tube::NightService>>> {
+        pub async fn get_night_tube_handler() -> Json<ApiResponse<Vec<crate::night_tube::NightService>>> {
             let services = crate::night_tube::get_night_services();
             Json(ApiResponse::success(services))
         }
 
         // === Construction ===
-        pub(crate) async fn get_construction_handler() -> Json<ApiResponse<Vec<crate::construction_tracker::ConstructionProject>>> {
+        pub async fn get_construction_handler() -> Json<ApiResponse<Vec<crate::construction_tracker::ConstructionProject>>> {
             let projects = crate::construction_tracker::get_projects();
             Json(ApiResponse::success(projects))
         }
 
         // === Photo gallery ===
-        pub(crate) async fn get_gallery_handler(
+        pub async fn get_gallery_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::photo_gallery::GalleryPhoto>>> {
             let station_id = params.get("station_id");
@@ -12636,7 +12388,7 @@ mod server {
         }
 
         // === Departure board ===
-        pub(crate) async fn get_departure_board_handler(
+        pub async fn get_departure_board_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::departure_board::Departure>>> {
             let station_id = params.get("station_id");
@@ -12648,13 +12400,13 @@ mod server {
         }
 
         // === Service alerts ===
-        pub(crate) async fn get_service_alerts_handler() -> Json<ApiResponse<Vec<crate::service_alerts::ServiceAlert>>> {
+        pub async fn get_service_alerts_handler() -> Json<ApiResponse<Vec<crate::service_alerts::ServiceAlert>>> {
             let alerts = crate::service_alerts::get_active();
             Json(ApiResponse::success(alerts))
         }
 
         // === WiFi speed ===
-        pub(crate) async fn get_wifi_speed_handler(
+        pub async fn get_wifi_speed_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::wifi_speed::WifiSpeedTest>>> {
             let station_id = params.get("station_id");
@@ -12666,7 +12418,7 @@ mod server {
         }
 
         // === Accessibility routes enhanced ===
-        pub(crate) async fn get_accessibility_alternatives_handler(
+        pub async fn get_accessibility_alternatives_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::accessibility_route_finder::RouteAlternative>>> {
             let from = params.get("from").cloned().unwrap_or_default();
@@ -12676,62 +12428,62 @@ mod server {
         }
 
         // === Night tube enhanced ===
-        pub(crate) async fn get_night_tube_enh_handler() -> Json<ApiResponse<Vec<crate::night_tube_enhanced::NightServiceEnhanced>>> {
+        pub async fn get_night_tube_enh_handler() -> Json<ApiResponse<Vec<crate::night_tube_enhanced::NightServiceEnhanced>>> {
             let services = crate::night_tube_enhanced::get_services();
             Json(ApiResponse::success(services))
         }
 
         // === Construction enhanced ===
-        pub(crate) async fn get_construction_enh_handler() -> Json<ApiResponse<Vec<crate::construction_tracker_enh::ConstructionProjectEnhanced>>> {
+        pub async fn get_construction_enh_handler() -> Json<ApiResponse<Vec<crate::construction_tracker_enh::ConstructionProjectEnhanced>>> {
             let projects = crate::construction_tracker_enh::get_projects();
             Json(ApiResponse::success(projects))
         }
 
-        pub(crate) async fn get_crowd_prediction_handler(
+        pub async fn get_crowd_prediction_handler(
         ) -> Json<ApiResponse<Vec<crate::crowd_prediction::CrowdPrediction>>> {
             let preds = crate::crowd_prediction::get_all();
             Json(ApiResponse::success(preds))
         }
 
-        pub(crate) async fn get_crowd_prediction_station_handler(
+        pub async fn get_crowd_prediction_station_handler(
             AxumPath(station_id): AxumPath<String>,
         ) -> Json<ApiResponse<Vec<crate::crowd_prediction::CrowdPrediction>>> {
             let preds = crate::crowd_prediction::get_for_station(&station_id);
             Json(ApiResponse::success(preds))
         }
 
-        pub(crate) async fn get_accessibility_audit_enh_handler(
+        pub async fn get_accessibility_audit_enh_handler(
         ) -> Json<ApiResponse<Vec<crate::accessibility_audit_enh::AccessibilityAuditEnhanced>>> {
             let audits = crate::accessibility_audit_enh::get_all();
             Json(ApiResponse::success(audits))
         }
 
-        pub(crate) async fn get_accessibility_audit_enh_station_handler(
+        pub async fn get_accessibility_audit_enh_station_handler(
             AxumPath(station_id): AxumPath<String>,
         ) -> Json<ApiResponse<Option<crate::accessibility_audit_enh::AccessibilityAuditEnhanced>>> {
             let audit = crate::accessibility_audit_enh::get_for_station(&station_id);
             Json(ApiResponse::success(audit))
         }
 
-        pub(crate) async fn get_energy_optimization_handler(
+        pub async fn get_energy_optimization_handler(
         ) -> Json<ApiResponse<crate::energy_optimization::EnergyOptimization>> {
             let opt = crate::energy_optimization::get_optimization();
             Json(ApiResponse::success(opt))
         }
 
-        pub(crate) async fn get_signal_priority_handler(
+        pub async fn get_signal_priority_handler(
         ) -> Json<ApiResponse<Vec<crate::signal_priority::PrioritySignal>>> {
             let signals = crate::signal_priority::get_all();
             Json(ApiResponse::success(signals))
         }
 
-        pub(crate) async fn get_capacity_forecast_handler(
+        pub async fn get_capacity_forecast_handler(
         ) -> Json<ApiResponse<Vec<crate::capacity_forecast::CapacityForecast>>> {
             let forecasts = crate::capacity_forecast::get_all();
             Json(ApiResponse::success(forecasts))
         }
 
-        pub(crate) async fn get_capacity_forecast_station_handler(
+        pub async fn get_capacity_forecast_station_handler(
             AxumPath(station_id): AxumPath<String>,
         ) -> Json<ApiResponse<Option<crate::capacity_forecast::CapacityForecast>>> {
             let forecast = crate::capacity_forecast::get_for_station(&station_id);
@@ -12739,12 +12491,12 @@ mod server {
         }
     }
     mod router {
-        use super::handlers::*;
-        use super::state::*;
-        use crate::config::*;
-        use crate::logger::*;
-        use crate::primitives::*;
-        use crate::spatial::*;
+        use super::handlers::{serve_root, serve_web_app, get_lines, load_line, save_line, get_stations, get_station_arrivals, save_station, get_construction_state, update_construction_state, find_route, simulate_congestion, get_transit_deserts, get_coverage_stats, ai_add_station, ai_link_stations, get_disruptions, get_weather, apply_disruption, get_live_congestion_bincode, get_network_state_bincode, get_tracks, get_basemap_lines, refresh_tracks, delete_line, clear_ai_stations, get_logs, get_config, get_health, journey_plan, get_isochrone, get_transit_score, estimate_cost, export_network, search_stations, get_network_stats, get_demand_grid, write_to_ide_workspace, get_line_routes_inbound, get_stop_points, get_arrivals, get_metrics, get_occupancy, tick_occupancy_handler, simulate_disruption_handler, get_demand_forecast, seed_forecast_handler, get_pois, get_poi_categories, get_accessibility_handler, get_station_accessibility, share_route_handler, get_shared_route_handler, export_network_handler, get_city_info, list_cities, set_city_handler, set_language_handler, get_translations, get_citizen_reports_handler, submit_citizen_report_handler, upvote_report_handler, get_alerts_handler, mark_alert_read_handler, get_network_resilience_handler, estimate_fare_handler, get_station_popularity_handler, get_journey_reliability_handler, get_carbon_estimate, plan_multi_modal_handler, compare_modes_handler, get_realtime_vehicles, get_realtime_arrivals, tick_realtime_handler, get_webgl_scene, set_offline_mode_handler, get_offline_cache_stats, clear_offline_cache, start_drawing_handler, add_drawing_point, finalize_drawing_handler, list_drawing_sessions, delete_drawing_session, get_weather_forecast, fetch_weather_handler, get_weather_advisory, get_timeline, get_history_by_year_handler, run_analytics_handler, get_delay_predictions, evaluate_scenario_handler, plan_accessible_route_handler, get_tfl_status, get_tfl_arrivals, plan_eco_route_handler, get_contributions_handler, submit_contribution_handler, vote_contribution_handler, get_parking_handler, get_parking_by_type_handler, tick_parking_handler, get_cycle_routes, get_docking_stations, tick_docking_handler, get_maas_handler, tick_maas_handler, get_noise_handler, tick_noise_handler, get_vendors_handler, tick_vendors_handler, get_air_quality_handler, get_crowd_density_handler, tick_crowd_density_handler, get_wifi_handler, plan_step_free_handler, get_departures_handler, get_deserts_handler, export_data_handler, get_webgl_state_handler, get_offline_status_handler, get_i18n_handler, get_accessibility_db_handler, plan_multimodal_handler, get_amenities_handler, get_energy_handler, get_signals_handler, get_platforms_handler, get_ticket_machines_handler, get_emergency_handler, get_bike_parking_handler, get_river_handler, get_taxi_handler, get_lost_property_handler, get_photos_handler, get_accessibility_routes_handler, get_night_tube_handler, get_gallery_handler, get_departure_board_handler, get_service_alerts_handler, get_wifi_speed_handler, get_accessibility_alternatives_handler, get_night_tube_enh_handler, get_construction_enh_handler, get_crowd_prediction_handler, get_crowd_prediction_station_handler, get_accessibility_audit_enh_handler, get_accessibility_audit_enh_station_handler, get_energy_optimization_handler, get_signal_priority_handler, get_capacity_forecast_handler, get_capacity_forecast_station_handler};
+        use super::state::AppState;
+        use crate::config::Config;
+        use crate::logger::{log_info, log_debug, log_error, log_warn};
+        use crate::primitives::{embedded_stations, embedded_rail_segments, Station};
+        use crate::spatial::{StationPod, SpatialCoordPod, stations_to_bytes, stations_from_bytes};
         use crate::AppError;
         use crate::AppResult;
         use axum::response::IntoResponse;
@@ -12754,7 +12506,7 @@ mod server {
         };
         use std::sync::Arc;
         use tower_http::cors::CorsLayer;
-        pub(crate) async fn run_server(
+        pub async fn run_server(
             state: AppState,
             config: Config,
             shutdown_token: tokio_util::sync::CancellationToken,
@@ -12972,13 +12724,13 @@ mod server {
                     // Construction enhanced
                     .route("/api/construction-enh", get(get_construction_enh_handler))
                     .route("/api/crowd-prediction", get(get_crowd_prediction_handler))
-                    .route("/api/crowd-prediction/:station_id", get(get_crowd_prediction_station_handler))
+                    .route("/api/crowd-prediction/{station_id}", get(get_crowd_prediction_station_handler))
                     .route("/api/accessibility-audit-enh", get(get_accessibility_audit_enh_handler))
-                    .route("/api/accessibility-audit-enh/:station_id", get(get_accessibility_audit_enh_station_handler))
+                    .route("/api/accessibility-audit-enh/{station_id}", get(get_accessibility_audit_enh_station_handler))
                     .route("/api/energy-optimization", get(get_energy_optimization_handler))
                     .route("/api/signal-priority", get(get_signal_priority_handler))
                     .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
-                    .route("/api/capacity-forecast/:station_id", get(get_capacity_forecast_station_handler))
+                    .route("/api/capacity-forecast/{station_id}", get(get_capacity_forecast_station_handler))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -12992,13 +12744,12 @@ mod server {
                         "Unknown route construction panic".to_owned()
                     };
                     log_error(&format!(
-                        "run_server - FATAL: route construction panicked: {}",
-                        msg
+                        "run_server - FATAL: route construction panicked: {msg}"
                     ));
                     log_error("run_server - The application will not be able to serve requests. Please check route definitions for syntax errors.");
                     // Send fallback port so the main thread doesn't hang for 5s
                     let _ = port_sender.send(0);
-                    return Err(format!("Route construction panicked: {}", msg).into());
+                    return Err(format!("Route construction panicked: {msg}").into());
                 }
             };
 
@@ -13026,16 +12777,15 @@ mod server {
             let actual_addr = listener.local_addr()?;
             let actual_port = actual_addr.port();
             log_info(&format!(
-                "run_server - data engine listening securely on http://{} (ephemeral port)",
-                actual_addr
+                "run_server - data engine listening securely on http://{actual_addr} (ephemeral port)"
             ));
 
             // Send the actual port back to the main thread so Dioxus WebView and CORS know it.
             let _ = port_sender.send(actual_port);
 
             // Update CORS to allow the actual ephemeral origin
-            let cors_origin = format!("http://127.0.0.1:{}", actual_port);
-            let cors_origin_localhost = format!("http://localhost:{}", actual_port);
+            let cors_origin = format!("http://127.0.0.1:{actual_port}");
+            let cors_origin_localhost = format!("http://localhost:{actual_port}");
 
             // Security: enforce a 10 MB request body limit to prevent OOM DoS from
             // maliciously large payloads (e.g. a client sending a multi-GB JSON body).
@@ -13122,7 +12872,7 @@ mod server {
                                     .entry(client_ip)
                                     .or_insert((0, std::time::Instant::now()));
                                 // Reset counter every 60 seconds
-                                if entry.1.elapsed() > std::time::Duration::from_secs(60) {
+                                if entry.1.elapsed() > std::time::Duration::from_mins(1) {
                                     *entry = (0, std::time::Instant::now());
                                 }
                                 entry.0 += 1;
@@ -13191,7 +12941,7 @@ mod server {
             std::fs::create_dir_all(cache_path.parent().unwrap())?;
 
             let serialized = bincode::serialize(&(stations.as_slice(), segments.as_slice()))
-                .map_err(|e| AppError::Internal(format!("bincode serialize failed: {}", e)))?;
+                .map_err(|e| AppError::Internal(format!("bincode serialize failed: {e}")))?;
 
             // Security: prepend a SHA-256 integrity checksum to the cache file.
             // On load, the checksum is verified BEFORE deserialization to prevent
@@ -13238,7 +12988,7 @@ mod server {
                             y: s.coord.lat as f32,
                         },
                         zone: s.zone as u8,
-                        is_interchange: if s.is_interchange { 1 } else { 0 },
+                        is_interchange: u8::from(s.is_interchange),
                         _padding: [0_u8; 2],
                         name_hash: hash,
                     }
@@ -13344,8 +13094,7 @@ mod server {
                 let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
 
                 log_info(&format!(
-                    "MmapCacheStore initialized - {} bytes virtual memory mapped at {}",
-                    len, path
+                    "MmapCacheStore initialized - {len} bytes virtual memory mapped at {path}"
                 ));
                 Ok(Self { len, mmap })
             }
@@ -13398,14 +13147,14 @@ mod server {
             // The ptr must point to a valid allocated region of at least `len` bytes.
             // Failure is non-fatal — the function logs a warning and continues without pinning.
             unsafe {
-                if VirtualLock(ptr as *const std::ffi::c_void, len) == 0 {
+                if VirtualLock(ptr.cast::<std::ffi::c_void>(), len) == 0 {
                     log_warn(&format!(
                         "Failed to pin {} bytes to physical RAM via VirtualLock (error code: {}). Continuing without pinning.",
                         len,
                         std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
                     ));
                 } else {
-                    log_info(&format!("Kernel Memory Pinned - {} bytes locked in physical RAM (zero page faults guaranteed)", len));
+                    log_info(&format!("Kernel Memory Pinned - {len} bytes locked in physical RAM (zero page faults guaranteed)"));
                 }
             }
         }
@@ -13460,7 +13209,7 @@ use crate::server::run_server;
 /// Desktop entry point — launches the Dioxus desktop window with the embedded `WebView`.
 /// Only compiled when the `desktop` feature is enabled (default).
 /// For the Shuttle web deployment, see `shuttle_main` instead.
-#[cfg(feature = "desktop")]
+#[cfg(all(feature = "desktop", not(feature = "shuttle")))]
 fn main() {
     // ----------------------------------------------------------------
     // Console child window: when the main process spawns a console via
@@ -13488,7 +13237,7 @@ fn main() {
             .expect("FATAL: failed to create background Tokio runtime");
         rt_h.block_on(async {
             if let Err(e) = hydrate_network_state().await {
-                eprintln!("[HYDRATE] Failed: {}", e);
+                eprintln!("[HYDRATE] Failed: {e}");
                 std::process::exit(1);
             }
         });
@@ -13538,7 +13287,7 @@ fn main() {
                     all_lines
                 }
                 Err(e) => {
-                    eprintln!("[CLI] Failed to parse embedded lines: {}", e);
+                    eprintln!("[CLI] Failed to parse embedded lines: {e}");
                     Vec::new()
                 }
             }
@@ -13554,7 +13303,7 @@ fn main() {
         println!("[CACHE] Building spatial cache...");
         let stations = embedded_stations();
         if let Err(e) = build_spatial_cache(stations) {
-            eprintln!("[CACHE] Failed: {}", e);
+            eprintln!("[CACHE] Failed: {e}");
             std::process::exit(1);
         }
         println!("[CACHE] Spatial cache built successfully.");
@@ -13578,8 +13327,7 @@ fn main() {
             }
         }
         println!(
-            "[CACHE] Cleared {} cache entries at {:?}.",
-            cleared, cache_dir
+            "[CACHE] Cleared {cleared} cache entries at {cache_dir:?}."
         );
         return;
     }
@@ -13633,8 +13381,7 @@ fn main() {
             .map_or_else(|_| "unknown".to_owned(), |p| p.to_string_lossy().to_string());
 
         log_info(&format!(
-            "London Transport Network v{} ? {} profile (opt-level {})",
-            pkg_version, profile_str, opt_level
+            "London Transport Network v{pkg_version} ? {profile_str} profile (opt-level {opt_level})"
         ));
         log_info(&format!(
             "[TIMING] First log line reached: {:.3}s",
@@ -13652,10 +13399,9 @@ fn main() {
             ));
         }
         log_info(&format!(
-            "Target: {}/{}  |  Executable: {}",
-            target_arch, target_os, exe_path
+            "Target: {target_arch}/{target_os}  |  Executable: {exe_path}"
         ));
-        log_debug(&format!("Build package: {} v{}", pkg_name, pkg_version));
+        log_debug(&format!("Build package: {pkg_name} v{pkg_version}"));
         log_debug(&format!(
             "Debug assertions: {}  |  Current PID: {}",
             if cfg!(debug_assertions) { "ON" } else { "OFF" },
@@ -13674,11 +13420,11 @@ fn main() {
         ("data/london_lines.json", "embedded lines"),
         ("data/london_residential.json", "embedded residential"),
     ];
-    for (path, label) in required_data.iter() {
-        if !Path::new(path).exists() {
-            log_warn(&format!("Required data file missing: {} ({})", path, label));
+    for (path, label) in &required_data {
+        if Path::new(path).exists() {
+            log_debug(&format!("Data file verified: {path} ({label})"));
         } else {
-            log_debug(&format!("Data file verified: {} ({})", path, label));
+            log_warn(&format!("Required data file missing: {path} ({label})"));
         }
     }
 
@@ -13729,7 +13475,7 @@ fn main() {
         let payload = info
             .payload()
             .downcast_ref::<&str>()
-            .cloned()
+            .copied()
             .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("Explicit thread execution collapse");
 
@@ -13740,15 +13486,14 @@ fn main() {
         // output path that won't trigger secondary panics.
         use std::io::Write;
         let _ = std::io::stderr().write_fmt(format_args!(
-            "[PANIC HOOK] LOCATION: {}\n[PANIC HOOK] PAYLOAD: {}\n",
-            location, payload
+            "[PANIC HOOK] LOCATION: {location}\n[PANIC HOOK] PAYLOAD: {payload}\n"
         ));
 
         // Best-effort logger calls — these may fail silently if the log
         // infrastructure is in a bad state.
         catch_simple(|| log_error("PANIC HOOK TRIGGERED - panic detected"));
-        catch_simple(|| log_error(&format!("PANIC LOCATION: {}", location)));
-        catch_simple(|| log_error(&format!("PANIC PAYLOAD: {}", payload)));
+        catch_simple(|| log_error(&format!("PANIC LOCATION: {location}")));
+        catch_simple(|| log_error(&format!("PANIC PAYLOAD: {payload}")));
 
         catch_simple(|| {
             let crash_report = format!(
@@ -13760,8 +13505,8 @@ fn main() {
                 get_all_logs()
             );
             accumulate_crash_text(&crash_report);
-            update_crash_telemetry(&format!("PANIC at {}: {}", location, payload));
-            eprintln!("{}", crash_report);
+            update_crash_telemetry(&format!("PANIC at {location}: {payload}"));
+            eprintln!("{crash_report}");
         });
 
         catch_simple(|| {
@@ -13844,7 +13589,7 @@ fn main() {
         let _ = std::fs::write(&lock_path, format!("{}\n0\n", std::process::id()));
         // Best-effort: clear the lock file on exit so a crash doesn't permanently
         // block future launches.
-        let lock_path_clone = lock_path.clone();
+        let lock_path_clone = lock_path;
         libc_at_exit(lock_path_clone);
         log_debug("main - single-instance lock file acquired");
     }
@@ -13882,8 +13627,7 @@ fn main() {
             }
             Err(e) => {
                 log_warn(&format!(
-                    "main - unable to inspect custom line cache: {}",
-                    e
+                    "main - unable to inspect custom line cache: {e}"
                 ));
             }
         }
@@ -13892,51 +13636,45 @@ fn main() {
 
         log_debug("main - seeding stations from embedded basemap + database free stations");
         // Task 47: Try mmap spatial cache first, fall back to embedded JSON
-        let mut seed_stations: Vec<Station> = match load_spatial_cache_mmap() {
-            Ok(pods) => {
-                log_info(&format!("main - loaded {} stations from mmap spatial cache", pods.len()));
-                // Convert StationPods back to Stations (best-effort)
-                pods.iter().map(|pod| Station {
-                    id: format!("mmap_{}", pod.name_hash),
-                    name: format!("Station#{}", pod.name_hash),
-                    coord: Coordinate { lat: f64::from(pod.coord.y), lon: f64::from(pod.coord.x) },
-                    lines: vec![],
-                    is_interchange: pod.is_interchange != 0,
-                    is_open: true,
-                    zone: i32::from(pod.zone),
-                    is_historical: false,
-                }).collect()
-            }
-            Err(_) => {
-                log_info("main - no mmap cache found, using embedded stations");
-                embedded_stations().clone()
-            }
+        let mut seed_stations: Vec<Station> = if let Ok(pods) = load_spatial_cache_mmap() {
+            log_info(&format!("main - loaded {} stations from mmap spatial cache", pods.len()));
+            // Convert StationPods back to Stations (best-effort)
+            pods.iter().map(|pod| Station {
+                id: format!("mmap_{}", pod.name_hash),
+                name: format!("Station#{}", pod.name_hash),
+                coord: Coordinate { lat: f64::from(pod.coord.y), lon: f64::from(pod.coord.x) },
+                lines: vec![],
+                is_interchange: pod.is_interchange != 0,
+                is_open: true,
+                zone: i32::from(pod.zone),
+                is_historical: false,
+            }).collect()
+        } else {
+            log_info("main - no mmap cache found, using embedded stations");
+            embedded_stations().clone()
         };
         let embedded_count = seed_stations.len();
         // Pin loaded station data to physical RAM after mmap cache loading
-        pin_memory_to_ram(seed_stations.as_ptr() as *const u8, seed_stations.len() * std::mem::size_of::<Station>());
+        pin_memory_to_ram(seed_stations.as_ptr().cast::<u8>(), seed_stations.len() * std::mem::size_of::<Station>());
         log_info("Seed station data pinned to physical RAM after mmap cache loading");
 
         // Initialize MmapCacheStore as zero-copy VFS for the spatial cache
         // alongside the existing load_spatial_cache_mmap compatibility wrapper
-        let _mmap_store = match dirs::cache_dir() {
-            Some(cache_dir) => {
-                let cache_path = cache_dir.join("alex-tube-v").join("spatial_cache.bin");
-                match MmapCacheStore::new(cache_path.to_str().unwrap_or(""), 1 << 20) {
-                    Ok(store) => {
-                        log_info(&format!("main - MmapCacheStore VFS initialized: {} bytes mapped", store.len));
-                        Some(store)
-                    }
-                    Err(e) => {
-                        log_warn(&format!("main - MmapCacheStore init failed: {} (continuing without zero-copy VFS)", e));
-                        None
-                    }
+        let _mmap_store = if let Some(cache_dir) = dirs::cache_dir() {
+            let cache_path = cache_dir.join("alex-tube-v").join("spatial_cache.bin");
+            match MmapCacheStore::new(cache_path.to_str().unwrap_or(""), 1 << 20) {
+                Ok(store) => {
+                    log_info(&format!("main - MmapCacheStore VFS initialized: {} bytes mapped", store.len));
+                    Some(store)
+                }
+                Err(e) => {
+                    log_warn(&format!("main - MmapCacheStore init failed: {e} (continuing without zero-copy VFS)"));
+                    None
                 }
             }
-            None => {
-                log_warn("main - no cache directory found, MmapCacheStore not initialized");
-                None
-            }
+        } else {
+            log_warn("main - no cache directory found, MmapCacheStore not initialized");
+            None
         };
         match state.cache.load_free_stations() {
             Ok(free_stations) => {
@@ -13958,11 +13696,10 @@ fn main() {
         tokio::spawn(async move {
             log_info("main - compiling spatial routing graph before loading lines (BACKGROUND)");
             let init_success = match bg_state.initialize_routing_graph(&bg_bounds).await {
-                Ok(_) => true,
+                Ok(()) => true,
                 Err(e) => {
                     log_error(&format!(
-                        "main - CRITICAL FAILURE compiling spatial routing graph: {}. Journey planning and line curvature will be BROKEN.",
-                        e
+                        "main - CRITICAL FAILURE compiling spatial routing graph: {e}. Journey planning and line curvature will be BROKEN."
                     ));
                     false
                 }
@@ -13991,7 +13728,7 @@ fn main() {
                         }
                     }
                     Err(e) => {
-                        log_error(&format!("main - failed to load custom lines on startup: {}", e));
+                        log_error(&format!("main - failed to load custom lines on startup: {e}"));
                     }
                 }
                 bg_state.lines.store(Arc::new(lines_loaded.clone()));
@@ -14012,9 +13749,9 @@ fn main() {
                 let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
 
                 // Pin grid SoA arrays to physical RAM — defeat OS page-fault latency
-                pin_memory_to_ram(grid.coords_x.as_ptr() as *const u8, grid.coords_x.len() * std::mem::size_of::<f32>());
-                pin_memory_to_ram(grid.coords_y.as_ptr() as *const u8, grid.coords_y.len() * std::mem::size_of::<f32>());
-                pin_memory_to_ram(grid.edge_offsets.as_ptr() as *const u8, grid.edge_offsets.len() * std::mem::size_of::<usize>());
+                pin_memory_to_ram(grid.coords_x.as_ptr().cast::<u8>(), grid.coords_x.len() * std::mem::size_of::<f32>());
+                pin_memory_to_ram(grid.coords_y.as_ptr().cast::<u8>(), grid.coords_y.len() * std::mem::size_of::<f32>());
+                pin_memory_to_ram(grid.edge_offsets.as_ptr().cast::<u8>(), grid.edge_offsets.len() * std::mem::size_of::<usize>());
                 log_debug(&format!("TransitNetworkGrid CSR: {} edges (t/w/l={}/{}/{}) over {} nodes (id={}, zones={})",
                     grid.edge_targets.len(), grid.edge_weights.len(), grid.edge_line_ids.len(),
                     grid.edge_line_ids.len(),
@@ -14056,7 +13793,7 @@ fn main() {
         if let Err(e) =
             run_server(server_state, server_config, server_shutdown_token, port_tx, None).await
         {
-            log_error(&format!("main - background data service failed: {}", e));
+            log_error(&format!("main - background data service failed: {e}"));
         }
         log_debug("main - server task ended");
     });
@@ -14064,12 +13801,9 @@ fn main() {
     // Wait for the server to bind and report its actual ephemeral port.
     // This is critical: Dioxus WebView and the console child both need the real port.
     let actual_port = rt.block_on(async {
-        match tokio::time::timeout(std::time::Duration::from_secs(5), port_rx).await {
-            Ok(Ok(port)) => port,
-            _ => {
-                log_error("main - timed out waiting for server to report ephemeral port");
-                3000 // fallback
-            }
+        if let Ok(Ok(port)) = tokio::time::timeout(std::time::Duration::from_secs(5), port_rx).await { port } else {
+            log_error("main - timed out waiting for server to report ephemeral port");
+            3000 // fallback
         }
     });
     let api_base = format!("http://{}:{}", config.server_host, actual_port);
@@ -14077,8 +13811,7 @@ fn main() {
         *guard = Some(api_base.clone());
     }
     log_info(&format!(
-        "main - server bound on ephemeral port {}, api_base={}",
-        actual_port, api_base
+        "main - server bound on ephemeral port {actual_port}, api_base={api_base}"
     ));
 
     // Now spawn the analytics console child with the actual ephemeral port.
@@ -14098,13 +13831,13 @@ fn main() {
             std::env::current_exe().unwrap_or_else(|_| std::env::args().next().unwrap().into());
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--console-child");
-        cmd.arg(format!("--port={}", actual_port));
+        cmd.arg(format!("--port={actual_port}"));
         for log_line in &initial_logs {
-            cmd.arg(format!("--initial-log={}", log_line));
+            cmd.arg(format!("--initial-log={log_line}"));
         }
         match cmd.spawn() {
             Ok(_child) => log_info("main - analytics console child process spawned"),
-            Err(e) => log_error(&format!("main - failed to spawn console process: {}", e)),
+            Err(e) => log_error(&format!("main - failed to spawn console process: {e}")),
         }
     }
 
@@ -14127,12 +13860,12 @@ fn main() {
     rt.spawn(async move {
         loop {
             if let Some((temp, source)) = crate::server::fetch_london_weather().await {
-                log_info(&format!("Weather updated: {:.1}°C ({})", temp, source));
+                log_info(&format!("Weather updated: {temp:.1}°C ({source})"));
                 weather_state.weather.store(Arc::new(Some((temp, source))));
             } else {
                 log_warn("Failed to fetch weather data from APIs");
             }
-            tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(10)).await;
         }
     });
 
@@ -14151,7 +13884,9 @@ fn main() {
         }
         log_info("LIVING ENGINE: Routing graph ready, starting simulation.");
         let graph = living_engine_state.routing_graph.load();
-        if !graph.nodes.is_empty() {
+        if graph.nodes.is_empty() {
+            log_trace("LIVING ENGINE: Routing graph empty, skipping tick.");
+        } else {
             let graph_for_sim = (*graph).clone();
             drop(graph);
             let current_loads = tokio::task::spawn_blocking(move || {
@@ -14163,8 +13898,6 @@ fn main() {
                 .edge_loads
                 .store(Arc::new(current_loads));
             log_info("LIVING ENGINE: One-shot edge loads calculated and set. No repeat to avoid UI freeze.");
-        } else {
-            log_trace("LIVING ENGINE: Routing graph empty, skipping tick.");
         }
     });
     log_info("main - living network engine spawned on shared runtime (15s tick)");
@@ -14209,7 +13942,7 @@ fn main() {
 
         // Periodic refresh every 60 seconds
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             let st = demand_state.stations.load().as_ref().clone();
             crate::demand_forecaster::seed_synthetic_demand(&st);
         }
@@ -14318,7 +14051,7 @@ fn main() {
     // --- Vendors: tick every 60 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             crate::station_vendors::tick_vendors();
         }
     });
@@ -14345,7 +14078,7 @@ fn main() {
     // --- Energy: tick every 60 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             crate::energy_grid::tick_energy();
         }
     });
@@ -14363,7 +14096,7 @@ fn main() {
     // --- River: tick every 60 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             crate::river_services::tick_piers();
         }
     });
@@ -14381,7 +14114,7 @@ fn main() {
     // --- Service alerts: tick every 60 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             crate::service_alerts::tick_alerts();
         }
     });
@@ -14390,7 +14123,7 @@ fn main() {
     // --- Night tube enhanced: tick every 60 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(1)).await;
             crate::night_tube_enhanced::tick_night();
         }
     });
@@ -14399,7 +14132,7 @@ fn main() {
     // --- Construction enhanced: tick every 120 seconds ---
     rt.spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            tokio::time::sleep(std::time::Duration::from_mins(2)).await;
             crate::construction_tracker_enh::tick_construction();
         }
     });
@@ -14474,11 +14207,11 @@ fn main() {
         // IMPORTANT: do NOT cancel the shutdown token here — the Axum server must
         // stay alive for the browser session.
         log_warn("Dioxus WebView failed — attempting browser fallback");
-        let fallback_url = format!("http://127.0.0.1:{}", actual_port);
+        let fallback_url = format!("http://127.0.0.1:{actual_port}");
         if let Err(e) = open::that(&fallback_url) {
-            log_error(&format!("Browser fallback failed: {}", e));
+            log_error(&format!("Browser fallback failed: {e}"));
         } else {
-            log_info(&format!("Browser opened at {} as fallback", fallback_url));
+            log_info(&format!("Browser opened at {fallback_url} as fallback"));
             // Keep server alive for the browser session — park main thread
             // indefinitely so the Tokio runtime + Axum keep running.
             loop {
@@ -14496,7 +14229,7 @@ fn main() {
     ));
 
     if let Err(ref e) = result {
-        log_error(&format!("Critical engine termination caught: {:?}", e));
+        log_error(&format!("Critical engine termination caught: {e:?}"));
     }
 
     println!("\n------------------------------------------------------------");
@@ -14513,12 +14246,11 @@ fn main() {
     // AFTER the process terminates. We log the exit code here, before exit.
     if let Err(ref e) = result {
         let exit_msg = format!(
-            "[EXIT] Process terminating with error ? {:?} (exit code: 1)",
-            e
+            "[EXIT] Process terminating with error ? {e:?} (exit code: 1)"
         );
         log_error(&exit_msg);
         // Also print to stderr so cargo's own exit message is supplemented.
-        eprintln!("{}", exit_msg);
+        eprintln!("{exit_msg}");
         std::process::exit(1);
     } else {
         let exit_msg = format!(
@@ -14526,7 +14258,7 @@ fn main() {
             std::process::id()
         );
         log_info(&exit_msg);
-        println!("{}", exit_msg);
+        println!("{exit_msg}");
         log_info(&format!(
             "[TIMING] Final total boot time (process exit): {:.3}s",
             boot_start.elapsed().as_secs_f64()
@@ -14755,7 +14487,8 @@ async fn shuttle_main(
     use tower_http::cors::CorsLayer;
     use axum::http::Method;
     use axum::http::header::{ACCEPT, CONTENT_TYPE};
-
+    
+    use crate::server::handlers::*;
     // Build the router with the same routes as the desktop server
     let app = Router::new()
         .route("/", get(serve_root))
@@ -14957,13 +14690,13 @@ async fn shuttle_main(
         // Construction enhanced
         .route("/api/construction-enh", get(get_construction_enh_handler))
         .route("/api/crowd-prediction", get(get_crowd_prediction_handler))
-        .route("/api/crowd-prediction/:station_id", get(get_crowd_prediction_station_handler))
+        .route("/api/crowd-prediction/{station_id}", get(get_crowd_prediction_station_handler))
         .route("/api/accessibility-audit-enh", get(get_accessibility_audit_enh_handler))
-        .route("/api/accessibility-audit-enh/:station_id", get(get_accessibility_audit_enh_station_handler))
+        .route("/api/accessibility-audit-enh/{station_id}", get(get_accessibility_audit_enh_station_handler))
         .route("/api/energy-optimization", get(get_energy_optimization_handler))
         .route("/api/signal-priority", get(get_signal_priority_handler))
         .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
-        .route("/api/capacity-forecast/:station_id", get(get_capacity_forecast_station_handler))
+        .route("/api/capacity-forecast/{station_id}", get(get_capacity_forecast_station_handler))
         .with_state(state.clone())
         .layer(
             CorsLayer::new()
@@ -14989,16 +14722,16 @@ async fn shuttle_main(
 // Uses mode-specific costs and transfers to find optimal multi-modal journeys.
 // ============================================================================
 mod multi_modal_router {
-    use crate::primitives::*;
-    use crate::routing::*;
-    pub(crate) type MultiModalRequest = String;
-    pub(crate) type MultiModalResponse = String;
-    pub(crate) fn plan(_req: MultiModalRequest) -> MultiModalResponse { String::new() }
+    use crate::primitives::{Coordinate, Station};
+    use crate::routing::Line;
+    pub type MultiModalRequest = String;
+    pub type MultiModalResponse = String;
+    pub fn plan(_req: MultiModalRequest) -> MultiModalResponse { String::new() }
     use serde::{Deserialize, Serialize};
 
     /// Travel modes supported by the multi-modal router
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-    pub(crate) enum TransitMode {
+    pub enum TransitMode {
         Walk,
         Cycle,
         Bus,
@@ -15011,50 +14744,50 @@ mod multi_modal_router {
 
     impl TransitMode {
         /// Average speed in km/h
-        pub(crate) fn speed_kmh(&self) -> f64 {
+        pub(crate) const fn speed_kmh(&self) -> f64 {
             match self {
-                TransitMode::Walk => 5.0,
-                TransitMode::Cycle => 15.0,
-                TransitMode::Bus => 12.0,
-                TransitMode::Tube => 32.0,
-                TransitMode::Rail => 40.0,
-                TransitMode::RiverBus => 18.0,
-                TransitMode::Taxi => 20.0,
-                TransitMode::BikeShare => 14.0,
+                Self::Walk => 5.0,
+                Self::Cycle => 15.0,
+                Self::Bus => 12.0,
+                Self::Tube => 32.0,
+                Self::Rail => 40.0,
+                Self::RiverBus => 18.0,
+                Self::Taxi => 20.0,
+                Self::BikeShare => 14.0,
             }
         }
 
         /// CO2 g/km
-        pub(crate) fn co2_g_per_km(&self) -> f64 {
+        pub(crate) const fn co2_g_per_km(&self) -> f64 {
             match self {
-                TransitMode::Walk => 0.0,
-                TransitMode::Cycle => 0.0,
-                TransitMode::Bus => 89.0,
-                TransitMode::Tube => 28.0,
-                TransitMode::Rail => 41.0,
-                TransitMode::RiverBus => 120.0,
-                TransitMode::Taxi => 171.0,
-                TransitMode::BikeShare => 0.0,
+                Self::Walk => 0.0,
+                Self::Cycle => 0.0,
+                Self::Bus => 89.0,
+                Self::Tube => 28.0,
+                Self::Rail => 41.0,
+                Self::RiverBus => 120.0,
+                Self::Taxi => 171.0,
+                Self::BikeShare => 0.0,
             }
         }
 
         /// Cost per km in GBP (approximate)
-        pub(crate) fn cost_gbp_per_km(&self) -> f64 {
+        pub(crate) const fn cost_gbp_per_km(&self) -> f64 {
             match self {
-                TransitMode::Walk => 0.0,
-                TransitMode::Cycle => 0.0,
-                TransitMode::Bus => 0.15,
-                TransitMode::Tube => 0.30,
-                TransitMode::Rail => 0.40,
-                TransitMode::RiverBus => 0.50,
-                TransitMode::Taxi => 2.00,
-                TransitMode::BikeShare => 0.10,
+                Self::Walk => 0.0,
+                Self::Cycle => 0.0,
+                Self::Bus => 0.15,
+                Self::Tube => 0.30,
+                Self::Rail => 0.40,
+                Self::RiverBus => 0.50,
+                Self::Taxi => 2.00,
+                Self::BikeShare => 0.10,
             }
         }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct MultiModalLeg {
+    pub struct MultiModalLeg {
         pub(crate) mode: TransitMode,
         pub(crate) from_coord: Coordinate,
         pub(crate) to_coord: Coordinate,
@@ -15067,7 +14800,7 @@ mod multi_modal_router {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct MultiModalJourney {
+    pub struct MultiModalJourney {
         pub(crate) legs: Vec<MultiModalLeg>,
         pub(crate) total_distance_m: f64,
         pub(crate) total_duration_min: f64,
@@ -15079,7 +14812,7 @@ mod multi_modal_router {
 
     /// Plan a multi-modal journey from A to B, trying different mode combinations.
     /// Returns the best journey by a weighted score of time, cost, and CO2.
-    pub(crate) fn plan_multi_modal(
+    pub fn plan_multi_modal(
         from: Coordinate,
         to: Coordinate,
         stations: &[Station],
@@ -15101,7 +14834,7 @@ mod multi_modal_router {
                     duration_min,
                     cost_gbp: 0.0,
                     co2_kg: 0.0,
-                    instructions: format!("Walk {:.1} km directly", direct_dist_km),
+                    instructions: format!("Walk {direct_dist_km:.1} km directly"),
                     geometry: vec![from, to],
                 }],
                 total_distance_m: direct_dist_km * 1000.0,
@@ -15138,7 +14871,7 @@ mod multi_modal_router {
                 // Try each available transit mode for the main segment
                 let transit_modes: Vec<TransitMode> = preferred_modes.iter()
                     .filter(|m| **m != TransitMode::Walk && **m != TransitMode::Cycle)
-                    .cloned()
+                    .copied()
                     .collect();
 
                 let mut best_journey: Option<MultiModalJourney> = None;
@@ -15206,7 +14939,7 @@ mod multi_modal_router {
                             total_cost_gbp: total_cost,
                             total_co2_kg: total_co2,
                             modes_used: vec![TransitMode::Walk, mode],
-                            transfers: if walk_to_station_km > 0.05 { 1 } else { 0 } + if walk_from_station_km > 0.05 { 1 } else { 0 },
+                            transfers: usize::from(walk_to_station_km > 0.05) + usize::from(walk_from_station_km > 0.05),
                         });
                     }
                 }
@@ -15217,7 +14950,7 @@ mod multi_modal_router {
         }
     }
 
-    fn mode_name(mode: &TransitMode) -> &'static str {
+    const fn mode_name(mode: &TransitMode) -> &'static str {
         match mode {
             TransitMode::Walk => "walking",
             TransitMode::Cycle => "cycling",
@@ -15237,9 +14970,9 @@ mod multi_modal_router {
 // REAL-TIME DATA INTEGRATION — GTFS-RT, TfL streaming, OpenTripPlanner
 // ============================================================================
 mod realtime_integration {
-    use crate::routing::*;
-    pub(crate) type Departure = String;
-    pub(crate) fn get_departures(_station_id: &str) -> Vec<Departure> { vec![] }
+    use crate::routing::Line;
+    pub type Departure = String;
+    pub const fn get_departures(_station_id: &str) -> Vec<Departure> { vec![] }
     use chrono::Timelike;
     use serde::{Deserialize, Serialize};
     use std::sync::Mutex;
@@ -15247,7 +14980,7 @@ mod realtime_integration {
 
     /// A real-time vehicle position
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct VehiclePosition {
+    pub struct VehiclePosition {
         pub(crate) vehicle_id: String,
         pub(crate) line_id: String,
         pub(crate) lat: f64,
@@ -15262,7 +14995,7 @@ mod realtime_integration {
 
     /// A real-time arrival prediction
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct RTPrediction {
+    pub struct RTPrediction {
         pub(crate) station_id: String,
         pub(crate) line_id: String,
         pub(crate) direction: String,
@@ -15273,15 +15006,15 @@ mod realtime_integration {
     }
 
     /// Global real-time vehicle positions
-    pub(crate) static RT_VEHICLES: std::sync::LazyLock<Mutex<Vec<VehiclePosition>>> =
+    pub static RT_VEHICLES: std::sync::LazyLock<Mutex<Vec<VehiclePosition>>> =
         std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
     /// Global real-time predictions
-    pub(crate) static RT_PREDICTIONS: std::sync::LazyLock<Mutex<Vec<RTPrediction>>> =
+    pub static RT_PREDICTIONS: std::sync::LazyLock<Mutex<Vec<RTPrediction>>> =
         std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
     /// Simulate vehicle positions based on line geometry (for demo/offline use)
-    pub(crate) fn simulate_vehicles(lines: &[Line]) -> Vec<VehiclePosition> {
+    pub fn simulate_vehicles(lines: &[Line]) -> Vec<VehiclePosition> {
         let now = Utc::now().timestamp_millis();
         let mut vehicles = Vec::new();
 
@@ -15291,7 +15024,7 @@ mod realtime_integration {
             let num_vehicles = fastrand::usize(2..=5);
             for vi in 0..num_vehicles {
                 // Pick a random progress along the line
-                let progress = fastrand::f64() * 0.8 + 0.1;
+                let progress = fastrand::f64().mul_add(0.8, 0.1);
                 let idx = ((line.geometry.len() - 1) as f64 * progress) as usize;
                 let idx = idx.min(line.geometry.len() - 2);
                 let coord = &line.geometry[idx];
@@ -15305,11 +15038,11 @@ mod realtime_integration {
                 // Simulate occupancy based on time of day
                 let hour = f64::from(chrono::Utc::now().hour());
                 let occupancy = if (8.0..=9.5).contains(&hour) {
-                    fastrand::f64() * 0.3 + 0.6 // peak: 60-90%
+                    fastrand::f64().mul_add(0.3, 0.6) // peak: 60-90%
                 } else if (17.0..=18.5).contains(&hour) {
-                    fastrand::f64() * 0.3 + 0.5 // evening peak: 50-80%
+                    fastrand::f64().mul_add(0.3, 0.5) // evening peak: 50-80%
                 } else {
-                    fastrand::f64() * 0.4 + 0.1 // off-peak: 10-50%
+                    fastrand::f64().mul_add(0.4, 0.1) // off-peak: 10-50%
                 };
 
                 vehicles.push(VehiclePosition {
@@ -15318,7 +15051,7 @@ mod realtime_integration {
                     lat: coord.lat,
                     lon: coord.lon,
                     bearing,
-                    speed_kmh: fastrand::f64() * 40.0 + 10.0,
+                    speed_kmh: fastrand::f64().mul_add(40.0, 10.0),
                     occupancy_pct: occupancy * 100.0,
                     timestamp_ms: now,
                     trip_id: Some(format!("trip_{}_{}", line.id, vi)),
@@ -15330,7 +15063,7 @@ mod realtime_integration {
     }
 
     /// Simulate arrival predictions for a station
-    pub(crate) fn simulate_arrivals(station_id: &str, lines: &[Line]) -> Vec<RTPrediction> {
+    pub fn simulate_arrivals(station_id: &str, lines: &[Line]) -> Vec<RTPrediction> {
         let now = Utc::now().timestamp_millis();
         let mut predictions = Vec::new();
 
@@ -15358,7 +15091,7 @@ mod realtime_integration {
     }
 
     /// Update the global real-time state with simulated data
-    pub(crate) fn tick_realtime(lines: &[Line]) {
+    pub fn tick_realtime(lines: &[Line]) {
         let vehicles = simulate_vehicles(lines);
         *RT_VEHICLES.lock().unwrap() = vehicles;
 
@@ -15377,8 +15110,8 @@ mod realtime_integration {
 // Updated every 5 seconds via background task, stored in global arc_swap.
 // ============================================================================
 mod occupancy_engine {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
 
     // No dead_code supression needed; function kept for future use
 
@@ -15390,7 +15123,7 @@ mod occupancy_engine {
     use chrono::Utc;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct OccupancySnapshot {
+    pub struct OccupancySnapshot {
         /// Map from `station_id` -> Vec of occupancy per platform (0.0 = empty, 1.0 = crush)
         pub(crate) station_occupancy: HashMap<String, Vec<f64>>,
         /// Map from `line_id` -> average train occupancy across all trains on that line
@@ -15413,11 +15146,11 @@ mod occupancy_engine {
     }
 
     /// Global live occupancy — updated every 5s by background task
-    pub(crate) static OCCUPANCY: std::sync::LazyLock<Arc<ArcSwap<OccupancySnapshot>>> =
+    pub static OCCUPANCY: std::sync::LazyLock<Arc<ArcSwap<OccupancySnapshot>>> =
         std::sync::LazyLock::new(|| Arc::new(ArcSwap::new(Arc::new(OccupancySnapshot::empty()))));
 
     /// Simulate occupancy data (since we lack live `TfL` feed, we generate realistic estimates)
-    pub(crate) fn tick_occupancy(stations: &[Station], lines: &[Line]) {
+    pub fn tick_occupancy(stations: &[Station], lines: &[Line]) {
         use std::collections::HashMap;
         let now = Utc::now();
         let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
@@ -15427,7 +15160,7 @@ mod occupancy_engine {
         fn demand_factor(h: f64, wd: u32) -> f64 {
             if wd >= 5 {
                 // Weekend — flatter profile
-                0.3 + 0.5 * (-((h - 13.0).powi(2)) / 36.0).exp()
+                0.5f64.mul_add((-((h - 13.0).powi(2)) / 36.0).exp(), 0.3)
             } else {
                 // Weekday — double peak
                 let morning = 0.8 * (-((h - 8.5).powi(2)) / 4.0).exp();
@@ -15444,13 +15177,13 @@ mod occupancy_engine {
         for st in stations {
             if !st.is_open { continue; }
             // Station-level occupancy based on zone + interchange status + randomness
-            let zone_factor = 1.0 - (f64::from(st.zone) - 1.0) * 0.08;
+            let zone_factor = (f64::from(st.zone) - 1.0).mul_add(-0.08, 1.0);
             let interchange_bonus = if st.is_interchange { 0.3 } else { 0.0 };
-            let noise: f64 = fastrand::f64() * 0.2 - 0.1;
+            let noise: f64 = fastrand::f64().mul_add(0.2, -0.1);
             let occ = (base_demand * zone_factor + interchange_bonus + noise).clamp(0.0, 1.0);
             let platforms = if st.is_interchange { fastrand::u32(2..6) as usize } else { 1 };
             let per_platform: Vec<f64> = (0..platforms).map(|_| {
-                (occ + fastrand::f64() * 0.15 - 0.075).clamp(0.0, 1.0)
+                (fastrand::f64().mul_add(0.15, occ) - 0.075).clamp(0.0, 1.0)
             }).collect();
             station_occ.insert(st.id.clone(), per_platform);
         }
@@ -15483,14 +15216,14 @@ mod occupancy_engine {
 // using probabilistic edge-weight sampling on the routing graph.
 // ============================================================================
 mod disruption_simulator {
-    use crate::primitives::*;
-    pub(crate) fn get_active_disruptions() -> Vec<Disruption> { vec![] }
-    use crate::routing::*;
+    use crate::primitives::{Disruption, Station};
+    pub const fn get_active_disruptions() -> Vec<Disruption> { vec![] }
+    use crate::routing::{Line, RoutingGraph};
     use serde::{Deserialize, Serialize};
     use std::collections::HashSet;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DisruptionSimulationResult {
+    pub struct DisruptionSimulationResult {
         pub(crate) disrupted_line_id: String,
         pub(crate) directly_affected_stations: Vec<String>,
         pub(crate) cascaded_stations: Vec<String>,
@@ -15506,7 +15239,7 @@ mod disruption_simulator {
     /// Run a Monte Carlo simulation of a disruption on the given line.
     /// `severity` is 0.0 (minor delay) to 1.0 (complete closure).
     /// Returns aggregate stats over `iterations` runs.
-    pub(crate) fn simulate_disruption(
+    pub fn simulate_disruption(
         lines: &[Line],
         stations: &[Station],
         _routing_graph: &RoutingGraph,
@@ -15556,7 +15289,7 @@ mod disruption_simulator {
                             impacted_lines.insert(other_line.id.clone());
                             // Calculate delay propagation
                             let transfer_delay = severity * 5.0 * fastrand::f64(); // 0-5 min * severity
-                            let congestion_mult = 1.0 + fastrand::f64() * 0.5;
+                            let congestion_mult = fastrand::f64().mul_add(0.5, 1.0);
                             total_delay += transfer_delay * congestion_mult;
                             total_cascaded += 1;
                         }
@@ -15605,7 +15338,7 @@ mod disruption_simulator {
             estimated_delay_minutes: avg_delay,
             ripple_lines: ripple_lines_set.into_iter().collect(),
             total_passengers_affected: passenger_estimate,
-            recovery_time_min: severity * 120.0 + fastrand::f64() * 30.0,
+            recovery_time_min: fastrand::f64().mul_add(30.0, severity * 120.0),
             alternative_route_available: alt_ratio > 0.5,
             monte_carlo_iterations: iterations,
             confidence_pct: (alt_ratio * 100.0).clamp(0.0, 100.0),
@@ -15619,7 +15352,7 @@ mod disruption_simulator {
 // (no external ML deps needed — pure Rust math).
 // ============================================================================
 mod demand_forecaster {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
@@ -15627,7 +15360,7 @@ mod demand_forecaster {
 
     /// A single demand observation
     #[derive(Debug, Clone)]
-    pub(crate) struct DemandObservation {
+    pub struct DemandObservation {
     
         pub(crate) station_id: String,
     
@@ -15637,7 +15370,7 @@ mod demand_forecaster {
 
     /// Forecast result for one station
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationForecast {
+    pub struct StationForecast {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) current_demand: f64,
@@ -15648,13 +15381,13 @@ mod demand_forecaster {
     }
 
     /// Global demand observation buffer (ring buffer per station)
-    pub(crate) static DEMAND_HISTORY: std::sync::LazyLock<Mutex<HashMap<String, Vec<DemandObservation>>>> =
+    pub static DEMAND_HISTORY: std::sync::LazyLock<Mutex<HashMap<String, Vec<DemandObservation>>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     const MAX_HISTORY_PER_STATION: usize = 1440; // 24h at 1min resolution
 
     /// Record a new demand observation
-    pub(crate) fn record_demand(station_id: &str, count: f64) {
+    pub fn record_demand(station_id: &str, count: f64) {
         let mut hist = DEMAND_HISTORY.lock().unwrap();
         let entry = hist.entry(station_id.to_string()).or_default();
         entry.push(DemandObservation {
@@ -15694,7 +15427,7 @@ mod demand_forecaster {
     }
 
     /// Generate forecast for all stations
-    pub(crate) fn forecast_all(
+    pub fn forecast_all(
         stations: &[Station],
         lookback_minutes: usize,
     ) -> Vec<StationForecast> {
@@ -15707,7 +15440,7 @@ mod demand_forecaster {
                 Some(o) if !o.is_empty() => o,
                 _ => {
                     // No data — use synthetic estimate based on zone and interchange
-                    let base = 100.0 + f64::from(st.zone) * 50.0;
+                    let base = f64::from(st.zone).mul_add(50.0, 100.0);
                     if st.is_interchange { base * 1.5 } else { base };
                     continue;
                 }
@@ -15715,8 +15448,8 @@ mod demand_forecaster {
 
             let (slope, base) = linear_trend(obs, lookback_minutes);
             let current = obs.last().unwrap().passenger_count;
-            let pred_30 = (base + slope * (obs.len() as f64 + 30.0)).max(0.0);
-            let pred_60 = (base + slope * (obs.len() as f64 + 60.0)).max(0.0);
+            let pred_30 = slope.mul_add(obs.len() as f64 + 30.0, base).max(0.0);
+            let pred_60 = slope.mul_add(obs.len() as f64 + 60.0, base).max(0.0);
 
             let trend = if slope.abs() < 0.5 {
                 "stable"
@@ -15730,7 +15463,7 @@ mod demand_forecaster {
                 let mean = obs.iter().map(|o| o.passenger_count).sum::<f64>() / obs.len() as f64;
                 let ss_tot: f64 = obs.iter().map(|o| (o.passenger_count - mean).powi(2)).sum();
                 let ss_res: f64 = obs.iter().enumerate().map(|(i, o)| {
-                    let pred = base + slope * i as f64;
+                    let pred = slope.mul_add(i as f64, base);
                     (o.passenger_count - pred).powi(2)
                 }).sum();
                 if ss_tot > 1e-12 { 1.0 - ss_res / ss_tot } else { 0.0 }
@@ -15752,7 +15485,7 @@ mod demand_forecaster {
     }
 
     /// Seed synthetic demand data based on time of day and station attributes
-    pub(crate) fn seed_synthetic_demand(stations: &[Station]) {
+    pub fn seed_synthetic_demand(stations: &[Station]) {
         use chrono::Utc;
         let now = Utc::now();
         let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
@@ -15762,16 +15495,16 @@ mod demand_forecaster {
 
         for st in stations {
             if !st.is_open { continue; }
-            let zone_factor = 1.0 - (f64::from(st.zone) - 1.0) * 0.05;
+            let zone_factor = (f64::from(st.zone) - 1.0).mul_add(-0.05, 1.0);
             let interchange_bonus = if st.is_interchange { 1.5 } else { 1.0 };
             let base = if is_weekend {
-                30.0 + 70.0 * (-((hour - 14.0).powi(2)) / 36.0).exp()
+                70.0f64.mul_add((-((hour - 14.0).powi(2)) / 36.0).exp(), 30.0)
             } else {
                 let morning = 200.0 * (-((hour - 8.5).powi(2)) / 4.0).exp();
                 let evening = 180.0 * (-((hour - 17.5).powi(2)) / 6.0).exp();
                 morning + evening + 20.0
             };
-            let count = base * zone_factor * interchange_bonus + fastrand::f64() * 20.0;
+            let count = fastrand::f64().mul_add(20.0, base * zone_factor * interchange_bonus);
             record_demand(&st.id, count);
         }
     }
@@ -15787,7 +15520,7 @@ mod metrics_collector {
     use std::sync::Mutex;
 
     /// A single counter metric
-    pub(crate) struct Counter {
+    pub struct Counter {
         pub(crate) name: &'static str,
         pub(crate) help: &'static str,
         value: AtomicU64,
@@ -15806,7 +15539,7 @@ mod metrics_collector {
     }
 
     /// A histogram metric (bucketed latency)
-    pub(crate) struct Histogram {
+    pub struct Histogram {
         pub(crate) name: &'static str,
         pub(crate) help: &'static str,
         buckets: Vec<f64>,
@@ -15834,49 +15567,49 @@ mod metrics_collector {
     // ========================================================================
 
     /// Total HTTP requests served
-    pub(crate) static HTTP_REQUESTS_TOTAL: Counter = Counter::new(
+    pub static HTTP_REQUESTS_TOTAL: Counter = Counter::new(
         "http_requests_total",
         "Total number of HTTP requests handled",
     );
 
     /// A* pathfinding iterations
-    pub(crate) static ASTAR_ITERATIONS_TOTAL: Counter = Counter::new(
+    pub static ASTAR_ITERATIONS_TOTAL: Counter = Counter::new(
         "astar_iterations_total",
         "Total A* search iterations across all queries",
     );
 
     /// Cache hits
-    pub(crate) static CACHE_HITS_TOTAL: Counter = Counter::new(
+    pub static CACHE_HITS_TOTAL: Counter = Counter::new(
         "cache_hits_total",
         "Total cache hit operations",
     );
 
     /// Cache misses
-    pub(crate) static CACHE_MISSES_TOTAL: Counter = Counter::new(
+    pub static CACHE_MISSES_TOTAL: Counter = Counter::new(
         "cache_misses_total",
         "Total cache miss operations",
     );
 
     /// Route queries
-    pub(crate) static ROUTE_QUERIES_TOTAL: Counter = Counter::new(
+    pub static ROUTE_QUERIES_TOTAL: Counter = Counter::new(
         "route_queries_total",
         "Total route-planning queries",
     );
 
     /// Occupancy engine ticks
-    pub(crate) static OCCUPANCY_TICKS_TOTAL: Counter = Counter::new(
+    pub static OCCUPANCY_TICKS_TOTAL: Counter = Counter::new(
         "occupancy_ticks_total",
         "Total occupancy engine update ticks",
     );
 
     /// AI station creations
-    pub(crate) static AI_STATIONS_CREATED: Counter = Counter::new(
+    pub static AI_STATIONS_CREATED: Counter = Counter::new(
         "ai_stations_created_total",
         "Total AI-generated station placements",
     );
 
     /// Request latency histogram (ms)
-    pub(crate) static REQUEST_LATENCY_MS: std::sync::LazyLock<Histogram> =
+    pub static REQUEST_LATENCY_MS: std::sync::LazyLock<Histogram> =
         std::sync::LazyLock::new(|| {
             Histogram::new(
                 "request_latency_ms",
@@ -15886,7 +15619,7 @@ mod metrics_collector {
         });
 
     /// Generate Prometheus-formatted text output
-    pub(crate) fn render_prometheus() -> String {
+    pub fn render_prometheus() -> String {
         let mut out = String::new();
 
         let counters = [
@@ -15935,7 +15668,7 @@ mod carbon_estimator {
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CarbonBreakdown {
+    pub struct CarbonBreakdown {
         pub(crate) total_kg: f64,
         pub(crate) tube_kg: f64,
         pub(crate) rail_kg: f64,
@@ -15954,7 +15687,7 @@ mod carbon_estimator {
     const WALK_G_PER_KM: f64 = 0.0;
 
     /// Calculate carbon footprint for a journey given legs
-    pub(crate) fn calculate_journey_carbon(
+    pub fn calculate_journey_carbon(
         legs: &[JourneyLeg],
         walking_distance_km: f64,
     ) -> CarbonBreakdown {
@@ -16000,22 +15733,22 @@ mod carbon_estimator {
 mod i18n {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    pub(crate) fn get_strings(_lang: &str) -> HashMap<String, String> { HashMap::new() }
+    pub fn get_strings(_lang: &str) -> HashMap<String, String> { HashMap::new() }
 
     /// Supported language codes
-    pub(crate) const SUPPORTED_LANGUAGES: &[&str] = &["en", "fr", "de", "es", "zh", "ja", "it", "pt"];
+    pub const SUPPORTED_LANGUAGES: &[&str] = &["en", "fr", "de", "es", "zh", "ja", "it", "pt"];
 
-    pub(crate) static CURRENT_LANGUAGE: std::sync::LazyLock<Mutex<String>> =
+    pub static CURRENT_LANGUAGE: std::sync::LazyLock<Mutex<String>> =
         std::sync::LazyLock::new(|| Mutex::new("en".to_owned()));
 
     /// Set active language
-    pub(crate) fn set_language(lang: &str) {
+    pub fn set_language(lang: &str) {
         if SUPPORTED_LANGUAGES.contains(&lang) {
             *CURRENT_LANGUAGE.lock().unwrap() = lang.to_string();
         }
     }
 
-    pub(crate) fn current_lang() -> String {
+    pub fn current_lang() -> String {
         CURRENT_LANGUAGE.lock().unwrap().clone()
     }
 
@@ -16047,14 +15780,14 @@ mod i18n {
     });
 
     /// Translate a key into the current language
-    pub(crate) fn tr(key: &str) -> String {
+    pub fn tr(key: &str) -> String {
         let lang = CURRENT_LANGUAGE.lock().unwrap().clone();
         let lang_idx = SUPPORTED_LANGUAGES.iter().position(|l| **l == lang).unwrap_or(0);
         TRANSLATIONS
             .get(key)
             .map_or_else(|| {
                 // Fallback: return the key itself
-                crate::logger::log_debug(&format!("i18n: missing translation key '{}'", key));
+                crate::logger::log_debug(&format!("i18n: missing translation key '{key}'"));
                 key.to_string()
             }, |arr| arr[lang_idx].to_string())
     }
@@ -16065,11 +15798,11 @@ mod i18n {
 // Museums, parks, hospitals, schools, theatres, landmarks with distance queries
 // ============================================================================
 mod poi_database {
-    use crate::primitives::*;
+    use crate::primitives::{Coordinate, Station};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct PointOfInterest {
+    pub struct PointOfInterest {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) category: String, // "museum", "park", "hospital", "school", "theatre", "landmark", "shopping", "library"
@@ -16082,7 +15815,7 @@ mod poi_database {
     }
 
     /// Global POI list (loaded from cache or generated)
-    pub(crate) static POI_DATABASE: std::sync::LazyLock<std::sync::Mutex<Vec<PointOfInterest>>> =
+    pub static POI_DATABASE: std::sync::LazyLock<std::sync::Mutex<Vec<PointOfInterest>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Known London landmarks as POIs
@@ -16105,7 +15838,7 @@ mod poi_database {
     }
 
     /// Initialize POI database and snap each POI to nearest station
-    pub(crate) fn initialize_pois(stations: &[Station]) {
+    pub fn initialize_pois(stations: &[Station]) {
         let mut db = POI_DATABASE.lock().unwrap();
         let mut pois = get_london_pois();
 
@@ -16132,13 +15865,13 @@ mod poi_database {
     }
 
     /// Query POIs by category
-    pub(crate) fn get_pois_by_category(category: &str) -> Vec<PointOfInterest> {
+    pub fn get_pois_by_category(category: &str) -> Vec<PointOfInterest> {
         let db = POI_DATABASE.lock().unwrap();
         db.iter().filter(|p| p.category == category).cloned().collect()
     }
 
     /// Query POIs near a location
-    pub(crate) fn get_pois_near(lat: f64, lon: f64, radius_m: f64) -> Vec<PointOfInterest> {
+    pub fn get_pois_near(lat: f64, lon: f64, radius_m: f64) -> Vec<PointOfInterest> {
         let db = POI_DATABASE.lock().unwrap();
         db.iter().filter(|p| {
             let d = Coordinate { lat, lon }.distance_to(&p.coord);
@@ -16147,7 +15880,7 @@ mod poi_database {
     }
 
     /// Query POIs near a station
-    pub(crate) fn get_pois_near_station(station_id: &str, radius_m: f64) -> Vec<PointOfInterest> {
+    pub fn get_pois_near_station(station_id: &str, radius_m: f64) -> Vec<PointOfInterest> {
         let db = POI_DATABASE.lock().unwrap();
         db.iter().filter(|p| {
             p.nearest_station_id.as_deref() == Some(station_id)
@@ -16156,7 +15889,7 @@ mod poi_database {
     }
 
     /// Get all POI categories
-    pub(crate) fn get_poi_categories() -> Vec<String> {
+    pub fn get_poi_categories() -> Vec<String> {
         let db = POI_DATABASE.lock().unwrap();
         let mut cats: Vec<String> = db.iter().map(|p| p.category.clone()).collect();
         cats.sort();
@@ -16170,14 +15903,14 @@ mod poi_database {
 // Color-coded overlay on map with filters.
 // ============================================================================
 mod accessibility_db {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
-    pub(crate) type AccessibilityRecord = String;
-    pub(crate) fn get_all_records() -> Vec<AccessibilityRecord> { vec![] }
+    pub type AccessibilityRecord = String;
+    pub const fn get_all_records() -> Vec<AccessibilityRecord> { vec![] }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    pub(crate) enum AccessibilityStatus {
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub enum AccessibilityStatus {
         Available,
         Limited,
         Unavailable,
@@ -16185,7 +15918,7 @@ mod accessibility_db {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationAccessibility {
+    pub struct StationAccessibility {
         pub(crate) station_id: String,
         pub(crate) step_free_access: AccessibilityStatus,
         pub(crate) lift_available: AccessibilityStatus,
@@ -16198,11 +15931,11 @@ mod accessibility_db {
         pub(crate) notes: Vec<String>,
     }
 
-    pub(crate) static ACCESSIBILITY_DATA: std::sync::LazyLock<std::sync::Mutex<HashMap<String, StationAccessibility>>> =
+    pub static ACCESSIBILITY_DATA: std::sync::LazyLock<std::sync::Mutex<HashMap<String, StationAccessibility>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
     /// Initialize from known `TfL` accessibility data
-    pub(crate) fn initialize_accessibility(stations: &[Station]) {
+    pub fn initialize_accessibility(stations: &[Station]) {
         let mut db = ACCESSIBILITY_DATA.lock().unwrap();
         let known_step_free: std::collections::HashSet<&str> = [
             // Most major interchanges are step-free
@@ -16237,11 +15970,11 @@ mod accessibility_db {
         }
     }
 
-    pub(crate) fn get_accessibility(station_id: &str) -> Option<StationAccessibility> {
+    pub fn get_accessibility(station_id: &str) -> Option<StationAccessibility> {
         ACCESSIBILITY_DATA.lock().unwrap().get(station_id).cloned()
     }
 
-    pub(crate) fn get_all_accessibility() -> Vec<StationAccessibility> {
+    pub fn get_all_accessibility() -> Vec<StationAccessibility> {
         ACCESSIBILITY_DATA.lock().unwrap().values().cloned().collect()
     }
 }
@@ -16256,11 +15989,11 @@ mod social_sharing {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    pub(crate) static SHARED_ROUTES: std::sync::LazyLock<Mutex<HashMap<String, SharedRoute>>> =
+    pub static SHARED_ROUTES: std::sync::LazyLock<Mutex<HashMap<String, SharedRoute>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct SharedRoute {
+    pub struct SharedRoute {
         pub(crate) code: String,
         pub(crate) from_station: String,
         pub(crate) to_station: String,
@@ -16281,7 +16014,7 @@ mod social_sharing {
     }
 
     /// Share a route, returns a short code
-    pub(crate) fn share_route(from: &str, to: &str, mode: &str) -> String {
+    pub fn share_route(from: &str, to: &str, mode: &str) -> String {
         let mut db = SHARED_ROUTES.lock().unwrap();
         let code = loop {
             let c = generate_code();
@@ -16295,11 +16028,11 @@ mod social_sharing {
             created_at_ms: chrono::Utc::now().timestamp_millis(),
             view_count: 0,
         });
-        log_info(&format!("social_sharing: created shared route code={}", code));
+        log_info(&format!("social_sharing: created shared route code={code}"));
         code
     }
 
-    pub(crate) fn get_shared_route(code: &str) -> Option<SharedRoute> {
+    pub fn get_shared_route(code: &str) -> Option<SharedRoute> {
         let mut db = SHARED_ROUTES.lock().unwrap();
         if let Some(route) = db.get_mut(code) {
             route.view_count += 1;
@@ -16314,13 +16047,13 @@ mod social_sharing {
 // DATA EXPORTER — Export network in GraphML, GTFS, and JSON formats
 // ============================================================================
 mod data_exporter {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::{Station, Coordinate};
+    use crate::routing::{Line, RailwayTrack};
     use serde::{Deserialize, Serialize};
-    pub(crate) fn export(_format: &str) -> String { String::new() }
+    pub const fn export(_format: &str) -> String { String::new() }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ExportResult {
+    pub struct ExportResult {
         pub(crate) format: String,
         pub(crate) data: String,
         pub(crate) stations_count: usize,
@@ -16329,7 +16062,7 @@ mod data_exporter {
     }
 
     /// Export to JSON (full network state)
-    pub(crate) fn export_json(lines: &[Line], stations: &[Station], tracks: &[RailwayTrack]) -> ExportResult {
+    pub fn export_json(lines: &[Line], stations: &[Station], tracks: &[RailwayTrack]) -> ExportResult {
         let data = serde_json::to_string_pretty(&serde_json::json!({
             "stations": stations,
             "lines": lines,
@@ -16348,7 +16081,7 @@ mod data_exporter {
     }
 
     /// Export to `GraphML` (XML graph format for Gephi, yEd, etc.)
-    pub(crate) fn export_graphml(lines: &[Line], stations: &[Station]) -> ExportResult {
+    pub fn export_graphml(lines: &[Line], stations: &[Station]) -> ExportResult {
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns"
@@ -16399,7 +16132,7 @@ mod data_exporter {
     }
 
     /// Export to GTFS (General Transit Feed Specification) — minimal version
-    pub(crate) fn export_gtfs(lines: &[Line], stations: &[Station]) -> ExportResult {
+    pub fn export_gtfs(lines: &[Line], stations: &[Station]) -> ExportResult {
         let mut output = String::new();
 
         // agency.txt
@@ -16465,7 +16198,7 @@ mod city_config {
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CityDefinition {
+    pub struct CityDefinition {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) country: String,
@@ -16480,10 +16213,10 @@ mod city_config {
         pub(crate) overpass_query: Option<String>,
     }
 
-    pub(crate) static CURRENT_CITY: std::sync::LazyLock<Mutex<String>> =
+    pub static CURRENT_CITY: std::sync::LazyLock<Mutex<String>> =
         std::sync::LazyLock::new(|| Mutex::new("london".to_owned()));
 
-    pub(crate) static CITIES: std::sync::LazyLock<Vec<CityDefinition>> = std::sync::LazyLock::new(|| {
+    pub static CITIES: std::sync::LazyLock<Vec<CityDefinition>> = std::sync::LazyLock::new(|| {
         vec![
             CityDefinition {
                 id: "london".into(), name: "London".into(), country: "United Kingdom".into(),
@@ -16536,18 +16269,18 @@ mod city_config {
         ]
     });
 
-    pub(crate) fn set_city(id: &str) -> bool {
+    pub fn set_city(id: &str) -> bool {
         if CITIES.iter().any(|c| c.id == id) {
             *CURRENT_CITY.lock().unwrap() = id.to_string();
-            log_info(&format!("city_config: switched to city '{}'", id));
+            log_info(&format!("city_config: switched to city '{id}'"));
             true
         } else {
-            log_error(&format!("city_config: unknown city '{}'", id));
+            log_error(&format!("city_config: unknown city '{id}'"));
             false
         }
     }
 
-    pub(crate) fn current_city() -> CityDefinition {
+    pub fn current_city() -> CityDefinition {
         let id = CURRENT_CITY.lock().unwrap().clone();
         CITIES.iter().find(|c| c.id == id).cloned().unwrap_or_else(|| CITIES[0].clone())
     }
@@ -16563,7 +16296,7 @@ mod citizen_reports {
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CitizenReport {
+    pub struct CitizenReport {
         pub(crate) id: String,
         pub(crate) report_type: String, // "crowding", "delay", "lift_broken", "cleanliness", "safety", "other"
         pub(crate) station_id: Option<String>,
@@ -16577,13 +16310,13 @@ mod citizen_reports {
         pub(crate) resolved: bool,
     }
 
-    pub(crate) static REPORTS: std::sync::LazyLock<Mutex<Vec<CitizenReport>>> =
+    pub static REPORTS: std::sync::LazyLock<Mutex<Vec<CitizenReport>>> =
         std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static REPORT_ID_COUNTER: std::sync::LazyLock<Mutex<u64>> =
+    pub static REPORT_ID_COUNTER: std::sync::LazyLock<Mutex<u64>> =
         std::sync::LazyLock::new(|| Mutex::new(0));
 
-    pub(crate) fn submit_report(
+    pub fn submit_report(
         report_type: &str,
         station_id: Option<&str>,
         station_name: Option<&str>,
@@ -16593,7 +16326,7 @@ mod citizen_reports {
     ) -> String {
         let mut counter = REPORT_ID_COUNTER.lock().unwrap();
         *counter += 1;
-        let id = format!("report_{}", counter);
+        let id = format!("report_{counter}");
 
         let report = CitizenReport {
             id: id.clone(),
@@ -16610,11 +16343,11 @@ mod citizen_reports {
         };
 
         REPORTS.lock().unwrap().push(report);
-        log_info(&format!("citizen_reports: new report '{}' type={}", id, report_type));
+        log_info(&format!("citizen_reports: new report '{id}' type={report_type}"));
         id
     }
 
-    pub(crate) fn get_reports(include_resolved: bool) -> Vec<CitizenReport> {
+    pub fn get_reports(include_resolved: bool) -> Vec<CitizenReport> {
         let db = REPORTS.lock().unwrap();
         if include_resolved {
             db.clone()
@@ -16623,7 +16356,7 @@ mod citizen_reports {
         }
     }
 
-    pub(crate) fn upvote_report(id: &str) -> bool {
+    pub fn upvote_report(id: &str) -> bool {
         let mut db = REPORTS.lock().unwrap();
         if let Some(report) = db.iter_mut().find(|r| r.id == id) {
             report.upvotes += 1;
@@ -16649,7 +16382,7 @@ mod smart_alerts {
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AlertEvent {
+    pub struct AlertEvent {
         pub(crate) id: String,
         pub(crate) alert_type: String, // "disruption", "crowding", "lift", "weather"
         pub(crate) severity: String,   // "info", "warning", "critical"
@@ -16661,14 +16394,14 @@ mod smart_alerts {
         pub(crate) read: bool,
     }
 
-    pub(crate) static ALERT_EVENTS: std::sync::LazyLock<Mutex<Vec<AlertEvent>>> =
+    pub static ALERT_EVENTS: std::sync::LazyLock<Mutex<Vec<AlertEvent>>> =
         std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static ALERT_COUNTER: std::sync::LazyLock<Mutex<u64>> =
+    pub static ALERT_COUNTER: std::sync::LazyLock<Mutex<u64>> =
         std::sync::LazyLock::new(|| Mutex::new(0));
 
     /// Generate alerts based on current disruptions
-    pub(crate) fn generate_alerts(
+    pub fn generate_alerts(
         disruptions: &[Disruption],
         _station_ids: &HashSet<String>,
     ) {
@@ -16679,7 +16412,7 @@ mod smart_alerts {
             *counter += 1;
             let severity = if disruption.severity == "severe" { "critical" } else if disruption.severity == "minor" { "warning" } else { "info" };
             events.push(AlertEvent {
-                id: format!("alert_{}", counter),
+                id: format!("alert_{counter}"),
                 alert_type: "disruption".into(),
                 severity: severity.to_string(),
                 title: format!("Disruption on {}", disruption.line_name),
@@ -16697,11 +16430,11 @@ mod smart_alerts {
         }
     }
 
-    pub(crate) fn get_unread_alerts() -> Vec<AlertEvent> {
+    pub fn get_unread_alerts() -> Vec<AlertEvent> {
         ALERT_EVENTS.lock().unwrap().iter().filter(|a| !a.read).cloned().collect()
     }
 
-    pub(crate) fn mark_read(id: &str) -> bool {
+    pub fn mark_read(id: &str) -> bool {
         let mut events = ALERT_EVENTS.lock().unwrap();
         if let Some(ev) = events.iter_mut().find(|a| a.id == id) {
             ev.read = true;
@@ -16717,14 +16450,14 @@ mod smart_alerts {
 // Higher score = more robust network (multiple ways to reroute).
 // ============================================================================
 mod network_resilience {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
     use serde::{Deserialize, Serialize};
     use std::collections::{HashMap, HashSet, VecDeque};
 
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ResilienceScore {
+    pub struct ResilienceScore {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) degree: usize,
@@ -16735,7 +16468,7 @@ mod network_resilience {
     }
 
     /// Count edge-disjoint paths between all station pairs (simplified)
-    pub(crate) fn compute_resilience(
+    pub fn compute_resilience(
         stations: &[Station],
         lines: &[Line],
     ) -> Vec<ResilienceScore> {
@@ -16822,12 +16555,12 @@ mod network_resilience {
 // Calculates daily/weekly caps based on zones crossed and time of day.
 // ============================================================================
 mod fare_calculator {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct FareEstimate {
+    pub struct FareEstimate {
         pub(crate) peak_fare_gbp: f64,
         pub(crate) off_peak_fare_gbp: f64,
         pub(crate) daily_cap_gbp: f64,
@@ -16876,7 +16609,7 @@ mod fare_calculator {
         }
     }
 
-    pub(crate) fn estimate_fare(stations: &[Station], from_id: &str, to_id: &str) -> FareEstimate {
+    pub fn estimate_fare(stations: &[Station], from_id: &str, to_id: &str) -> FareEstimate {
         let from = stations.iter().find(|s| s.id == from_id);
         let to = stations.iter().find(|s| s.id == to_id);
         let zones = vec![from.map_or(1, |s| s.zone), to.map_or(1, |s| s.zone)];
@@ -16906,12 +16639,12 @@ mod fare_calculator {
 // (population_i * demand_i) / distance^2
 // ============================================================================
 mod station_popularity {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
     // No dead_code supression needed; function kept for future use
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationPopularity {
+    pub struct StationPopularity {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) popularity_score: f64,
@@ -16919,7 +16652,7 @@ mod station_popularity {
         pub(crate) rank: usize,
     }
 
-    pub(crate) fn compute_popularity(stations: &[Station]) -> Vec<StationPopularity> {
+    pub fn compute_popularity(stations: &[Station]) -> Vec<StationPopularity> {
         let n = stations.len();
         if n == 0 { return vec![]; }
 
@@ -16936,7 +16669,7 @@ mod station_popularity {
                 let weight = 1.0 / (dist_km * dist_km + 0.1).max(0.1);
                 let zone_factor = f64::from((6 - other.zone).max(1));
                 let interchange_bonus = if other.is_interchange { 1.5 } else { 1.0 };
-                score += weight * zone_factor * interchange_bonus;
+                score = (weight * zone_factor).mul_add(interchange_bonus, score);
                 denominator += weight;
             }
 
@@ -16971,14 +16704,14 @@ mod station_popularity {
 // Uses a simple model: reliability = f(historical variance, time of day, line)
 // ============================================================================
 mod journey_reliability {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
 
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct JourneyReliability {
+    pub struct JourneyReliability {
         pub(crate) from_station: String,
         pub(crate) to_station: String,
         pub(crate) expected_time_min: f64,
@@ -16991,7 +16724,7 @@ mod journey_reliability {
     }
 
     /// Estimate journey time reliability between two stations
-    pub(crate) fn estimate_reliability(
+    pub fn estimate_reliability(
         stations: &[Station],
         _lines: &[Line],
         from_id: &str,
@@ -17025,12 +16758,12 @@ mod journey_reliability {
         if is_late { factors.push("Late night reduced service".into()); }
 
         // Approximate percentiles (assuming normal-ish distribution)
-        let p5 = (expected_min - 1.645 * std_dev).max(expected_min * 0.5);
-        let p95 = expected_min + 1.645 * std_dev;
+        let p5 = 1.645f64.mul_add(-std_dev, expected_min).max(expected_min * 0.5);
+        let p95 = 1.645f64.mul_add(std_dev, expected_min);
         let reliability = (1.0 - std_dev / expected_min.max(1.0)).clamp(0.0, 1.0);
 
         // On-time probability (within +20%)
-        let on_time = 0.68 + (1.0 - f64::from(u8::from(is_peak))) * 0.12;
+        let on_time = (1.0 - f64::from(u8::from(is_peak))).mul_add(0.12, 0.68);
 
         JourneyReliability {
             from_station: from_id.to_string(),
@@ -17052,13 +16785,13 @@ mod journey_reliability {
 // "simulate disruption on X", "show network stats", etc.
 // ============================================================================
 mod cli_interface {
-    use crate::primitives::*;
-    use crate::config::*;
-    use crate::logger::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::config::Config;
+    use crate::logger::log_info;
+    use crate::routing::Line;
     use std::io::{self, Write, BufRead};
 
-    pub(crate) fn run_cli_loop(
+    pub fn run_cli_loop(
         _config: &Config,
         lines: &[Line],
         stations: &[Station],
@@ -17122,11 +16855,11 @@ mod cli_interface {
                     println!("Stations: {}", stations.len());
                     println!("Lines: {}", lines.len());
                     let total_tracks: usize = lines.iter().map(|l| l.segments.len()).sum();
-                    println!("Track segments: {}", total_tracks);
+                    println!("Track segments: {total_tracks}");
                     let open_stations = stations.iter().filter(|s| s.is_open).count();
-                    println!("Open stations: {}", open_stations);
+                    println!("Open stations: {open_stations}");
                     let interchanges = stations.iter().filter(|s| s.is_interchange).count();
-                    println!("Interchanges: {}", interchanges);
+                    println!("Interchanges: {interchanges}");
                     println!();
                 }
                 cmd if cmd.starts_with("stations ") => {
@@ -17186,7 +16919,7 @@ mod cli_interface {
                     let station_id = cmd.trim_start_matches("forecast ").trim();
                     let hist = crate::demand_forecaster::DEMAND_HISTORY.lock().unwrap();
                     if let Some(obs) = hist.get(station_id) {
-                        println!("\n=== Demand Forecast for {} ===", station_id);
+                        println!("\n=== Demand Forecast for {station_id} ===");
                         println!("Observations: {}", obs.len());
                         if let Some(last) = obs.last() {
                             println!("Current demand: {:.0} passengers", last.passenger_count);
@@ -17199,7 +16932,7 @@ mod cli_interface {
                             println!("Confidence: {:.0}%", fc.confidence);
                         }
                     } else {
-                        println!("No forecast data for station '{}'", station_id);
+                        println!("No forecast data for station '{station_id}'");
                     }
                     println!();
                 }
@@ -17253,7 +16986,7 @@ mod cli_interface {
                             if crate::city_config::set_city(id) {
                                 println!("Switched to {}", crate::city_config::current_city().name);
                             } else {
-                                println!("Unknown city '{}'. Use 'city list' to see available cities.", id);
+                                println!("Unknown city '{id}'. Use 'city list' to see available cities.");
                             }
                         }
                         None => {
@@ -17266,7 +16999,7 @@ mod cli_interface {
                 cmd if cmd.starts_with("lang ") => {
                     let lang = cmd.trim_start_matches("lang ").trim();
                     crate::i18n::set_language(lang);
-                    println!("Language set to '{}'. UI will reflect this on next render.\n", lang);
+                    println!("Language set to '{lang}'. UI will reflect this on next render.\n");
                 }
                 cmd if cmd.starts_with("metrics") => {
                     println!("\n=== Performance Metrics ===");
@@ -17281,7 +17014,7 @@ mod cli_interface {
                         "json" => crate::data_exporter::export_json(&lines_vec, &stations_vec, &[]),
                         "graphml" => crate::data_exporter::export_graphml(&lines_vec, &stations_vec),
                         "gtfs" => crate::data_exporter::export_gtfs(&lines_vec, &stations_vec),
-                        _ => { println!("Unsupported format '{}'. Use json, graphml, or gtfs.", fmt); continue; }
+                        _ => { println!("Unsupported format '{fmt}'. Use json, graphml, or gtfs."); continue; }
                     };
                     println!("\nExported {} ({} lines, {} stations)", result.format, result.lines_count, result.stations_count);
                     println!("Data length: {} bytes\n", result.data.len());
@@ -17301,7 +17034,7 @@ mod cli_interface {
                         println!("  {}-{:02}-{:02}: {} {}{}",
                             event.year, event.month, event.day, event.description,
                             if event.significance >= 4 { " ★" } else { "" },
-                            if let Some(ref ln) = event.line_name { format!(" [{}]", ln) } else { String::new() }
+                            if let Some(ref ln) = event.line_name { format!(" [{ln}]") } else { String::new() }
                         );
                     }
                     if events.len() > 20 { println!("  ... and {} more events", events.len() - 20); }
@@ -17370,7 +17103,7 @@ mod cli_interface {
                             }
                             if !route.warnings.is_empty() {
                                 println!("Warnings:");
-                                for w in &route.warnings { println!("  ⚠️ {}", w); }
+                                for w in &route.warnings { println!("  ⚠️ {w}"); }
                             }
                             println!();
                         }
@@ -17380,7 +17113,7 @@ mod cli_interface {
                 cmd if cmd.starts_with("parking ") => {
                     let station_id = cmd.trim_start_matches("parking ").trim();
                     let facilities = crate::parking_integration::get_parking_near_station(station_id);
-                    println!("\n=== Parking at {} ===", station_id);
+                    println!("\n=== Parking at {station_id} ===");
                     if facilities.is_empty() { println!("No parking facilities found.\n"); continue; }
                     for f in &facilities {
                         println!("  {}: {}/{} available [£{:.2}/h] {}{}{}",
@@ -17421,7 +17154,7 @@ mod cli_interface {
                             };
                             println!("  {} {}: {}", icon, status.name, s.status_severity_description.as_deref().unwrap_or("unknown"));
                             if let Some(ref r) = s.reason {
-                                println!("    Reason: {}", r);
+                                println!("    Reason: {r}");
                             }
                         }
                     }
@@ -17439,7 +17172,7 @@ mod cli_interface {
                     println!("Pending approval: {}\n", crate::crowd_sourcing::get_pending_count());
                 }
                 _ => {
-                    println!("Unknown command: '{}'. Type 'help' for available commands.\n", input);
+                    println!("Unknown command: '{input}'. Type 'help' for available commands.\n");
                 }
             }
         }
@@ -17451,14 +17184,14 @@ mod cli_interface {
 // Generates Three.js JSON scene descriptors for the frontend to render.
 // ============================================================================
 mod webgl_visualization {
-    use crate::primitives::*;
-    use crate::routing::*;
-    pub(crate) type SceneState = String;
-    pub(crate) fn get_scene_state() -> SceneState { String::new() }
+    use crate::primitives::{Station, Coordinate};
+    use crate::routing::Line;
+    pub type SceneState = String;
+    pub const fn get_scene_state() -> SceneState { String::new() }
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WebGLScene {
+    pub struct WebGLScene {
         pub(crate) nodes: Vec<WebGLNode>,
         pub(crate) edges: Vec<WebGLEdge>,
         pub(crate) labels: Vec<WebGLLabel>,
@@ -17466,7 +17199,7 @@ mod webgl_visualization {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WebGLNode {
+    pub struct WebGLNode {
         pub(crate) id: String,
         pub(crate) x: f64,
         pub(crate) y: f64,
@@ -17477,7 +17210,7 @@ mod webgl_visualization {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WebGLEdge {
+    pub struct WebGLEdge {
         pub(crate) from: String,
         pub(crate) to: String,
         pub(crate) color: String,
@@ -17486,7 +17219,7 @@ mod webgl_visualization {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WebGLLabel {
+    pub struct WebGLLabel {
         pub(crate) text: String,
         pub(crate) x: f64,
         pub(crate) y: f64,
@@ -17495,14 +17228,14 @@ mod webgl_visualization {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WebGLCamera {
+    pub struct WebGLCamera {
         pub(crate) position: [f64; 3],
         pub(crate) target: [f64; 3],
     }
 
     /// Build a 3D scene from the network — maps lat/lon to WebGL coordinates
     /// using a simple Mercator projection for the XZ plane, with Y as elevation.
-    pub(crate) fn build_3d_scene(
+    pub fn build_3d_scene(
         stations: &[Station],
         lines: &[Line],
         elevation_enabled: bool,
@@ -17584,19 +17317,19 @@ mod webgl_visualization {
 mod offline_mode {
     use crate::logger::log_info;
     
-    pub(crate) type OfflineStatus = String;
-    pub(crate) fn get_status() -> OfflineStatus { String::new() }
+    pub type OfflineStatus = String;
+    pub const fn get_status() -> OfflineStatus { String::new() }
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    pub(crate) static CACHE_ENABLED: std::sync::LazyLock<Mutex<bool>> =
+    pub static CACHE_ENABLED: std::sync::LazyLock<Mutex<bool>> =
         std::sync::LazyLock::new(|| Mutex::new(false));
 
-    pub(crate) static OFFLINE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
+    pub static OFFLINE_CACHE: std::sync::LazyLock<Mutex<HashMap<String, String>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
     /// Enable or disable offline caching mode
-    pub(crate) fn set_offline_mode(enabled: bool) {
+    pub fn set_offline_mode(enabled: bool) {
         *CACHE_ENABLED.lock().unwrap() = enabled;
         log_info(&format!("offline_mode: caching {}", if enabled { "ENABLED" } else { "DISABLED" }));
     }
@@ -17604,13 +17337,13 @@ mod offline_mode {
 
 
     /// Clear all cached data
-    pub(crate) fn clear_cache() {
+    pub fn clear_cache() {
         OFFLINE_CACHE.lock().unwrap().clear();
         log_info("offline_mode: cache cleared");
     }
 
     /// Get cache statistics
-    pub(crate) fn cache_stats() -> (usize, usize) {
+    pub fn cache_stats() -> (usize, usize) {
         let cache = OFFLINE_CACHE.lock().unwrap();
         let total_size: usize = cache.values().map(String::len).sum();
         (cache.len(), total_size)
@@ -17622,15 +17355,15 @@ mod offline_mode {
 // Allows users to draw new lines directly on the map with snap-to-station.
 // ============================================================================
 mod on_the_fly_drawing {
-    use crate::primitives::*;
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::primitives::{Coordinate, Station};
+    use crate::routing::Line;
+    use crate::logger::{log_info, log_debug};
     
     use serde::{Deserialize, Serialize};
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DrawingSession {
+    pub struct DrawingSession {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) color: String,
@@ -17641,7 +17374,7 @@ mod on_the_fly_drawing {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct SnappedStation {
+    pub struct SnappedStation {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) point_index: usize,
@@ -17649,11 +17382,11 @@ mod on_the_fly_drawing {
     }
 
     /// Active drawing sessions
-    pub(crate) static DRAWING_SESSIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DrawingSession>>> =
+    pub static DRAWING_SESSIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DrawingSession>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Create a new drawing session
-    pub(crate) fn start_drawing(name: &str, color: &str) -> String {
+    pub fn start_drawing(name: &str, color: &str) -> String {
         let mut sessions = DRAWING_SESSIONS.lock().unwrap();
         let id = format!("draw_{}", sessions.len() + 1);
         sessions.push(DrawingSession {
@@ -17665,12 +17398,12 @@ mod on_the_fly_drawing {
             is_closed: false,
             created_at_ms: chrono::Utc::now().timestamp_millis(),
         });
-        log_info(&format!("on_the_fly: started drawing session '{}'", id));
+        log_info(&format!("on_the_fly: started drawing session '{id}'"));
         id
     }
 
     /// Add a point to a drawing session with auto-snap to nearest station
-    pub(crate) fn add_point(
+    pub fn add_point(
         session_id: &str,
         lat: f64,
         lon: f64,
@@ -17711,7 +17444,7 @@ mod on_the_fly_drawing {
     }
 
     /// Finalize a drawing session into a Line
-    pub(crate) fn finalize_line(
+    pub fn finalize_line(
         session_id: &str,
         line_id: &str,
     ) -> Option<Line> {
@@ -17750,12 +17483,12 @@ mod on_the_fly_drawing {
     }
 
     /// Get all active drawing sessions
-    pub(crate) fn list_sessions() -> Vec<DrawingSession> {
+    pub fn list_sessions() -> Vec<DrawingSession> {
         DRAWING_SESSIONS.lock().unwrap().clone()
     }
 
     /// Delete a drawing session
-    pub(crate) fn delete_session(session_id: &str) -> bool {
+    pub fn delete_session(session_id: &str) -> bool {
         let mut sessions = DRAWING_SESSIONS.lock().unwrap();
         let len = sessions.len();
         sessions.retain(|s| s.id != session_id);
@@ -17769,15 +17502,15 @@ mod on_the_fly_drawing {
 // ============================================================================
 mod weather_integration {
     
-    use crate::logger::*;
+    use crate::logger::log_info;
     use chrono::Timelike;
-    pub(crate) type WeatherSnapshot = String;
-    pub(crate) fn get_weather(_lat: f64, _lon: f64) -> WeatherSnapshot { String::new() }
+    pub type WeatherSnapshot = String;
+    pub const fn get_weather(_lat: f64, _lon: f64) -> WeatherSnapshot { String::new() }
     use serde::{Deserialize, Serialize};
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WeatherForecast {
+    pub struct WeatherForecast {
         pub(crate) temperature_c: f64,
         pub(crate) feels_like_c: f64,
         pub(crate) humidity_pct: f64,
@@ -17792,7 +17525,7 @@ mod weather_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct HourlyForecast {
+    pub struct HourlyForecast {
         pub(crate) hour: i32,
         pub(crate) temp_c: f64,
         pub(crate) condition: String,
@@ -17800,7 +17533,7 @@ mod weather_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WeatherWarning {
+    pub struct WeatherWarning {
         pub(crate) severity: String, // "minor", "moderate", "severe", "extreme"
         pub(crate) headline: String,
         pub(crate) description: String,
@@ -17809,28 +17542,28 @@ mod weather_integration {
     }
 
     /// Global weather state
-    pub(crate) static WEATHER_STATE: std::sync::LazyLock<Mutex<Option<WeatherForecast>>> =
+    pub static WEATHER_STATE: std::sync::LazyLock<Mutex<Option<WeatherForecast>>> =
         std::sync::LazyLock::new(|| Mutex::new(None));
 
     /// Fetch weather from `OpenWeatherMap` (stub — would make HTTP request)
-    pub(crate) async fn fetch_weather(_api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
+    pub async fn fetch_weather(_api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
         // In production, this would call:
         // GET https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&appid={key}&units=metric
-        log_info(&format!("weather_integration: fetching weather for ({}, {})", lat, lon));
+        log_info(&format!("weather_integration: fetching weather for ({lat}, {lon})"));
 
         // Return synthetic data for offline/demo mode
         let forecast = WeatherForecast {
-            temperature_c: 15.0 + fastrand::f64() * 10.0 - 5.0,
-            feels_like_c: 13.0 + fastrand::f64() * 8.0 - 4.0,
-            humidity_pct: 60.0 + fastrand::f64() * 30.0,
-            wind_speed_ms: 3.0 + fastrand::f64() * 8.0,
+            temperature_c: fastrand::f64().mul_add(10.0, 15.0) - 5.0,
+            feels_like_c: fastrand::f64().mul_add(8.0, 13.0) - 4.0,
+            humidity_pct: fastrand::f64().mul_add(30.0, 60.0),
+            wind_speed_ms: fastrand::f64().mul_add(8.0, 3.0),
             wind_direction: ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][fastrand::usize(..8)].into(),
             condition: ["clear", "cloudy", "rain", "overcast", "drizzle"][fastrand::usize(..5)].into(),
             icon: "01d".into(),
             forecast: (0..12).map(|h| {
                 HourlyForecast {
                     hour: (chrono::Utc::now().hour() as i32 + h) % 24,
-                    temp_c: 12.0 + fastrand::f64() * 8.0,
+                    temp_c: fastrand::f64().mul_add(8.0, 12.0),
                     condition: ["clear", "cloudy", "rain"][fastrand::usize(..3)].into(),
                     precipitation_pct: fastrand::f64() * 60.0,
                 }
@@ -17845,7 +17578,7 @@ mod weather_integration {
     }
 
     /// Get routing advisory based on current weather
-    pub(crate) fn weather_advisory() -> Option<String> {
+    pub fn weather_advisory() -> Option<String> {
         let state = WEATHER_STATE.lock().unwrap();
         state.as_ref().map(|w| {
             match w.condition.as_str() {
@@ -17869,7 +17602,7 @@ mod historical_archive {
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct HistoricalEvent {
+    pub struct HistoricalEvent {
         pub(crate) year: i32,
         pub(crate) month: u8,
         pub(crate) day: u8,
@@ -17882,7 +17615,7 @@ mod historical_archive {
         pub(crate) significance: u8, // 1-5 (5 = major)
     }
 
-    pub(crate) static HISTORY: std::sync::LazyLock<Vec<HistoricalEvent>> = std::sync::LazyLock::new(|| {
+    pub static HISTORY: std::sync::LazyLock<Vec<HistoricalEvent>> = std::sync::LazyLock::new(|| {
         vec![
             HistoricalEvent { year: 1863, month: 1, day: 10, event_type: "line_opened".into(), station_id: None, station_name: None, line_id: Some("metropolitan".into()), line_name: Some("Metropolitan Railway".into()), description: "World's first underground railway opened between Paddington and Farringdon".into(), significance: 5 },
             HistoricalEvent { year: 1890, month: 12, day: 18, event_type: "line_opened".into(), station_id: None, station_name: None, line_id: Some("northern".into()), line_name: Some("City & South London Railway".into()), description: "First deep-level tube line opened (King William Street to Stockwell)".into(), significance: 5 },
@@ -17903,12 +17636,12 @@ mod historical_archive {
         ]
     });
 
-    pub(crate) fn get_history_by_year(year: i32) -> Vec<&'static HistoricalEvent> {
+    pub fn get_history_by_year(year: i32) -> Vec<&'static HistoricalEvent> {
         HISTORY.iter().filter(|e| e.year == year).collect()
     }
 
 
-    pub(crate) fn get_timeline() -> Vec<&'static HistoricalEvent> {
+    pub fn get_timeline() -> Vec<&'static HistoricalEvent> {
         let mut events: Vec<&'static HistoricalEvent> = HISTORY.iter().collect();
         events.sort_by(|a, b| a.year.cmp(&b.year).then(a.month.cmp(&b.month)));
         events
@@ -17923,22 +17656,22 @@ mod historical_archive {
 // SQL-like queries on the network graph (aggregations, filters, joins).
 // ============================================================================
 mod deep_analytics {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
     
     
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AnalyticsQuery {
+    pub struct AnalyticsQuery {
         pub(crate) metric: String, // "avg_travel_time", "busiest_line", "total_network_length", "station_density", "zone_coverage", "interchange_count"
         pub(crate) filters: HashMap<String, String>,
         pub(crate) group_by: Option<String>, // "zone", "line", "none"
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AnalyticsResult {
+    pub struct AnalyticsResult {
         pub(crate) metric: String,
         pub(crate) value: serde_json::Value,
         pub(crate) breakdown: Option<HashMap<String, serde_json::Value>>,
@@ -17979,7 +17712,7 @@ mod deep_analytics {
         total_dist / f64::from(count.max(1)) / 1000.0
     }
 
-    pub(crate) fn run_analytics(
+    pub fn run_analytics(
         query: &AnalyticsQuery,
         stations: &[Station],
         lines: &[Line],
@@ -18022,7 +17755,7 @@ mod deep_analytics {
             "station_density" => {
                 let density = station_density_per_zone(stations);
                 let breakdown: HashMap<String, serde_json::Value> = density.into_iter()
-                    .map(|(z, c)| (format!("Zone {}", z), serde_json::json!(c)))
+                    .map(|(z, c)| (format!("Zone {z}"), serde_json::json!(c)))
                     .collect();
                 AnalyticsResult {
                     metric: "station_density".into(),
@@ -18046,7 +17779,7 @@ mod deep_analytics {
                     zones.entry(st.zone).or_default().push(st.id.as_str());
                 }
                 let breakdown: HashMap<String, serde_json::Value> = zones.into_iter()
-                    .map(|(z, ids)| (format!("Zone {}", z), serde_json::json!({ "stations": ids.len() })))
+                    .map(|(z, ids)| (format!("Zone {z}"), serde_json::json!({ "stations": ids.len() })))
                     .collect();
                 AnalyticsResult {
                     metric: "zone_coverage".into(),
@@ -18072,14 +17805,14 @@ mod deep_analytics {
 // ============================================================================
 mod ml_predictor {
     
-    use crate::routing::*;
+    use crate::routing::Line;
     
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DelayPrediction {
+    pub struct DelayPrediction {
         pub(crate) line_id: String,
         pub(crate) line_name: String,
         pub(crate) predicted_delay_min: f64,
@@ -18098,7 +17831,7 @@ mod ml_predictor {
     }
 
     /// Predict delay for a given line using the linear model
-    pub(crate) fn predict_delay(
+    pub fn predict_delay(
         line: &Line,
         lines: &[Line],
         weather_temp_c: Option<f64>,
@@ -18124,7 +17857,7 @@ mod ml_predictor {
 
         let mut z = 0.0;
         for (i, &w) in MODEL_WEIGHTS.iter().enumerate() {
-            z += w * features[i];
+            z = w.mul_add(features[i], z);
         }
         let prob = sigmoid(z);
         let predicted_delay = prob * 15.0; // scale to 0-15 minutes
@@ -18135,7 +17868,7 @@ mod ml_predictor {
         if wind > 15.0 { factors.push("Strong wind".into()); }
         if line.stations.len() > 30 { factors.push("Long line".into()); }
 
-        let confidence = (0.5 + (1.0 - predicted_delay / 15.0) * 0.3).clamp(0.0, 1.0) * 100.0;
+        let confidence = (1.0 - predicted_delay / 15.0).mul_add(0.3, 0.5).clamp(0.0, 1.0) * 100.0;
         let recommendation = if predicted_delay > 8.0 {
             "Consider alternative routes or delaying travel".into()
         } else if predicted_delay > 4.0 {
@@ -18156,7 +17889,7 @@ mod ml_predictor {
     }
 
     /// Predict delays for all lines
-    pub(crate) fn predict_all_lines(
+    pub fn predict_all_lines(
         lines: &[Line],
         weather_temp_c: Option<f64>,
         weather_precip: Option<f64>,
@@ -18173,14 +17906,14 @@ mod ml_predictor {
 // Simulates the impact of line closures, new stations, service changes.
 // ============================================================================
 mod scenario_planner {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
     
     use serde::{Deserialize, Serialize};
     use std::collections::HashSet;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ScenarioDefinition {
+    pub struct ScenarioDefinition {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) description: String,
@@ -18189,7 +17922,7 @@ mod scenario_planner {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ScenarioAction {
+    pub struct ScenarioAction {
         pub(crate) action_type: String, // "close_line", "close_station", "add_station", "reduce_frequency", "increase_speed"
         pub(crate) target_id: String,
         pub(crate) target_name: Option<String>,
@@ -18197,7 +17930,7 @@ mod scenario_planner {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ScenarioImpact {
+    pub struct ScenarioImpact {
         pub(crate) scenario_id: String,
         pub(crate) affected_passengers: usize,
         pub(crate) avg_delay_increase_min: f64,
@@ -18208,7 +17941,7 @@ mod scenario_planner {
     }
 
     /// Evaluate impact of a scenario on the network
-    pub(crate) fn evaluate_scenario(
+    pub fn evaluate_scenario(
         scenario: &ScenarioDefinition,
         stations: &[Station],
         lines: &[Line],
@@ -18249,11 +17982,11 @@ mod scenario_planner {
                     total_delay -= 1.0;
                 }
                 "reduce_frequency" => {
-                    total_delay += 2.0 * action.magnitude;
+                    total_delay = 2.0f64.mul_add(action.magnitude, total_delay);
                     affected += 3000;
                 }
                 "increase_speed" => {
-                    total_delay -= 1.5 * action.magnitude;
+                    total_delay = 1.5f64.mul_add(-action.magnitude, total_delay);
                 }
                 _ => {}
             }
@@ -18283,15 +18016,15 @@ mod scenario_planner {
 // Finds routes that avoid stations without step-free access.
 // ============================================================================
 mod accessibility_route_planner {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use crate::accessibility_db::{AccessibilityStatus, get_accessibility};
-    use crate::routing::*;
+    use crate::routing::Line;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AccessibleRoute {
+    pub struct AccessibleRoute {
         pub(crate) from_station: String,
         pub(crate) to_station: String,
         pub(crate) steps: Vec<AccessibleStep>,
@@ -18302,7 +18035,7 @@ mod accessibility_route_planner {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AccessibleStep {
+    pub struct AccessibleStep {
         pub(crate) from_station: String,
         pub(crate) to_station: String,
         pub(crate) line_name: String,
@@ -18312,7 +18045,7 @@ mod accessibility_route_planner {
     }
 
     /// Find the most accessible route between two stations
-    pub(crate) fn plan_accessible_route(
+    pub fn plan_accessible_route(
         from_id: &str,
         to_id: &str,
         stations: &[Station],
@@ -18361,8 +18094,8 @@ mod accessibility_route_planner {
                     };
 
                     if is_better {
-                        visited.insert(next_id.to_string(), (new_cost, Some(current_id.clone()), Some(line.name.clone()), accessible));
-                        queue.push_back(next_id.to_string());
+                        visited.insert(next_id.clone(), (new_cost, Some(current_id.clone()), Some(line.name.clone()), accessible));
+                        queue.push_back(next_id.clone());
                     }
                 }
             }
@@ -18423,15 +18156,15 @@ mod accessibility_route_planner {
 // ============================================================================
 mod tfl_live_integration {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::{log_info, log_warn};
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
     /// `TfL` API response types (subset of full Unified API)
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TfLLineStatus {
+    pub struct TfLLineStatus {
         pub(crate) id: String,
         pub(crate) name: String,
         #[serde(rename = "lineStatuses")]
@@ -18439,7 +18172,7 @@ mod tfl_live_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TfLStatus {
+    pub struct TfLStatus {
         #[serde(rename = "statusSeverityDescription")]
         pub(crate) status_severity_description: Option<String>,
         pub(crate) reason: Option<String>,
@@ -18448,7 +18181,7 @@ mod tfl_live_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TfLValidityPeriod {
+    pub struct TfLValidityPeriod {
         #[serde(rename = "fromDate")]
         pub(crate) from_date: Option<String>,
         #[serde(rename = "toDate")]
@@ -18456,7 +18189,7 @@ mod tfl_live_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TfLArrivalPrediction {
+    pub struct TfLArrivalPrediction {
         #[serde(rename = "stationName")]
         pub(crate) station_name: String,
         #[serde(rename = "lineId")]
@@ -18476,49 +18209,47 @@ mod tfl_live_integration {
     }
 
     /// Global cached `TfL` status
-    pub(crate) static TFL_STATUS_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<TfLLineStatus>>>> =
+    pub static TFL_STATUS_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<TfLLineStatus>>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
     /// Fetch line status from `TfL` API
-    pub(crate) async fn fetch_line_status(api_key: &str) -> Result<Vec<TfLLineStatus>, String> {
+    pub async fn fetch_line_status(api_key: &str) -> Result<Vec<TfLLineStatus>, String> {
         let url = format!(
-            "https://api.tfl.gov.uk/Line/Mode/tube,dlr,overground,elizabeth-line/Status?app_key={}",
-            api_key
+            "https://api.tfl.gov.uk/Line/Mode/tube,dlr,overground,elizabeth-line/Status?app_key={api_key}"
         );
         match reqwest::get(&url).await {
             Ok(resp) => {
-                let data: Vec<TfLLineStatus> = resp.json().await.map_err(|e| format!("TfL parse error: {}", e))?;
+                let data: Vec<TfLLineStatus> = resp.json().await.map_err(|e| format!("TfL parse error: {e}"))?;
                 let mut cache = TFL_STATUS_CACHE.lock().unwrap();
                 cache.insert("line_status".into(), data.clone());
                 log_info(&format!("tfl_live: fetched {} line statuses", data.len()));
                 Ok(data)
             }
             Err(e) => {
-                log_warn(&format!("tfl_live: fetch failed: {} (using cache)", e));
+                log_warn(&format!("tfl_live: fetch failed: {e} (using cache)"));
                 let cache = TFL_STATUS_CACHE.lock().unwrap();
-                cache.get("line_status").cloned().ok_or_else(|| format!("TfL fetch failed: {}", e))
+                cache.get("line_status").cloned().ok_or_else(|| format!("TfL fetch failed: {e}"))
             }
         }
     }
 
     /// Fetch arrivals for a given station from `TfL` API
-    pub(crate) async fn fetch_arrivals(station_id: &str, api_key: &str) -> Result<Vec<TfLArrivalPrediction>, String> {
+    pub async fn fetch_arrivals(station_id: &str, api_key: &str) -> Result<Vec<TfLArrivalPrediction>, String> {
         let url = format!(
-            "https://api.tfl.gov.uk/StopPoint/{}/Arrivals?app_key={}",
-            station_id, api_key
+            "https://api.tfl.gov.uk/StopPoint/{station_id}/Arrivals?app_key={api_key}"
         );
         match reqwest::get(&url).await {
             Ok(resp) => {
-                let data: Vec<TfLArrivalPrediction> = resp.json().await.map_err(|e| format!("TfL arrivals parse error: {}", e))?;
+                let data: Vec<TfLArrivalPrediction> = resp.json().await.map_err(|e| format!("TfL arrivals parse error: {e}"))?;
                 log_info(&format!("tfl_live: fetched {} arrivals for station {}", data.len(), station_id));
                 Ok(data)
             }
-            Err(e) => Err(format!("TfL arrivals fetch failed: {}", e)),
+            Err(e) => Err(format!("TfL arrivals fetch failed: {e}")),
         }
     }
 
     /// Generate synthetic TfL-like status data when API is unavailable
-    pub(crate) fn synthetic_line_status(lines: &[Line]) -> Vec<TfLLineStatus> {
+    pub fn synthetic_line_status(lines: &[Line]) -> Vec<TfLLineStatus> {
         let now = chrono::Utc::now();
         let _hour = f64::from(now.hour());
         let _weekday = now.weekday().num_days_from_monday();
@@ -18553,15 +18284,15 @@ mod tfl_live_integration {
 // Finds the lowest-CO2 route, not just the fastest.
 // ============================================================================
 mod eco_routing {
-    use crate::primitives::*;
-    use crate::routing::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
     
     
     use serde::{Deserialize, Serialize};
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct EcoRoute {
+    pub struct EcoRoute {
         pub(crate) from_station: String,
         pub(crate) to_station: String,
         pub(crate) legs: Vec<EcoLeg>,
@@ -18573,7 +18304,7 @@ mod eco_routing {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct EcoLeg {
+    pub struct EcoLeg {
         pub(crate) mode: String,
         pub(crate) from_station: String,
         pub(crate) to_station: String,
@@ -18588,7 +18319,7 @@ mod eco_routing {
     const RAIL_CO2_PER_KM: f64 = 0.041;
 
     /// Find the most eco-friendly route between two stations
-    pub(crate) fn plan_eco_route(
+    pub fn plan_eco_route(
         from_id: &str,
         to_id: &str,
         stations: &[Station],
@@ -18685,13 +18416,13 @@ mod eco_routing {
 // ============================================================================
 mod crowd_sourcing {
     
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
     
     use std::sync::Mutex;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct Contribution {
+    pub struct Contribution {
         pub(crate) id: String,
         pub(crate) contributor: String,
         pub(crate) target_type: String, // "station", "line", "poi", "accessibility"
@@ -18705,14 +18436,14 @@ mod crowd_sourcing {
         pub(crate) notes: Option<String>,
     }
 
-    pub(crate) static CONTRIBUTIONS: std::sync::LazyLock<Mutex<Vec<Contribution>>> =
+    pub static CONTRIBUTIONS: std::sync::LazyLock<Mutex<Vec<Contribution>>> =
         std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-    pub(crate) static CONTRIBUTION_ID: std::sync::LazyLock<Mutex<u64>> =
+    pub static CONTRIBUTION_ID: std::sync::LazyLock<Mutex<u64>> =
         std::sync::LazyLock::new(|| Mutex::new(0));
 
     /// Submit a new contribution
-    pub(crate) fn submit_contribution(
+    pub fn submit_contribution(
         contributor: &str,
         target_type: &str,
         target_id: &str,
@@ -18722,7 +18453,7 @@ mod crowd_sourcing {
     ) -> String {
         let mut id_counter = CONTRIBUTION_ID.lock().unwrap();
         *id_counter += 1;
-        let id = format!("contrib_{}", id_counter);
+        let id = format!("contrib_{id_counter}");
 
         let contrib = Contribution {
             id: id.clone(),
@@ -18739,12 +18470,12 @@ mod crowd_sourcing {
         };
 
         CONTRIBUTIONS.lock().unwrap().push(contrib);
-        log_info(&format!("crowd_sourcing: new contribution '{}' by {}", id, contributor));
+        log_info(&format!("crowd_sourcing: new contribution '{id}' by {contributor}"));
         id
     }
 
     /// Vote on a contribution (approve/reject)
-    pub(crate) fn vote_contribution(id: &str, approve: bool) -> bool {
+    pub fn vote_contribution(id: &str, approve: bool) -> bool {
         let mut db = CONTRIBUTIONS.lock().unwrap();
         if let Some(contrib) = db.iter_mut().find(|c| c.id == id) {
             contrib.votes += if approve { 1 } else { -1 };
@@ -18760,7 +18491,7 @@ mod crowd_sourcing {
         }
     }
 
-    pub(crate) fn get_contributions(status: Option<&str>) -> Vec<Contribution> {
+    pub fn get_contributions(status: Option<&str>) -> Vec<Contribution> {
         let db = CONTRIBUTIONS.lock().unwrap();
         match status {
             Some(s) => db.iter().filter(|c| c.status == s).cloned().collect(),
@@ -18768,7 +18499,7 @@ mod crowd_sourcing {
         }
     }
 
-    pub(crate) fn get_pending_count() -> usize {
+    pub fn get_pending_count() -> usize {
         CONTRIBUTIONS.lock().unwrap().iter().filter(|c| c.status == "pending").count()
     }
 }
@@ -18778,13 +18509,13 @@ mod crowd_sourcing {
 // Shows parking facilities with capacity, pricing, and real-time availability.
 // ============================================================================
 mod parking_integration {
-    use crate::primitives::*;
-    use crate::logger::*;
+    use crate::primitives::Station;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ParkingFacility {
+    pub struct ParkingFacility {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -18800,24 +18531,24 @@ mod parking_integration {
         pub(crate) updated_at_ms: i64,
     }
 
-    pub(crate) static PARKING_FACILITIES: std::sync::LazyLock<std::sync::Mutex<Vec<ParkingFacility>>> =
+    pub static PARKING_FACILITIES: std::sync::LazyLock<std::sync::Mutex<Vec<ParkingFacility>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
     /// Initialize parking facilities for major stations
-    pub(crate) fn initialize_parking(stations: &[Station]) {
+    pub fn initialize_parking(stations: &[Station]) {
         let mut db = PARKING_FACILITIES.lock().unwrap();
         let mut id = 0_u32;
 
         for st in stations.iter().filter(|s| s.is_interchange && s.is_open).take(30) {
             id += 1;
             db.push(ParkingFacility {
-                id: format!("park_{}", id),
+                id: format!("park_{id}"),
                 station_id: st.id.clone(),
                 station_name: st.name.clone(),
                 facility_type: "car".into(),
                 total_spaces: fastrand::u32(20..200),
                 available_spaces: fastrand::u32(5..50),
-                price_per_hour_gbp: 1.50 + fastrand::f64() * 3.0,
+                price_per_hour_gbp: fastrand::f64().mul_add(3.0, 1.50),
                 has_cctv: fastrand::f64() < 0.7,
                 is_covered: fastrand::f64() < 0.3,
                 ev_charging: fastrand::f64() < 0.2,
@@ -18829,7 +18560,7 @@ mod parking_integration {
             // Also add bike parking
             id += 1;
             db.push(ParkingFacility {
-                id: format!("park_{}", id),
+                id: format!("park_{id}"),
                 station_id: st.id.clone(),
                 station_name: st.name.clone(),
                 facility_type: "bicycle".into(),
@@ -18847,14 +18578,14 @@ mod parking_integration {
         log_info(&format!("parking: initialized {} facilities for interchanges", db.len()));
     }
 
-    pub(crate) fn get_parking_near_station(station_id: &str) -> Vec<ParkingFacility> {
+    pub fn get_parking_near_station(station_id: &str) -> Vec<ParkingFacility> {
         PARKING_FACILITIES.lock().unwrap().iter()
             .filter(|f| f.station_id == station_id)
             .cloned()
             .collect()
     }
 
-    pub(crate) fn get_parking_by_type(facility_type: &str) -> Vec<ParkingFacility> {
+    pub fn get_parking_by_type(facility_type: &str) -> Vec<ParkingFacility> {
         PARKING_FACILITIES.lock().unwrap().iter()
             .filter(|f| f.facility_type == facility_type)
             .cloned()
@@ -18862,7 +18593,7 @@ mod parking_integration {
     }
 
     /// Simulate parking occupancy change (for real-time demo)
-    pub(crate) fn tick_parking() {
+    pub fn tick_parking() {
         let mut db = PARKING_FACILITIES.lock().unwrap();
         for facility in db.iter_mut() {
             let change = fastrand::i32(-5..=5) as i32;
@@ -18877,13 +18608,13 @@ mod parking_integration {
 // Shows cycle routes, hire docking stations, and cycle-friendly roads.
 // ============================================================================
 mod cycle_network {
-    use crate::primitives::*;
-    use crate::logger::*;
+    use crate::primitives::{Coordinate, Station};
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
     
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CycleRoute {
+    pub struct CycleRoute {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) route_type: String, // "cs" (cycle superhighway), "qn" (quietway), "lcn" (local), "ncn" (national)
@@ -18895,7 +18626,7 @@ mod cycle_network {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DockingStation {
+    pub struct DockingStation {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) lat: f64,
@@ -18907,7 +18638,7 @@ mod cycle_network {
         pub(crate) status: String, // "active", "full", "empty", "closed"
     }
 
-    pub(crate) static CYCLE_ROUTES: std::sync::LazyLock<Vec<CycleRoute>> = std::sync::LazyLock::new(|| {
+    pub static CYCLE_ROUTES: std::sync::LazyLock<Vec<CycleRoute>> = std::sync::LazyLock::new(|| {
         vec![
             CycleRoute {
                 id: "cs3".into(), name: "CS3 — Superhighway 3".into(), route_type: "cs".into(),
@@ -18940,10 +18671,10 @@ mod cycle_network {
         ]
     });
 
-    pub(crate) static DOCKING_STATIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DockingStation>>> =
+    pub static DOCKING_STATIONS: std::sync::LazyLock<std::sync::Mutex<Vec<DockingStation>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_docking(stations: &[Station]) {
+    pub fn initialize_docking(stations: &[Station]) {
         let mut db = DOCKING_STATIONS.lock().unwrap();
         for (i, st) in stations.iter().filter(|s| s.is_open).enumerate().take(50) {
             let total = fastrand::u32(15..40);
@@ -18952,8 +18683,8 @@ mod cycle_network {
             db.push(DockingStation {
                 id: format!("santander_{}", i+1),
                 name: format!("{} Docking Station", st.name),
-                lat: st.coord.lat + fastrand::f64() * 0.002 - 0.001,
-                lon: st.coord.lon + fastrand::f64() * 0.002 - 0.001,
+                lat: fastrand::f64().mul_add(0.002, st.coord.lat) - 0.001,
+                lon: fastrand::f64().mul_add(0.002, st.coord.lon) - 0.001,
                 total_docks: total,
                 available_bikes: available,
                 available_docks: total.saturating_sub(available),
@@ -18964,7 +18695,7 @@ mod cycle_network {
         log_info(&format!("cycle_network: initialized {} docking stations", db.len()));
     }
 
-    pub(crate) fn get_nearby_docking(lat: f64, lon: f64, radius_m: f64) -> Vec<DockingStation> {
+    pub fn get_nearby_docking(lat: f64, lon: f64, radius_m: f64) -> Vec<DockingStation> {
         let coord = Coordinate { lat, lon };
         DOCKING_STATIONS.lock().unwrap().iter()
             .filter(|d| coord.distance_to(&Coordinate { lat: d.lat, lon: d.lon }) <= radius_m)
@@ -18972,7 +18703,7 @@ mod cycle_network {
             .collect()
     }
 
-    pub(crate) fn tick_docking() {
+    pub fn tick_docking() {
         let mut db = DOCKING_STATIONS.lock().unwrap();
         for station in db.iter_mut() {
             let change = fastrand::i32(-3..=3);
@@ -18990,13 +18721,13 @@ mod cycle_network {
 // MOBILITY AS A SERVICE (MaaS) - E-scooters, car share, ride-hail, bike hire
 // ============================================================================
 mod mobility_service {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::{Station, Coordinate};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct MaaSProvider {
+    pub struct MaaSProvider {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) service_type: String, // "escooter", "ebike", "carshare", "ridehail", "bikehire"
@@ -19009,12 +18740,12 @@ mod mobility_service {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static MAAS_PROVIDERS: std::sync::LazyLock<std::sync::Mutex<Vec<MaaSProvider>>> =
+    pub static MAAS_PROVIDERS: std::sync::LazyLock<std::sync::Mutex<Vec<MaaSProvider>>> =
         std::sync::LazyLock::new(|| {
             std::sync::Mutex::new(Vec::new())
         });
 
-    pub(crate) fn initialize_maas(stations: &[Station]) {
+    pub fn initialize_maas(stations: &[Station]) {
         let mut db = MAAS_PROVIDERS.lock().unwrap();
         db.clear();
         let open_stations: Vec<&Station> = stations.iter().filter(|s| s.is_open).collect();
@@ -19030,7 +18761,7 @@ mod mobility_service {
         let prices: HashMap<&str, f64> = [
             ("escooter", 0.25), ("ebike", 0.15), ("carshare", 0.45),
             ("ridehail", 1.50), ("bikehire", 0.08),
-        ].iter().cloned().collect();
+        ].iter().copied().collect();
 
         for (name, stype) in &names {
             // Place near a random open station
@@ -19046,8 +18777,8 @@ mod mobility_service {
                     id,
                     name: name.to_string(),
                     service_type: stype.to_string(),
-                    lat: st.coord.lat + fastrand::f64() * 0.005 - 0.0025,
-                    lon: st.coord.lon + fastrand::f64() * 0.005 - 0.0025,
+                    lat: fastrand::f64().mul_add(0.005, st.coord.lat) - 0.0025,
+                    lon: fastrand::f64().mul_add(0.005, st.coord.lon) - 0.0025,
                     station_id: st.id.clone(),
                     available_units: total / 2 + fastrand::u32(0..=total / 2),
                     total_units: total,
@@ -19059,7 +18790,7 @@ mod mobility_service {
         log_info(&format!("mobility_service: initialized {} MaaS providers", db.len()));
     }
 
-    pub(crate) fn get_nearby_maas(lat: f64, lon: f64, radius_m: f64, service_type: Option<&str>) -> Vec<MaaSProvider> {
+    pub fn get_nearby_maas(lat: f64, lon: f64, radius_m: f64, service_type: Option<&str>) -> Vec<MaaSProvider> {
         let db = MAAS_PROVIDERS.lock().unwrap();
         let origin = Coordinate::new(lat, lon);
         db.iter()
@@ -19079,7 +18810,7 @@ mod mobility_service {
             .collect()
     }
 
-    pub(crate) fn tick_maas() {
+    pub fn tick_maas() {
         let mut db = MAAS_PROVIDERS.lock().unwrap();
         for provider in db.iter_mut() {
             let change = fastrand::i32(-2..=3);
@@ -19099,11 +18830,11 @@ mod mobility_service {
 // NOISE MONITORING - Noise level data near stations
 // ============================================================================
 mod noise_monitoring {
-    use crate::primitives::*;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct NoiseReading {
+    pub struct NoiseReading {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) db_level: f64,       // decibels
@@ -19113,17 +18844,17 @@ mod noise_monitoring {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static NOISE_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<NoiseReading>>> =
+    pub static NOISE_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<NoiseReading>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_noise_monitoring(stations: &[Station]) {
+    pub fn initialize_noise_monitoring(stations: &[Station]) {
         let mut db = NOISE_READINGS.lock().unwrap();
         db.clear();
         let sources = ["train", "traffic", "construction", "crowd"];
         for station in stations.iter().filter(|s| s.is_open).take(100) {
-            let base_db = fastrand::f64() * 30.0 + 50.0; // 50-80 dB
+            let base_db = fastrand::f64().mul_add(30.0, 50.0); // 50-80 dB
             let source = sources[fastrand::usize(..sources.len())];
-            let peak = base_db + fastrand::f64() * 15.0;
+            let peak = fastrand::f64().mul_add(15.0, base_db);
             let category = if base_db < 55.0 { "quiet".into() }
                 else if base_db < 65.0 { "moderate".into() }
                 else if base_db < 75.0 { "loud".into() }
@@ -19141,23 +18872,23 @@ mod noise_monitoring {
         }
     }
 
-    pub(crate) fn get_noise_by_station(station_id: &str) -> Option<NoiseReading> {
+    pub fn get_noise_by_station(station_id: &str) -> Option<NoiseReading> {
         let db = NOISE_READINGS.lock().unwrap();
         db.iter().find(|r| r.station_id == station_id).cloned()
     }
 
-    pub(crate) fn get_noise_summary() -> Vec<NoiseReading> {
+    pub fn get_noise_summary() -> Vec<NoiseReading> {
         let db = NOISE_READINGS.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_noise() {
+    pub fn tick_noise() {
         let mut db = NOISE_READINGS.lock().unwrap();
         for reading in db.iter_mut() {
-            let drift = fastrand::f64() * 6.0 - 3.0;
+            let drift = fastrand::f64().mul_add(6.0, -3.0);
             let new_db = (reading.db_level + drift).clamp(35.0, 95.0);
             reading.db_level = (new_db * 10.0).round() / 10.0;
-            reading.peak_db = (reading.peak_db + fastrand::f64() * 4.0 - 2.0).max(reading.db_level);
+            reading.peak_db = (fastrand::f64().mul_add(4.0, reading.peak_db) - 2.0).max(reading.db_level);
             reading.timestamp_ms = chrono::Utc::now().timestamp_millis();
             reading.category = if reading.db_level < 55.0 { "quiet".into() }
                 else if reading.db_level < 65.0 { "moderate".into() }
@@ -19171,13 +18902,13 @@ mod noise_monitoring {
 // STATION VENDORS - Shops, cafes, ATMs, amenities at stations
 // ============================================================================
 mod station_vendors {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use chrono::Timelike;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationVendor {
+    pub struct StationVendor {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -19189,10 +18920,10 @@ mod station_vendors {
         pub(crate) is_open_now: bool,
     }
 
-    pub(crate) static STATION_VENDORS: std::sync::LazyLock<std::sync::Mutex<Vec<StationVendor>>> =
+    pub static STATION_VENDORS: std::sync::LazyLock<std::sync::Mutex<Vec<StationVendor>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_vendors(stations: &[Station]) {
+    pub fn initialize_vendors(stations: &[Station]) {
         let mut db = STATION_VENDORS.lock().unwrap();
         db.clear();
 
@@ -19222,7 +18953,7 @@ mod station_vendors {
                     name: template.1.to_string(),
                     opening_hours: template.2.to_string(),
                     has_wheelchair_access: template.3,
-                    rating: (fastrand::f64() * 2.0 + 3.0).min(5.0),
+                    rating: fastrand::f64().mul_add(2.0, 3.0).min(5.0),
                     is_open_now: fastrand::f64() < 0.7,
                 });
             }
@@ -19230,22 +18961,22 @@ mod station_vendors {
         log_info(&format!("station_vendors: initialized {} vendors across {} stations", db.len(), stations.len()));
     }
 
-    pub(crate) fn get_vendors_for_station(station_id: &str) -> Vec<StationVendor> {
+    pub fn get_vendors_for_station(station_id: &str) -> Vec<StationVendor> {
         let db = STATION_VENDORS.lock().unwrap();
         db.iter().filter(|v| v.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all_vendors() -> Vec<StationVendor> {
+    pub fn get_all_vendors() -> Vec<StationVendor> {
         let db = STATION_VENDORS.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_vendors() {
+    pub fn tick_vendors() {
         let mut db = STATION_VENDORS.lock().unwrap();
         let hour = chrono::Utc::now().hour();
         for vendor in db.iter_mut() {
             vendor.is_open_now = (6..=22).contains(&hour) && fastrand::f64() < 0.9;
-            vendor.rating = (vendor.rating + fastrand::f64() * 0.2 - 0.1).clamp(1.0, 5.0);
+            vendor.rating = (fastrand::f64().mul_add(0.2, vendor.rating) - 0.1).clamp(1.0, 5.0);
         }
     }
 }
@@ -19254,12 +18985,12 @@ mod station_vendors {
 // AIR QUALITY MONITORING - PM2.5, NO2, O3 near stations
 // ============================================================================
 mod air_quality {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::{Station, Coordinate};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AirQualityReading {
+    pub struct AirQualityReading {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) lat: f64,
@@ -19272,16 +19003,16 @@ mod air_quality {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static AIR_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<AirQualityReading>>> =
+    pub static AIR_READINGS: std::sync::LazyLock<std::sync::Mutex<Vec<AirQualityReading>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_air_quality(stations: &[Station]) {
+    pub fn initialize_air_quality(stations: &[Station]) {
         let mut db = AIR_READINGS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(150) {
-            let pm25 = fastrand::f64() * 40.0 + 5.0;
-            let no2 = fastrand::f64() * 60.0 + 10.0;
-            let o3 = fastrand::f64() * 50.0 + 20.0;
+            let pm25 = fastrand::f64().mul_add(40.0, 5.0);
+            let no2 = fastrand::f64().mul_add(60.0, 10.0);
+            let o3 = fastrand::f64().mul_add(50.0, 20.0);
             let aqi = (pm25 * 2.0 + no2 * 1.5 + o3 * 0.5) as u32;
             let category = if aqi < 50 { "good".into() }
                 else if aqi < 100 { "moderate".into() }
@@ -19303,7 +19034,7 @@ mod air_quality {
         log_info(&format!("air_quality: initialized {} readings", db.len()));
     }
 
-    pub(crate) fn get_nearby_readings(lat: f64, lon: f64, radius_m: f64) -> Vec<AirQualityReading> {
+    pub fn get_nearby_readings(lat: f64, lon: f64, radius_m: f64) -> Vec<AirQualityReading> {
         let db = AIR_READINGS.lock().unwrap();
         let origin = Coordinate::new(lat, lon);
         db.iter()
@@ -19317,13 +19048,13 @@ mod air_quality {
 
 
 
-    pub(crate) fn tick_air_quality() {
+    pub fn tick_air_quality() {
         let mut db = AIR_READINGS.lock().unwrap();
         for r in db.iter_mut() {
-            r.pm25 = (r.pm25 + fastrand::f64() * 4.0 - 2.0).clamp(1.0, 200.0);
-            r.no2 = (r.no2 + fastrand::f64() * 6.0 - 3.0).clamp(2.0, 300.0);
-            r.o3 = (r.o3 + fastrand::f64() * 5.0 - 2.5).clamp(5.0, 250.0);
-            r.aqi = (r.pm25 * 2.0 + r.no2 * 1.5 + r.o3 * 0.5) as u32;
+            r.pm25 = (fastrand::f64().mul_add(4.0, r.pm25) - 2.0).clamp(1.0, 200.0);
+            r.no2 = (fastrand::f64().mul_add(6.0, r.no2) - 3.0).clamp(2.0, 300.0);
+            r.o3 = (fastrand::f64().mul_add(5.0, r.o3) - 2.5).clamp(5.0, 250.0);
+            r.aqi = r.o3.mul_add(0.5, r.no2.mul_add(1.5, r.pm25 * 2.0)) as u32;
             r.category = if r.aqi < 50 { "good".into() }
                 else if r.aqi < 100 { "moderate".into() }
                 else if r.aqi < 200 { "poor".into() }
@@ -19337,12 +19068,12 @@ mod air_quality {
 // CROWD DENSITY - Real-time passenger density heatmap
 // ============================================================================
 mod crowd_density {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CrowdDensityPoint {
+    pub struct CrowdDensityPoint {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) lat: f64,
@@ -19354,10 +19085,10 @@ mod crowd_density {
         pub(crate) timestamp_ms: i64,
     }
 
-    pub(crate) static CROWD_DENSITY: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdDensityPoint>>> =
+    pub static CROWD_DENSITY: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdDensityPoint>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_crowd_density(stations: &[Station]) {
+    pub fn initialize_crowd_density(stations: &[Station]) {
         let mut db = CROWD_DENSITY.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open) {
@@ -19383,20 +19114,20 @@ mod crowd_density {
         log_info(&format!("crowd_density: initialized {} points", db.len()));
     }
 
-    pub(crate) fn get_density_for_station(station_id: &str) -> Vec<CrowdDensityPoint> {
+    pub fn get_density_for_station(station_id: &str) -> Vec<CrowdDensityPoint> {
         let db = CROWD_DENSITY.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all_density() -> Vec<CrowdDensityPoint> {
+    pub fn get_all_density() -> Vec<CrowdDensityPoint> {
         let db = CROWD_DENSITY.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_density() {
+    pub fn tick_density() {
         let mut db = CROWD_DENSITY.lock().unwrap();
         for p in db.iter_mut() {
-            let drift = fastrand::f64() * 0.1 - 0.05;
+            let drift = fastrand::f64().mul_add(0.1, -0.05);
             let new_density = (p.density + drift).clamp(0.0, 1.0);
             p.density = (new_density * 100.0).round() / 100.0;
             let capacity = 15_000;
@@ -19417,12 +19148,12 @@ mod crowd_density {
 // WIFI HOTSPOT FINDER - Public Wi-Fi at stations
 // ============================================================================
 mod wifi_finder {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WifiHotspot {
+    pub struct WifiHotspot {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -19435,10 +19166,10 @@ mod wifi_finder {
         pub(crate) is_crowded: bool,
     }
 
-    pub(crate) static WIFI_HOTSPOTS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiHotspot>>> =
+    pub static WIFI_HOTSPOTS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiHotspot>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_wifi(stations: &[Station]) {
+    pub fn initialize_wifi(stations: &[Station]) {
         let mut db = WIFI_HOTSPOTS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(200) {
@@ -19449,9 +19180,9 @@ mod wifi_finder {
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
                     ssid: format!("TfL-WiFi-{}", station.name.replace(' ', "").chars().take(8).collect::<String>()),
-                    lat: station.coord.lat + fastrand::f64() * 0.002 - 0.001,
-                    lon: station.coord.lon + fastrand::f64() * 0.002 - 0.001,
-                    speed_mbps: (fastrand::f64() * 80.0 + 10.0).round(),
+                    lat: fastrand::f64().mul_add(0.002, station.coord.lat) - 0.001,
+                    lon: fastrand::f64().mul_add(0.002, station.coord.lon) - 0.001,
+                    speed_mbps: fastrand::f64().mul_add(80.0, 10.0).round(),
                     is_free: true,
                     has_power: fastrand::f64() < 0.4,
                     is_crowded: fastrand::f64() < 0.3,
@@ -19461,12 +19192,12 @@ mod wifi_finder {
         log_info(&format!("wifi_finder: initialized {} hotspots", db.len()));
     }
 
-    pub(crate) fn get_hotspots_for_station(station_id: &str) -> Vec<WifiHotspot> {
+    pub fn get_hotspots_for_station(station_id: &str) -> Vec<WifiHotspot> {
         let db = WIFI_HOTSPOTS.lock().unwrap();
         db.iter().filter(|h| h.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all_hotspots() -> Vec<WifiHotspot> {
+    pub fn get_all_hotspots() -> Vec<WifiHotspot> {
         let db = WIFI_HOTSPOTS.lock().unwrap();
         db.clone()
     }
@@ -19476,12 +19207,12 @@ mod wifi_finder {
 // TRANSIT DESERTS - Identify areas poorly served by transit
 // ============================================================================
 mod transit_deserts {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Coordinate;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct DesertCell {
+    pub struct DesertCell {
         pub(crate) lat: f64,
         pub(crate) lon: f64,
         pub(crate) nearest_station_dist_m: f64,
@@ -19490,7 +19221,7 @@ mod transit_deserts {
         pub(crate) has_service: bool,
     }
 
-    pub(crate) fn compute_deserts(bounds_json: &str) -> Vec<DesertCell> {
+    pub fn compute_deserts(bounds_json: &str) -> Vec<DesertCell> {
         // Parse bounds if provided, else use Greater London
         let (min_lat, min_lon, max_lat, max_lon) = if let Ok(v) = serde_json::from_str::<serde_json::Value>(bounds_json) {
             (
@@ -19541,12 +19272,12 @@ mod transit_deserts {
 // ACCESSIBILITY AUDIT - Comprehensive step-free access scoring
 // ============================================================================
 mod accessibility_audit {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AccessibilityAudit {
+    pub struct AccessibilityAudit {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) step_free_access: bool,
@@ -19560,10 +19291,10 @@ mod accessibility_audit {
         pub(crate) grade: String,
     }
 
-    pub(crate) static AUDITS: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAudit>>> =
+    pub static AUDITS: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAudit>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_audits(stations: &[Station]) {
+    pub fn initialize_audits(stations: &[Station]) {
         let mut db = AUDITS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open) {
@@ -19604,7 +19335,7 @@ mod accessibility_audit {
         log_info(&format!("accessibility_audit: initialized {} audits", db.len()));
     }
 
-    pub(crate) fn get_audit(station_id: &str) -> Option<AccessibilityAudit> {
+    pub fn get_audit(station_id: &str) -> Option<AccessibilityAudit> {
         let db = AUDITS.lock().unwrap();
         db.iter().find(|a| a.station_id == station_id).cloned()
     }
@@ -19617,11 +19348,11 @@ mod accessibility_audit {
 // ENERGY GRID - Power consumption of the network
 // ============================================================================
 mod energy_grid {
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct EnergyReport {
+    pub struct EnergyReport {
         pub(crate) total_kwh_per_day: f64,
         pub(crate) traction_kwh: f64,
         pub(crate) stations_kwh: f64,
@@ -19631,7 +19362,7 @@ mod energy_grid {
         pub(crate) cost_gbp_per_day: f64,
     }
 
-    pub(crate) static ENERGY: std::sync::LazyLock<std::sync::Mutex<EnergyReport>> =
+    pub static ENERGY: std::sync::LazyLock<std::sync::Mutex<EnergyReport>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(EnergyReport {
             total_kwh_per_day: 0.0,
             traction_kwh: 0.0,
@@ -19642,7 +19373,7 @@ mod energy_grid {
             cost_gbp_per_day: 0.0,
         }));
 
-    pub(crate) fn initialize_energy(station_count: usize, line_count: usize) {
+    pub fn initialize_energy(station_count: usize, line_count: usize) {
         let mut e = ENERGY.lock().unwrap();
         e.traction_kwh = line_count as f64 * 45_000.0;
         e.stations_kwh = station_count as f64 * 3200.0;
@@ -19654,19 +19385,19 @@ mod energy_grid {
         log_info(&format!("energy_grid: {} kWh/day, {}% renewable", e.total_kwh_per_day as u32, e.renewable_pct as u32));
     }
 
-    pub(crate) fn get_report() -> EnergyReport {
+    pub fn get_report() -> EnergyReport {
         let e = ENERGY.lock().unwrap();
         e.clone()
     }
 
-    pub(crate) fn tick_energy() {
+    pub fn tick_energy() {
         let mut e = ENERGY.lock().unwrap();
-        let factor = 0.95 + fastrand::f64() * 0.1;
+        let factor = fastrand::f64().mul_add(0.1, 0.95);
         e.total_kwh_per_day *= factor;
         e.traction_kwh *= factor;
         e.stations_kwh *= factor;
         e.signalling_kwh *= factor;
-        e.renewable_pct = (e.renewable_pct + fastrand::f64() * 2.0 - 1.0).clamp(0.0, 100.0);
+        e.renewable_pct = (fastrand::f64().mul_add(2.0, e.renewable_pct) - 1.0).clamp(0.0, 100.0);
         e.co2_kg_per_day = e.total_kwh_per_day * 0.21 * (1.0 - e.renewable_pct / 100.0);
         e.cost_gbp_per_day = e.total_kwh_per_day * 0.18;
     }
@@ -19677,13 +19408,13 @@ mod energy_grid {
 // ============================================================================
 mod signal_optimizer {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct SignalPlan {
+    pub struct SignalPlan {
         pub(crate) line_id: String,
         pub(crate) line_name: String,
         pub(crate) headway_sec: u32,      // time between trains
@@ -19693,17 +19424,17 @@ mod signal_optimizer {
         pub(crate) recommendation: String,
     }
 
-    pub(crate) static SIGNAL_PLANS: std::sync::LazyLock<std::sync::Mutex<Vec<SignalPlan>>> =
+    pub static SIGNAL_PLANS: std::sync::LazyLock<std::sync::Mutex<Vec<SignalPlan>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn optimize_signals(lines: &[Line]) {
+    pub fn optimize_signals(lines: &[Line]) {
         let mut db = SIGNAL_PLANS.lock().unwrap();
         db.clear();
-        for line in lines.iter() {
+        for line in lines {
             let base_headway = if line.is_custom { 600 } else { 120 + fastrand::u32(0..=180) };
             let trains = (line.stations.len() as f64 * 2.5) as u32 + 4;
             let throughput = (3600.0 / f64::from(base_headway) * f64::from(trains) * 0.8) as u32;
-            let efficiency = 0.6 + fastrand::f64() * 0.35;
+            let efficiency = fastrand::f64().mul_add(0.35, 0.6);
             let rec = if efficiency < 0.7 {
                 "Increase frequency during peak hours".into()
             } else if base_headway > 300 {
@@ -19724,7 +19455,7 @@ mod signal_optimizer {
         log_info(&format!("signal_optimizer: optimized {} lines", db.len()));
     }
 
-    pub(crate) fn get_plans() -> Vec<SignalPlan> {
+    pub fn get_plans() -> Vec<SignalPlan> {
         let db = SIGNAL_PLANS.lock().unwrap();
         db.clone()
     }
@@ -19734,12 +19465,12 @@ mod signal_optimizer {
 // PLATFORM CAPACITY - Real-time platform crowding prediction
 // ============================================================================
 mod platform_capacity {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct PlatformStatus {
+    pub struct PlatformStatus {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) platform_number: u32,
@@ -19749,10 +19480,10 @@ mod platform_capacity {
         pub(crate) status: String, // "clear", "busy", "hold"
     }
 
-    pub(crate) static PLATFORMS: std::sync::LazyLock<std::sync::Mutex<Vec<PlatformStatus>>> =
+    pub static PLATFORMS: std::sync::LazyLock<std::sync::Mutex<Vec<PlatformStatus>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_platforms(stations: &[Station]) {
+    pub fn initialize_platforms(stations: &[Station]) {
         let mut db = PLATFORMS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(100) {
@@ -19776,15 +19507,15 @@ mod platform_capacity {
         log_info(&format!("platform_capacity: initialized {} platforms", db.len()));
     }
 
-    pub(crate) fn get_platforms_for_station(station_id: &str) -> Vec<PlatformStatus> {
+    pub fn get_platforms_for_station(station_id: &str) -> Vec<PlatformStatus> {
         let db = PLATFORMS.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn tick_platforms() {
+    pub fn tick_platforms() {
         let mut db = PLATFORMS.lock().unwrap();
         for p in db.iter_mut() {
-            let drift = fastrand::f64() * 20.0 - 10.0;
+            let drift = fastrand::f64().mul_add(20.0, -10.0);
             p.capacity_pct = (p.capacity_pct + drift).clamp(0.0, 100.0);
             p.status = if p.capacity_pct < 50.0 { "clear".into() }
                 else if p.capacity_pct < 80.0 { "busy".into() }
@@ -19799,12 +19530,12 @@ mod platform_capacity {
 // TICKET MACHINE LOCATOR - Find ticket machines & gates
 // ============================================================================
 mod ticket_machines {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TicketMachine {
+    pub struct TicketMachine {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -19816,10 +19547,10 @@ mod ticket_machines {
         pub(crate) queue_length: u32,
     }
 
-    pub(crate) static MACHINES: std::sync::LazyLock<std::sync::Mutex<Vec<TicketMachine>>> =
+    pub static MACHINES: std::sync::LazyLock<std::sync::Mutex<Vec<TicketMachine>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_machines(stations: &[Station]) {
+    pub fn initialize_machines(stations: &[Station]) {
         let mut db = MACHINES.lock().unwrap();
         db.clear();
         let types = ["ticket", "topup", "gate", "oyster"];
@@ -19832,8 +19563,8 @@ mod ticket_machines {
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
                     machine_type: mtype.into(),
-                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
-                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    lat: fastrand::f64().mul_add(0.001, station.coord.lat) - 0.0005,
+                    lon: fastrand::f64().mul_add(0.001, station.coord.lon) - 0.0005,
                     is_operational: fastrand::f64() < 0.92,
                     accepts_cash: mtype == "ticket" && fastrand::f64() < 0.7,
                     queue_length: fastrand::u32(0..=12),
@@ -19843,12 +19574,12 @@ mod ticket_machines {
         log_info(&format!("ticket_machines: initialized {} machines", db.len()));
     }
 
-    pub(crate) fn get_machines_for_station(station_id: &str) -> Vec<TicketMachine> {
+    pub fn get_machines_for_station(station_id: &str) -> Vec<TicketMachine> {
         let db = MACHINES.lock().unwrap();
         db.iter().filter(|m| m.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all_machines() -> Vec<TicketMachine> {
+    pub fn get_all_machines() -> Vec<TicketMachine> {
         let db = MACHINES.lock().unwrap();
         db.clone()
     }
@@ -19858,12 +19589,12 @@ mod ticket_machines {
 // EMERGENCY SERVICES - First aid, help points, evacuation routes
 // ============================================================================
 mod emergency_services {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct EmergencyPoint {
+    pub struct EmergencyPoint {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -19874,15 +19605,15 @@ mod emergency_services {
         pub(crate) floor: i32,
     }
 
-    pub(crate) static EMERGENCY: std::sync::LazyLock<std::sync::Mutex<Vec<EmergencyPoint>>> =
+    pub static EMERGENCY: std::sync::LazyLock<std::sync::Mutex<Vec<EmergencyPoint>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_emergency(stations: &[Station]) {
+    pub fn initialize_emergency(stations: &[Station]) {
         let mut db = EMERGENCY.lock().unwrap();
         db.clear();
         let types = ["first_aid", "help_point", "defibrillator", "exit"];
         for station in stations.iter().filter(|s| s.is_open).take(120) {
-            for t in types.iter() {
+            for t in &types {
                 let count = if *t == "exit" { fastrand::u32(2..=5) } else { fastrand::u32(1..=3) };
                 for i in 0..count {
                     db.push(EmergencyPoint {
@@ -19890,8 +19621,8 @@ mod emergency_services {
                         station_id: station.id.clone(),
                         station_name: station.name.clone(),
                         point_type: t.to_string(),
-                        lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
-                        lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                        lat: fastrand::f64().mul_add(0.001, station.coord.lat) - 0.0005,
+                        lon: fastrand::f64().mul_add(0.001, station.coord.lon) - 0.0005,
                         is_available: fastrand::f64() < 0.95,
                         floor: fastrand::i32(0..=3),
                     });
@@ -19901,12 +19632,12 @@ mod emergency_services {
         log_info(&format!("emergency_services: initialized {} points", db.len()));
     }
 
-    pub(crate) fn get_points_for_station(station_id: &str) -> Vec<EmergencyPoint> {
+    pub fn get_points_for_station(station_id: &str) -> Vec<EmergencyPoint> {
         let db = EMERGENCY.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all_points() -> Vec<EmergencyPoint> {
+    pub fn get_all_points() -> Vec<EmergencyPoint> {
         let db = EMERGENCY.lock().unwrap();
         db.clone()
     }
@@ -19916,12 +19647,12 @@ mod emergency_services {
 // BIKE PARKING - Secure cycle parking at stations
 // ============================================================================
 mod bike_parking {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct BikeParking {
+    pub struct BikeParking {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -19934,10 +19665,10 @@ mod bike_parking {
         pub(crate) has_repair: bool,
     }
 
-    pub(crate) static BIKE_PARKING_DB: std::sync::LazyLock<std::sync::Mutex<Vec<BikeParking>>> =
+    pub static BIKE_PARKING_DB: std::sync::LazyLock<std::sync::Mutex<Vec<BikeParking>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_bike_parking(stations: &[Station]) {
+    pub fn initialize_bike_parking(stations: &[Station]) {
         let mut db = BIKE_PARKING_DB.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(100) {
@@ -19947,8 +19678,8 @@ mod bike_parking {
                     id: format!("bp_{}", station.id),
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
-                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
-                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    lat: fastrand::f64().mul_add(0.001, station.coord.lat) - 0.0005,
+                    lon: fastrand::f64().mul_add(0.001, station.coord.lon) - 0.0005,
                     spaces,
                     available: fastrand::u32(0..=spaces),
                     covered: fastrand::f64() < 0.5,
@@ -19960,12 +19691,12 @@ mod bike_parking {
         log_info(&format!("bike_parking: initialized {} facilities", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<BikeParking> {
+    pub fn get_for_station(station_id: &str) -> Vec<BikeParking> {
         let db = BIKE_PARKING_DB.lock().unwrap();
         db.iter().filter(|b| b.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<BikeParking> {
+    pub fn get_all() -> Vec<BikeParking> {
         let db = BIKE_PARKING_DB.lock().unwrap();
         db.clone()
     }
@@ -19975,11 +19706,11 @@ mod bike_parking {
 // RIVER SERVICES - Thames river bus piers
 // ============================================================================
 mod river_services {
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct Pier {
+    pub struct Pier {
         pub(crate) id: String,
         pub(crate) name: String,
         pub(crate) lat: f64,
@@ -19989,10 +19720,10 @@ mod river_services {
         pub(crate) is_operational: bool,
     }
 
-    pub(crate) static PIERS: std::sync::LazyLock<std::sync::Mutex<Vec<Pier>>> =
+    pub static PIERS: std::sync::LazyLock<std::sync::Mutex<Vec<Pier>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_piers() {
+    pub fn initialize_piers() {
         let mut db = PIERS.lock().unwrap();
         db.clear();
         let pier_data = [
@@ -20007,7 +19738,7 @@ mod river_services {
             ("canary-wharf", "Canary Wharf Pier", 51.5026, -0.0197),
             ("putney", "Putney Pier", 51.4670, -0.2160),
         ];
-        for (id, name, lat, lon) in pier_data.iter() {
+        for (id, name, lat, lon) in &pier_data {
             let services = vec!["RB1".into(), "RB2".into(), "RB6".into()];
             db.push(Pier {
                 id: id.to_string(),
@@ -20022,12 +19753,12 @@ mod river_services {
         log_info(&format!("river_services: initialized {} piers", db.len()));
     }
 
-    pub(crate) fn get_all_piers() -> Vec<Pier> {
+    pub fn get_all_piers() -> Vec<Pier> {
         let db = PIERS.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_piers() {
+    pub fn tick_piers() {
         let mut db = PIERS.lock().unwrap();
         for p in db.iter_mut() {
             p.next_departure_min = if p.next_departure_min < 2 { fastrand::u32(10..=30) } else { p.next_departure_min - 1 };
@@ -20039,12 +19770,12 @@ mod river_services {
 // TAXI RANKS - Black cab ranks at stations
 // ============================================================================
 mod taxi_ranks {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct TaxiRank {
+    pub struct TaxiRank {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -20056,10 +19787,10 @@ mod taxi_ranks {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static TAXI_RANKS_DB: std::sync::LazyLock<std::sync::Mutex<Vec<TaxiRank>>> =
+    pub static TAXI_RANKS_DB: std::sync::LazyLock<std::sync::Mutex<Vec<TaxiRank>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_taxi_ranks(stations: &[Station]) {
+    pub fn initialize_taxi_ranks(stations: &[Station]) {
         let mut db = TAXI_RANKS_DB.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(80) {
@@ -20069,8 +19800,8 @@ mod taxi_ranks {
                     id: format!("taxi_{}", station.id),
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
-                    lat: station.coord.lat + fastrand::f64() * 0.001 - 0.0005,
-                    lon: station.coord.lon + fastrand::f64() * 0.001 - 0.0005,
+                    lat: fastrand::f64().mul_add(0.001, station.coord.lat) - 0.0005,
+                    lon: fastrand::f64().mul_add(0.001, station.coord.lon) - 0.0005,
                     capacity: cap,
                     available_cabs: fastrand::u32(0..=cap),
                     wheelchair_accessible: fastrand::f64() < 0.6,
@@ -20081,12 +19812,12 @@ mod taxi_ranks {
         log_info(&format!("taxi_ranks: initialized {} ranks", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<TaxiRank> {
+    pub fn get_for_station(station_id: &str) -> Vec<TaxiRank> {
         let db = TAXI_RANKS_DB.lock().unwrap();
         db.iter().filter(|t| t.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<TaxiRank> {
+    pub fn get_all() -> Vec<TaxiRank> {
         let db = TAXI_RANKS_DB.lock().unwrap();
         db.clone()
     }
@@ -20096,11 +19827,11 @@ mod taxi_ranks {
 // LOST PROPERTY - Lost & found tracking
 // ============================================================================
 mod lost_property {
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct LostItem {
+    pub struct LostItem {
         pub(crate) id: String,
         pub(crate) item_type: String,
         pub(crate) description: String,
@@ -20110,10 +19841,10 @@ mod lost_property {
         pub(crate) category: String,
     }
 
-    pub(crate) static LOST_ITEMS: std::sync::LazyLock<std::sync::Mutex<Vec<LostItem>>> =
+    pub static LOST_ITEMS: std::sync::LazyLock<std::sync::Mutex<Vec<LostItem>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_lost_property() {
+    pub fn initialize_lost_property() {
         let mut db = LOST_ITEMS.lock().unwrap();
         db.clear();
         let types = ["phone", "umbrella", "bag", "wallet", "keys", "laptop", "book", "glasses", "toy", "jacket"];
@@ -20124,7 +19855,7 @@ mod lost_property {
             db.push(LostItem {
                 id: format!("lost_{}", i + 1),
                 item_type: t.into(),
-                description: format!("{} found at {}", t, st),
+                description: format!("{t} found at {st}"),
                 found_at_station: st.into(),
                 date_found: format!("2026-{:02}-{:02}", fastrand::u32(1..=12), fastrand::u32(1..=28)),
                 is_claimed: fastrand::f64() < 0.3,
@@ -20134,7 +19865,7 @@ mod lost_property {
         log_info(&format!("lost_property: initialized {} items", db.len()));
     }
 
-    pub(crate) fn search_items(query: &str) -> Vec<LostItem> {
+    pub fn search_items(query: &str) -> Vec<LostItem> {
         let db = LOST_ITEMS.lock().unwrap();
         db.iter()
             .filter(|item| item.item_type.contains(query) || item.description.contains(query) || item.found_at_station.contains(query))
@@ -20142,7 +19873,7 @@ mod lost_property {
             .collect()
     }
 
-    pub(crate) fn get_all_items() -> Vec<LostItem> {
+    pub fn get_all_items() -> Vec<LostItem> {
         let db = LOST_ITEMS.lock().unwrap();
         db.clone()
     }
@@ -20152,12 +19883,12 @@ mod lost_property {
 // STATION PHOTOS - Image gallery metadata
 // ============================================================================
 mod station_photos {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct StationPhoto {
+    pub struct StationPhoto {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -20167,10 +19898,10 @@ mod station_photos {
         pub(crate) photographer: String,
     }
 
-    pub(crate) static PHOTOS: std::sync::LazyLock<std::sync::Mutex<Vec<StationPhoto>>> =
+    pub static PHOTOS: std::sync::LazyLock<std::sync::Mutex<Vec<StationPhoto>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_photos(stations: &[Station]) {
+    pub fn initialize_photos(stations: &[Station]) {
         let mut db = PHOTOS.lock().unwrap();
         db.clear();
         let captions = ["Platform view", "Entrance", "Roundel", "Tiled mural", "Escalators", "Booking hall", "Art installation", "Night view"];
@@ -20191,12 +19922,12 @@ mod station_photos {
         log_info(&format!("station_photos: initialized {} photos", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<StationPhoto> {
+    pub fn get_for_station(station_id: &str) -> Vec<StationPhoto> {
         let db = PHOTOS.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<StationPhoto> {
+    pub fn get_all() -> Vec<StationPhoto> {
         let db = PHOTOS.lock().unwrap();
         db.clone()
     }
@@ -20206,12 +19937,12 @@ mod station_photos {
 // ACCESSIBILITY ROUTE ENHANCER - Step-free with alternatives
 // ============================================================================
 mod accessibility_route_enhancer {
-    use crate::logger::*;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct RouteOption {
+    pub struct RouteOption {
         pub(crate) id: String,
         pub(crate) summary: String,
         pub(crate) total_walking_m: u32,
@@ -20221,7 +19952,7 @@ mod accessibility_route_enhancer {
         pub(crate) difficulty: String, // "easy", "moderate", "hard"
     }
 
-    pub(crate) fn find_routes(from: &str, to: &str) -> Vec<RouteOption> {
+    pub fn find_routes(from: &str, to: &str) -> Vec<RouteOption> {
         let stations = crate::network::get_stations_snapshot();
         let from_st = stations.iter().find(|s| s.id == from || s.name == from);
         let to_st = stations.iter().find(|s| s.id == to || s.name == to);
@@ -20257,13 +19988,13 @@ mod accessibility_route_enhancer {
 // ============================================================================
 mod night_tube {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct NightService {
+    pub struct NightService {
         pub(crate) line_id: String,
         pub(crate) line_name: String,
         pub(crate) operates_nights: bool,
@@ -20273,14 +20004,14 @@ mod night_tube {
         pub(crate) days: Vec<String>,
     }
 
-    pub(crate) static NIGHT_SERVICES: std::sync::LazyLock<std::sync::Mutex<Vec<NightService>>> =
+    pub static NIGHT_SERVICES: std::sync::LazyLock<std::sync::Mutex<Vec<NightService>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_night_services(lines: &[Line]) {
+    pub fn initialize_night_services(lines: &[Line]) {
         let mut db = NIGHT_SERVICES.lock().unwrap();
         db.clear();
         let night_lines = ["central", "jubilee", "northern", "piccadilly", "victoria"];
-        for line in lines.iter() {
+        for line in lines {
             let operates = night_lines.contains(&line.id.as_str()) || night_lines.contains(&line.name.to_lowercase().replace(' ', "-").as_str());
             db.push(NightService {
                 line_id: line.id.clone(),
@@ -20295,7 +20026,7 @@ mod night_tube {
         log_info(&format!("night_tube: {} lines operate night services", db.iter().filter(|n| n.operates_nights).count()));
     }
 
-    pub(crate) fn get_night_services() -> Vec<NightService> {
+    pub fn get_night_services() -> Vec<NightService> {
         let db = NIGHT_SERVICES.lock().unwrap();
         db.clone()
     }
@@ -20306,13 +20037,13 @@ mod night_tube {
 // ============================================================================
 mod construction_tracker {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ConstructionProject {
+    pub struct ConstructionProject {
         pub(crate) id: String,
         pub(crate) title: String,
         pub(crate) line_id: String,
@@ -20325,10 +20056,10 @@ mod construction_tracker {
         pub(crate) description: String,
     }
 
-    pub(crate) static PROJECTS: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProject>>> =
+    pub static PROJECTS: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProject>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_projects(lines: &[Line]) {
+    pub fn initialize_projects(lines: &[Line]) {
         let mut db = PROJECTS.lock().unwrap();
         db.clear();
         let titles = [
@@ -20362,7 +20093,7 @@ mod construction_tracker {
         log_info(&format!("construction_tracker: initialized {} projects", db.len()));
     }
 
-    pub(crate) fn get_projects() -> Vec<ConstructionProject> {
+    pub fn get_projects() -> Vec<ConstructionProject> {
         let db = PROJECTS.lock().unwrap();
         db.clone()
     }
@@ -20377,7 +20108,7 @@ mod station_amenities {
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AmenitySummary {
+    pub struct AmenitySummary {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) has_wifi: bool,
@@ -20393,7 +20124,7 @@ mod station_amenities {
         pub(crate) amenity_score: f64,
     }
 
-    pub(crate) fn summarize(station_id: &str) -> Option<AmenitySummary> {
+    pub fn summarize(station_id: &str) -> Option<AmenitySummary> {
         let stations = crate::network::get_stations_snapshot();
         let station = stations.iter().find(|s| s.id == station_id)?;
         let vendors = crate::station_vendors::get_vendors_for_station(station_id);
@@ -20444,12 +20175,12 @@ mod station_amenities {
 // STATION PHOTO GALLERY - Curated historical & modern photos
 // ============================================================================
 mod photo_gallery {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct GalleryPhoto {
+    pub struct GalleryPhoto {
         pub(crate) id: String,
         pub(crate) station_id: String,
         pub(crate) station_name: String,
@@ -20461,10 +20192,10 @@ mod photo_gallery {
         pub(crate) credit: String,
     }
 
-    pub(crate) static GALLERY: std::sync::LazyLock<std::sync::Mutex<Vec<GalleryPhoto>>> =
+    pub static GALLERY: std::sync::LazyLock<std::sync::Mutex<Vec<GalleryPhoto>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_gallery(stations: &[Station]) {
+    pub fn initialize_gallery(stations: &[Station]) {
         let mut db = GALLERY.lock().unwrap();
         db.clear();
         let categories = ["historic", "modern", "art", "construction"];
@@ -20494,12 +20225,12 @@ mod photo_gallery {
         log_info(&format!("photo_gallery: initialized {} photos", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<GalleryPhoto> {
+    pub fn get_for_station(station_id: &str) -> Vec<GalleryPhoto> {
         let db = GALLERY.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<GalleryPhoto> {
+    pub fn get_all() -> Vec<GalleryPhoto> {
         let db = GALLERY.lock().unwrap();
         db.clone()
     }
@@ -20509,14 +20240,14 @@ mod photo_gallery {
 // REAL-TIME DEPARTURE BOARD - Live train times
 // ============================================================================
 mod departure_board {
-    use crate::primitives::*;
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
+    use crate::logger::{log_warn, log_info};
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct Departure {
+    pub struct Departure {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) line_id: String,
@@ -20528,10 +20259,10 @@ mod departure_board {
         pub(crate) delay_min: u32,
     }
 
-    pub(crate) static DEPARTURES: std::sync::LazyLock<std::sync::Mutex<Vec<Departure>>> =
+    pub static DEPARTURES: std::sync::LazyLock<std::sync::Mutex<Vec<Departure>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_departures(stations: &[Station], lines: &[Line]) {
+    pub fn initialize_departures(stations: &[Station], lines: &[Line]) {
         let mut db = DEPARTURES.lock().unwrap();
         db.clear();
         if stations.is_empty() || lines.is_empty() {
@@ -20565,17 +20296,17 @@ mod departure_board {
         log_info(&format!("departure_board: initialized {} departures", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<Departure> {
+    pub fn get_for_station(station_id: &str) -> Vec<Departure> {
         let db = DEPARTURES.lock().unwrap();
         db.iter().filter(|d| d.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<Departure> {
+    pub fn get_all() -> Vec<Departure> {
         let db = DEPARTURES.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_departures() {
+    pub fn tick_departures() {
         let mut db = DEPARTURES.lock().unwrap();
         for d in db.iter_mut() {
             if d.status != "cancelled" {
@@ -20595,12 +20326,12 @@ mod departure_board {
 // ============================================================================
 mod service_alerts {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ServiceAlert {
+    pub struct ServiceAlert {
         pub(crate) id: String,
         pub(crate) line_id: String,
         pub(crate) line_name: String,
@@ -20612,10 +20343,10 @@ mod service_alerts {
         pub(crate) is_active: bool,
     }
 
-    pub(crate) static ALERTS: std::sync::LazyLock<std::sync::Mutex<Vec<ServiceAlert>>> =
+    pub static ALERTS: std::sync::LazyLock<std::sync::Mutex<Vec<ServiceAlert>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_alerts(lines: &[Line]) {
+    pub fn initialize_alerts(lines: &[Line]) {
         let mut db = ALERTS.lock().unwrap();
         db.clear();
         let titles = [
@@ -20641,12 +20372,12 @@ mod service_alerts {
         log_info(&format!("service_alerts: initialized {} alerts", db.len()));
     }
 
-    pub(crate) fn get_active() -> Vec<ServiceAlert> {
+    pub fn get_active() -> Vec<ServiceAlert> {
         let db = ALERTS.lock().unwrap();
         db.iter().filter(|a| a.is_active).cloned().collect()
     }
 
-    pub(crate) fn tick_alerts() {
+    pub fn tick_alerts() {
         let mut db = ALERTS.lock().unwrap();
         // Randomly resolve or create alerts
         for a in db.iter_mut() {
@@ -20661,12 +20392,12 @@ mod service_alerts {
 // STATION WIFI SPEED TEST - Historical speed data
 // ============================================================================
 mod wifi_speed {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct WifiSpeedTest {
+    pub struct WifiSpeedTest {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) download_mbps: f64,
@@ -20675,10 +20406,10 @@ mod wifi_speed {
         pub(crate) timestamp: String,
     }
 
-    pub(crate) static WIFI_SPEEDS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiSpeedTest>>> =
+    pub static WIFI_SPEEDS: std::sync::LazyLock<std::sync::Mutex<Vec<WifiSpeedTest>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_wifi_speeds(stations: &[Station]) {
+    pub fn initialize_wifi_speeds(stations: &[Station]) {
         let mut db = WIFI_SPEEDS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(100) {
@@ -20687,9 +20418,9 @@ mod wifi_speed {
                 db.push(WifiSpeedTest {
                     station_id: station.id.clone(),
                     station_name: station.name.clone(),
-                    download_mbps: (fastrand::f64() * 100.0 + 5.0).round(),
-                    upload_mbps: (fastrand::f64() * 40.0 + 2.0).round(),
-                    ping_ms: (fastrand::f64() * 50.0 + 5.0).round(),
+                    download_mbps: fastrand::f64().mul_add(100.0, 5.0).round(),
+                    upload_mbps: fastrand::f64().mul_add(40.0, 2.0).round(),
+                    ping_ms: fastrand::f64().mul_add(50.0, 5.0).round(),
                     timestamp: format!("2026-07-08T{}:00:00Z", fastrand::u32(10..=18)),
                 });
             }
@@ -20697,12 +20428,12 @@ mod wifi_speed {
         log_info(&format!("wifi_speed: initialized {} tests", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<WifiSpeedTest> {
+    pub fn get_for_station(station_id: &str) -> Vec<WifiSpeedTest> {
         let db = WIFI_SPEEDS.lock().unwrap();
         db.iter().filter(|w| w.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<WifiSpeedTest> {
+    pub fn get_all() -> Vec<WifiSpeedTest> {
         let db = WIFI_SPEEDS.lock().unwrap();
         db.clone()
     }
@@ -20712,12 +20443,12 @@ mod wifi_speed {
 // ACCESSIBILITY ROUTE FINDER - Enhanced with alternatives
 // ============================================================================
 mod accessibility_route_finder {
-    use crate::logger::*;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct RouteAlternative {
+    pub struct RouteAlternative {
         pub(crate) id: String,
         pub(crate) summary: String,
         pub(crate) total_walking_m: u32,
@@ -20728,7 +20459,7 @@ mod accessibility_route_finder {
         pub(crate) rating: f64, // 1-5 user rating
     }
 
-    pub(crate) fn find_alternatives(from: &str, to: &str) -> Vec<RouteAlternative> {
+    pub fn find_alternatives(from: &str, to: &str) -> Vec<RouteAlternative> {
         let stations = crate::network::get_stations_snapshot();
         let from_st = stations.iter().find(|s| s.id == from || s.name == from);
         let to_st = stations.iter().find(|s| s.id == to || s.name == to);
@@ -20764,13 +20495,13 @@ mod accessibility_route_finder {
 // ============================================================================
 mod night_tube_enhanced {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct NightServiceEnhanced {
+    pub struct NightServiceEnhanced {
         pub(crate) line_id: String,
         pub(crate) line_name: String,
         pub(crate) operates_nights: bool,
@@ -20780,14 +20511,14 @@ mod night_tube_enhanced {
         pub(crate) crowd_level: String,
     }
 
-    pub(crate) static NIGHT_SERVICES_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<NightServiceEnhanced>>> =
+    pub static NIGHT_SERVICES_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<NightServiceEnhanced>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_night_services_enh(lines: &[Line]) {
+    pub fn initialize_night_services_enh(lines: &[Line]) {
         let mut db = NIGHT_SERVICES_ENH.lock().unwrap();
         db.clear();
         let night_lines = ["central", "jubilee", "northern", "piccadilly", "victoria"];
-        for line in lines.iter() {
+        for line in lines {
             let operates = night_lines.contains(&line.id.as_str());
             let is_fri_sat = chrono::Utc::now().format("%a").to_string();
             let running = operates && (is_fri_sat == "Fri" || is_fri_sat == "Sat");
@@ -20804,12 +20535,12 @@ mod night_tube_enhanced {
         log_info(&format!("night_tube_enhanced: {} lines, {} running now", db.len(), db.iter().filter(|n| n.is_running_now).count()));
     }
 
-    pub(crate) fn get_services() -> Vec<NightServiceEnhanced> {
+    pub fn get_services() -> Vec<NightServiceEnhanced> {
         let db = NIGHT_SERVICES_ENH.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_night() {
+    pub fn tick_night() {
         let mut db = NIGHT_SERVICES_ENH.lock().unwrap();
         for n in db.iter_mut() {
             if n.is_running_now {
@@ -20825,13 +20556,13 @@ mod night_tube_enhanced {
 // ============================================================================
 mod construction_tracker_enh {
     
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct ConstructionProjectEnhanced {
+    pub struct ConstructionProjectEnhanced {
         pub(crate) id: String,
         pub(crate) title: String,
         pub(crate) line_id: String,
@@ -20844,17 +20575,17 @@ mod construction_tracker_enh {
         pub(crate) spent_millions: f64,
     }
 
-    pub(crate) static PROJECTS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProjectEnhanced>>> =
+    pub static PROJECTS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<ConstructionProjectEnhanced>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_projects_enh(lines: &[Line]) {
+    pub fn initialize_projects_enh(lines: &[Line]) {
         let mut db = PROJECTS_ENH.lock().unwrap();
         db.clear();
         let titles = ["Step-free access", "New signalling", "Platform extension", "Escalator replacement", "Station refurbishment"];
         for line in lines.iter().take(12) {
             if fastrand::f64() < 0.5 {
                 let progress = fastrand::f64() * 100.0;
-                let budget = fastrand::f64() * 500.0 + 50.0;
+                let budget = fastrand::f64().mul_add(500.0, 50.0);
                 let spent = budget * (progress / 100.0);
                 db.push(ConstructionProjectEnhanced {
                     id: format!("con_enh_{}", line.id),
@@ -20873,16 +20604,16 @@ mod construction_tracker_enh {
         log_info(&format!("construction_tracker_enh: initialized {} projects", db.len()));
     }
 
-    pub(crate) fn get_projects() -> Vec<ConstructionProjectEnhanced> {
+    pub fn get_projects() -> Vec<ConstructionProjectEnhanced> {
         let db = PROJECTS_ENH.lock().unwrap();
         db.clone()
     }
 
-    pub(crate) fn tick_construction() {
+    pub fn tick_construction() {
         let mut db = PROJECTS_ENH.lock().unwrap();
         for p in db.iter_mut() {
             if p.status != "completing" {
-                p.progress_pct = (p.progress_pct + fastrand::f64() * 2.0).min(100.0);
+                p.progress_pct = fastrand::f64().mul_add(2.0, p.progress_pct).min(100.0);
                 p.spent_millions = (p.budget_millions * (p.progress_pct / 100.0) * 10.0).round() / 10.0;
                 if p.progress_pct > 90.0 { p.status = "completing".into(); }
             }
@@ -20894,13 +20625,13 @@ mod construction_tracker_enh {
 // STATION CROWD PREDICTION - ML-style time-series forecast
 // ============================================================================
 mod crowd_prediction {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use chrono::Timelike;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CrowdPrediction {
+    pub struct CrowdPrediction {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) hour: u32,
@@ -20909,17 +20640,17 @@ mod crowd_prediction {
         pub(crate) trend: String,
     }
 
-    pub(crate) static PREDICTIONS: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdPrediction>>> =
+    pub static PREDICTIONS: std::sync::LazyLock<std::sync::Mutex<Vec<CrowdPrediction>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_predictions(stations: &[Station]) {
+    pub fn initialize_predictions(stations: &[Station]) {
         let mut db = PREDICTIONS.lock().unwrap();
         db.clear();
         let now_hour = chrono::Utc::now().hour();
         for station in stations.iter().filter(|s| s.is_open).take(80) {
             for h in 0..24 {
                 let base = if (7..=9).contains(&h) { 0.8 } else if (17..=19).contains(&h) { 0.85 } else if (11..=14).contains(&h) { 0.5 } else { 0.2 };
-                let noise = fastrand::f64() * 0.2 - 0.1;
+                let noise = fastrand::f64().mul_add(0.2, -0.1);
                 let density = (base + noise).clamp(0.0, 1.0);
                 let trend = if h > now_hour { "upcoming".into() } else { "past".into() };
                 db.push(CrowdPrediction {
@@ -20927,7 +20658,7 @@ mod crowd_prediction {
                     station_name: station.name.clone(),
                     hour: h,
                     predicted_density: (density * 100.0).round() / 100.0,
-                    confidence: (0.7 + fastrand::f64() * 0.25).round(),
+                    confidence: fastrand::f64().mul_add(0.25, 0.7).round(),
                     trend,
                 });
             }
@@ -20935,12 +20666,12 @@ mod crowd_prediction {
         log_info(&format!("crowd_prediction: initialized {} predictions", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Vec<CrowdPrediction> {
+    pub fn get_for_station(station_id: &str) -> Vec<CrowdPrediction> {
         let db = PREDICTIONS.lock().unwrap();
         db.iter().filter(|p| p.station_id == station_id).cloned().collect()
     }
 
-    pub(crate) fn get_all() -> Vec<CrowdPrediction> {
+    pub fn get_all() -> Vec<CrowdPrediction> {
         let db = PREDICTIONS.lock().unwrap();
         db.clone()
     }
@@ -20950,12 +20681,12 @@ mod crowd_prediction {
 // ACCESSIBILITY AUDIT ENHANCED - With detailed breakdown
 // ============================================================================
 mod accessibility_audit_enh {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct AccessibilityAuditEnhanced {
+    pub struct AccessibilityAuditEnhanced {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) step_free_access: bool,
@@ -20971,10 +20702,10 @@ mod accessibility_audit_enh {
         pub(crate) recommendations: Vec<String>,
     }
 
-    pub(crate) static AUDITS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAuditEnhanced>>> =
+    pub static AUDITS_ENH: std::sync::LazyLock<std::sync::Mutex<Vec<AccessibilityAuditEnhanced>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_audits_enh(stations: &[Station]) {
+    pub fn initialize_audits_enh(stations: &[Station]) {
         let mut db = AUDITS_ENH.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open) {
@@ -21024,12 +20755,12 @@ mod accessibility_audit_enh {
         log_info(&format!("accessibility_audit_enh: initialized {} audits", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Option<AccessibilityAuditEnhanced> {
+    pub fn get_for_station(station_id: &str) -> Option<AccessibilityAuditEnhanced> {
         let db = AUDITS_ENH.lock().unwrap();
         db.iter().find(|a| a.station_id == station_id).cloned()
     }
 
-    pub(crate) fn get_all() -> Vec<AccessibilityAuditEnhanced> {
+    pub fn get_all() -> Vec<AccessibilityAuditEnhanced> {
         let db = AUDITS_ENH.lock().unwrap();
         db.clone()
     }
@@ -21039,11 +20770,11 @@ mod accessibility_audit_enh {
 // ENERGY OPTIMIZATION - Renewable energy recommendations
 // ============================================================================
 mod energy_optimization {
-    use crate::logger::*;
+    use crate::logger::log_info;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct EnergyOptimization {
+    pub struct EnergyOptimization {
         pub(crate) current_renewable_pct: f64,
         pub(crate) target_renewable_pct: f64,
         pub(crate) potential_savings_gbp_per_year: f64,
@@ -21053,7 +20784,7 @@ mod energy_optimization {
         pub(crate) battery_storage_mwh: f64,
     }
 
-    pub(crate) static OPTIMIZATION: std::sync::LazyLock<std::sync::Mutex<EnergyOptimization>> =
+    pub static OPTIMIZATION: std::sync::LazyLock<std::sync::Mutex<EnergyOptimization>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(EnergyOptimization {
             current_renewable_pct: 42.0,
             target_renewable_pct: 100.0,
@@ -21064,7 +20795,7 @@ mod energy_optimization {
             battery_storage_mwh: 0.0,
         }));
 
-    pub(crate) fn initialize_optimization() {
+    pub fn initialize_optimization() {
         let mut o = OPTIMIZATION.lock().unwrap();
         o.current_renewable_pct = 42.0;
         o.target_renewable_pct = 100.0;
@@ -21082,7 +20813,7 @@ mod energy_optimization {
         log_info("energy_optimization: initialized with 100% renewable target");
     }
 
-    pub(crate) fn get_optimization() -> EnergyOptimization {
+    pub fn get_optimization() -> EnergyOptimization {
         let o = OPTIMIZATION.lock().unwrap();
         o.clone()
     }
@@ -21092,14 +20823,14 @@ mod energy_optimization {
 // SIGNAL PRIORITY - Emergency vehicle preemption
 // ============================================================================
 mod signal_priority {
-    use crate::primitives::*;
-    use crate::routing::*;
-    use crate::logger::*;
+    use crate::primitives::Station;
+    use crate::routing::Line;
+    use crate::logger::log_info;
     
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct PrioritySignal {
+    pub struct PrioritySignal {
         pub(crate) id: String,
         pub(crate) line_id: String,
         pub(crate) line_name: String,
@@ -21110,10 +20841,10 @@ mod signal_priority {
         pub(crate) estimated_clear_sec: u32,
     }
 
-    pub(crate) static PRIORITY_SIGNALS: std::sync::LazyLock<std::sync::Mutex<Vec<PrioritySignal>>> =
+    pub static PRIORITY_SIGNALS: std::sync::LazyLock<std::sync::Mutex<Vec<PrioritySignal>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_priority(lines: &[Line], _stations: &[Station]) {
+    pub fn initialize_priority(lines: &[Line], _stations: &[Station]) {
         let mut db = PRIORITY_SIGNALS.lock().unwrap();
         db.clear();
         for line in lines.iter().take(10) {
@@ -21133,7 +20864,7 @@ mod signal_priority {
         log_info(&format!("signal_priority: initialized {} priority signals", db.len()));
     }
 
-    pub(crate) fn get_all() -> Vec<PrioritySignal> {
+    pub fn get_all() -> Vec<PrioritySignal> {
         let db = PRIORITY_SIGNALS.lock().unwrap();
         db.clone()
     }
@@ -21146,12 +20877,12 @@ mod signal_priority {
 // STATION CAPACITY FORECAST - Predict future capacity needs
 // ============================================================================
 mod capacity_forecast {
-    use crate::logger::*;
-    use crate::primitives::*;
+    use crate::logger::log_info;
+    use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    pub(crate) struct CapacityForecast {
+    pub struct CapacityForecast {
         pub(crate) station_id: String,
         pub(crate) station_name: String,
         pub(crate) current_capacity: u32,
@@ -21161,10 +20892,10 @@ mod capacity_forecast {
         pub(crate) recommended_action: String,
     }
 
-    pub(crate) static FORECASTS: std::sync::LazyLock<std::sync::Mutex<Vec<CapacityForecast>>> =
+    pub static FORECASTS: std::sync::LazyLock<std::sync::Mutex<Vec<CapacityForecast>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
 
-    pub(crate) fn initialize_forecasts(stations: &[Station]) {
+    pub fn initialize_forecasts(stations: &[Station]) {
         let mut db = FORECASTS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(100) {
@@ -21191,12 +20922,12 @@ mod capacity_forecast {
         log_info(&format!("capacity_forecast: initialized {} forecasts", db.len()));
     }
 
-    pub(crate) fn get_for_station(station_id: &str) -> Option<CapacityForecast> {
+    pub fn get_for_station(station_id: &str) -> Option<CapacityForecast> {
         let db = FORECASTS.lock().unwrap();
         db.iter().find(|f| f.station_id == station_id).cloned()
     }
 
-    pub(crate) fn get_all() -> Vec<CapacityForecast> {
+    pub fn get_all() -> Vec<CapacityForecast> {
         let db = FORECASTS.lock().unwrap();
         db.clone()
     }
@@ -21204,9 +20935,9 @@ mod capacity_forecast {
 
     mod ui {
 
-    pub(crate) fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
+    pub fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
 
-    pub(crate) fn build_webview_head(_api_base: &str) -> String { String::new() }
+    pub const fn build_webview_head(_api_base: &str) -> String { String::new() }
 
     mod styles {
         // #[rustfmt::skip] — prevent formatter from parsing the massive CSS string
@@ -21625,11 +21356,11 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
 
 
 
-        pub(crate) fn copy_to_clipboard_js(text: &str) -> String {
+        pub fn copy_to_clipboard_js(text: &str) -> String {
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
                 r#"(function(){{
-            var text = "{}";
+            var text = "{escaped}";
             var ta = document.createElement('textarea');
             ta.value = text;
             ta.style.position = 'fixed';
@@ -21641,101 +21372,95 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
             ta.select();
             try {{ document.execCommand('copy'); }} catch(e) {{ console.error('Copy failed:', e); }}
             document.body.removeChild(ta);
-        }})()"#,
-                escaped
+        }})()"#
             )
         }
 
 
 
-        pub(crate) fn build_copy_log_js(text: &str) -> String {
+        pub fn build_copy_log_js(text: &str) -> String {
             copy_to_clipboard_js(&serde_json::to_string(text).unwrap_or_default())
         }
 
 
 
-        pub(crate) fn scroll_to_bottom_query_js(selector: &str) -> String {
+        pub fn scroll_to_bottom_query_js(selector: &str) -> String {
             format!(
-                r#"setTimeout(() => {{
-            let el = document.querySelector('{}');
+                r"setTimeout(() => {{
+            let el = document.querySelector('{selector}');
             if (el) {{
                 let atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
                 if (atBottom) {{
                     el.scrollTop = el.scrollHeight;
                 }}
             }}
-        }}, 32);"#,
-                selector
+        }}, 32);"
             )
         }
 
 
 
-        pub(crate) fn set_cursor_js(cursor: &str) -> String {
-            format!("window.map.getContainer().style.cursor = '{}';", cursor)
+        pub fn set_cursor_js(cursor: &str) -> String {
+            format!("window.map.getContainer().style.cursor = '{cursor}';")
         }
 
 
 
-        pub(crate) fn call_window_js(func: &str) -> String {
-            format!("window.{}();", func)
+        pub fn call_window_js(func: &str) -> String {
+            format!("window.{func}();")
         }
 
 
 
-        pub(crate) fn call_window_js_with_arg(func: &str, arg: &str) -> String {
-            format!("window.{}('{}');", func, arg)
+        pub fn call_window_js_with_arg(func: &str, arg: &str) -> String {
+            format!("window.{func}('{arg}');")
         }
 
 
 
-        pub(crate) fn focus_element_js(selector: &str) -> String {
+        pub fn focus_element_js(selector: &str) -> String {
             format!(
-                "let si = document.getElementById('{}'); if (si) si.focus();",
-                selector
+                "let si = document.getElementById('{selector}'); if (si) si.focus();"
             )
         }
 
 
 
-        pub(crate) fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
-            format!("window.{}({});", func, json_arg)
+        pub fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
+            format!("window.{func}({json_arg});")
         }
 
 
 
-        pub(crate) fn call_window_js_with_json_and_string(
+        pub fn call_window_js_with_json_and_string(
             func: &str,
             json_arg: &str,
             string_arg: &str,
         ) -> String {
-            format!("window.{}({}, '{}');", func, json_arg, string_arg)
+            format!("window.{func}({json_arg}, '{string_arg}');")
         }
 
 
 
-        pub(crate) fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
+        pub fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
             format!(
-                "window.map.setView([{}, {}], {}, {{ animate: true }});",
-                lat, lon, zoom
+                "window.map.setView([{lat}, {lon}], {zoom}, {{ animate: true }});"
             )
         }
 
 
 
-        pub(crate) fn set_sat_provider_js(idx: i32) -> String {
+        pub fn set_sat_provider_js(idx: i32) -> String {
             format!(
-                "window.satProviderIdx = {}; window.setBaseMode('satellite');",
-                idx
+                "window.satProviderIdx = {idx}; window.setBaseMode('satellite');"
             )
         }
 
 
 
-        pub(crate) fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
+        pub fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
             format!(
-                "window.drawIsochrone({}, {}, {});",
-                poly_json, stations_json, mins
+                "window.drawIsochrone({poly_json}, {stations_json}, {mins});"
             )
         }
 
@@ -21764,7 +21489,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // ============================================================================
 
 
-        pub(crate) static CLIPBOARD_JS: &str = r#"
+        pub static CLIPBOARD_JS: &str = r#"
 function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).catch(function() { fallbackCopy(text); });
@@ -21834,7 +21559,7 @@ window.close = function() {
 
 
 
-        pub(crate) static MAP_INIT_JS: &str = r##"
+        pub static MAP_INIT_JS: &str = r#"
 window.addEventListener('error', function(e) {
     var msg = e.message || "Unknown Opaque Error";
     var file = e.filename || "?";
@@ -24839,11 +24564,11 @@ window.initMap = async function() {
         midLog('299', 'INFO', 'All simplified UI modules loaded');
     });
 };
-"##;
+"#;
 
 
 
-        pub(crate) static MAP_LOOP_JS: &str = r##"
+        pub static MAP_LOOP_JS: &str = r#"
 // ── Parallel Line Offset Helpers ─────────────────────────────────────────────
 // Generate a deterministic colour for lines missing a custom colour
 function getLineFallbackColor(line) {
@@ -25192,18 +24917,18 @@ while (true) {
     }
     } catch(err) { console.error("map loop inner error", err); }
 }
-"##;
+"#;
     }
 
     mod api_client {
-        use crate::logger::*;
+        use crate::logger::{log_debug, log_trace, log_error};
         use crate::network::ApiResponse;
         // use std::sync::OnceLock;
         use std::time::Duration;
 
 
 
-        pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
+        pub static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
         /// Returns a lazily-initialised &'static `reqwest::Client` shared by all Axum
@@ -25214,7 +24939,7 @@ while (true) {
         /// single client across all handlers means TCP connections are reused, avoiding
         /// the overhead of TLS handshakes and DNS resolution on every API call. Do NOT
         /// create a new client per request.
-        pub(crate) fn get_api_client() -> &'static reqwest::Client {
+        pub fn get_api_client() -> &'static reqwest::Client {
             API_CLIENT.get_or_init(|| {
                 log_debug("get_api_client - initialising shared API client (15s timeout)");
                 reqwest::Client::builder()
@@ -25227,21 +24952,21 @@ while (true) {
         /// Separate client with a 5-minute timeout for CPU-heavy endpoints
         /// (AI station planning, coverage stats, transit deserts).
 
-        pub(crate) static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
+        pub static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
-        pub(crate) fn get_api_client_slow() -> &'static reqwest::Client {
+        pub fn get_api_client_slow() -> &'static reqwest::Client {
             API_CLIENT_SLOW.get_or_init(|| {
                 log_debug("get_api_client_slow - initialising slow API client (300s timeout)");
                 reqwest::Client::builder()
-                    .timeout(Duration::from_secs(300))
+                    .timeout(Duration::from_mins(5))
                     .build()
                     .expect("Failed to create slow API client")
             })
         }
 
 
-        pub(crate) async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
+        pub async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
         ) -> Option<T> {
@@ -25252,28 +24977,28 @@ while (true) {
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
                 .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
-            let target_endpoint = format!("{}{}", base_url, url);
-            log_trace(&format!("post_api_slow - POST {}", target_endpoint));
+            let target_endpoint = format!("{base_url}{url}");
+            log_trace(&format!("post_api_slow - POST {target_endpoint}"));
             match client.post(&target_endpoint).json(body).send().await {
                 Ok(resp) => match resp.json::<ApiResponse<T>>().await {
                     Ok(api_resp) => {
-                        log_trace(&format!("post_api_slow - {} OK", url));
+                        log_trace(&format!("post_api_slow - {url} OK"));
                         api_resp.data
                     }
                     Err(e) => {
-                        log_error(&format!("API response parse error for {}: {}", url, e));
+                        log_error(&format!("API response parse error for {url}: {e}"));
                         None
                     }
                 },
                 Err(e) => {
-                    log_error(&format!("API request failed for {}: {}", url, e));
+                    log_error(&format!("API request failed for {url}: {e}"));
                     None
                 }
             }
         }
 
 
-        pub(crate) async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
+        pub async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
                 .api_base
@@ -25281,29 +25006,29 @@ while (true) {
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
                 .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
-            let target_endpoint = format!("{}{}", base_url, url);
-            log_trace(&format!("fetch_api - GET {}", target_endpoint));
+            let target_endpoint = format!("{base_url}{url}");
+            log_trace(&format!("fetch_api - GET {target_endpoint}"));
 
             match client.get(&target_endpoint).send().await {
                 Ok(resp) => match resp.json::<ApiResponse<T>>().await {
                     Ok(api_resp) => {
-                        log_trace(&format!("fetch_api - {} OK", url));
+                        log_trace(&format!("fetch_api - {url} OK"));
                         api_resp.data
                     }
                     Err(e) => {
-                        log_error(&format!("API response parse error for {}: {}", url, e));
+                        log_error(&format!("API response parse error for {url}: {e}"));
                         None
                     }
                 },
                 Err(e) => {
-                    log_error(&format!("API request failed for {}: {}", url, e));
+                    log_error(&format!("API request failed for {url}: {e}"));
                     None
                 }
             }
         }
 
 
-        pub(crate) async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
+        pub async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
         ) -> Option<T> {
@@ -25314,29 +25039,29 @@ while (true) {
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
                 .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
-            let target_endpoint = format!("{}{}", base_url, url);
-            log_trace(&format!("post_api - POST {}", target_endpoint));
+            let target_endpoint = format!("{base_url}{url}");
+            log_trace(&format!("post_api - POST {target_endpoint}"));
 
             match client.post(&target_endpoint).json(body).send().await {
                 Ok(resp) => match resp.json::<ApiResponse<T>>().await {
                     Ok(api_resp) => {
-                        log_trace(&format!("post_api - {} OK", url));
+                        log_trace(&format!("post_api - {url} OK"));
                         api_resp.data
                     }
                     Err(e) => {
-                        log_error(&format!("API response parse error for {}: {}", url, e));
+                        log_error(&format!("API response parse error for {url}: {e}"));
                         None
                     }
                 },
                 Err(e) => {
-                    log_error(&format!("API request failed for {}: {}", url, e));
+                    log_error(&format!("API request failed for {url}: {e}"));
                     None
                 }
             }
         }
 
 
-        pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
+        pub async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
                 .api_base
@@ -25344,22 +25069,22 @@ while (true) {
                 .ok()
                 .and_then(|g| g.as_ref().cloned())
                 .unwrap_or_else(|| "http://127.0.0.1:3000".to_owned());
-            let target_endpoint = format!("{}{}", base_url, url);
-            log_trace(&format!("get_api - GET {}", target_endpoint));
+            let target_endpoint = format!("{base_url}{url}");
+            log_trace(&format!("get_api - GET {target_endpoint}"));
 
             match client.get(&target_endpoint).send().await {
                 Ok(resp) => match resp.json::<ApiResponse<T>>().await {
                     Ok(api_resp) => {
-                        log_trace(&format!("get_api - {} OK", url));
+                        log_trace(&format!("get_api - {url} OK"));
                         api_resp.data
                     }
                     Err(e) => {
-                        log_error(&format!("API response parse error for {}: {}", url, e));
+                        log_error(&format!("API response parse error for {url}: {e}"));
                         None
                     }
                 },
                 Err(e) => {
-                    log_error(&format!("API request failed for {}: {}", url, e));
+                    log_error(&format!("API request failed for {url}: {e}"));
                     None
                 }
             }
@@ -25368,17 +25093,17 @@ while (true) {
 
     mod leaflet {
         use super::get_api_base;
-        use super::styles::*;
-        use crate::logger::*;
+        use super::styles::CONSOLIDATED_UI_STYLES;
+        use crate::logger::{log_debug, log_info, log_error};
         use crate::routing::roundel_svg_for_line;
         #[cfg(feature = "desktop")]
         use dioxus::prelude::*;
 
 
-        pub(crate) static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
+        pub static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
 
 
-        pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
+        pub static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
         /// Build the HTML \<head> string for the desktop `WebView`.
         /// Uses `push_str` so that Leaflet's `{}` JS syntax never touches format!().
@@ -25391,8 +25116,8 @@ while (true) {
         /// - ARIA live region announcements
         /// - Keyboard navigation support (Tab, Enter, Escape)
         /// - Screen reader announcements via aria-live regions
-        pub(crate) fn build_webview_head(api_base: &str) -> String {
-            log_debug(&format!("build_webview_head - api_base={}", api_base));
+        pub fn build_webview_head(api_base: &str) -> String {
+            log_debug(&format!("build_webview_head - api_base={api_base}"));
             let mut h = String::with_capacity(512 * 1024);
 
             // ── Content Security Policy ─────────────────────────────────────────────
@@ -25437,13 +25162,13 @@ while (true) {
                 r#"<meta name="robots" content="index, follow, max-image-preview:large" />"#,
             );
             h.push_str(r#"<link rel="canonical" href="https://shuttleapp.rs" />"#);
-            h.push_str(r#"<title>Alex's Tube V — London Transport Network Engine</title>"#);
+            h.push_str(r"<title>Alex's Tube V — London Transport Network Engine</title>");
 
             // ── Schema.org JSON-LD Structured Data ──────────────────────────────────
             h.push_str(r#"<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Alex's Tube V","description":"London Transport network visualiser and spatial analysis engine featuring A* pathfinding and geographic indexing.","applicationCategory":"DeveloperApplication","operatingSystem":"All","browserRequirements":"Requires JavaScript and HTML5 Canvas.","offers":{"@type":"Offer","price":"0.00","priceCurrency":"GBP"}}</script>"#);
 
             // Accessibility: disable tap highlight on mobile WebViews
-            h.push_str(r#"<style>* { -webkit-tap-highlight-color: transparent; } body { margin: 0; padding: 0; overflow: hidden; }</style>"#);
+            h.push_str(r"<style>* { -webkit-tap-highlight-color: transparent; } body { margin: 0; padding: 0; overflow: hidden; }</style>");
 
             // Favicon
             h.push_str(r#"<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%2300bcd4'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='20' fill='black' font-family='sans-serif' font-weight='bold'%3ET%3C/text%3E%3C/svg%3E" />"#);
@@ -25462,7 +25187,7 @@ while (true) {
             // Using push_str avoids format!() touching single-quoted JS strings.
             h.push_str("<script>window.__apiBase='");
             h.push_str(api_base);
-            h.push_str(r#"';
+            h.push_str(r"';
 window.__dataBase = window.__apiBase + '/data';
 if (typeof window.midLog !== 'function') {
     window.midLog = function(code, sev, detail) {
@@ -25526,7 +25251,7 @@ window.__consoleDupCount = 0;
         }
     }, 3000);
 })();
-</script>"#);
+</script>");
 
             // ── App UI styles ────────────────────────────────────────────────────────
             h.push_str("<style>");
@@ -26611,7 +26336,7 @@ window.__consoleDupCount = 0;
                     // Anything unrecognised returns 404 so callers can detect the miss
                     // and fall back, rather than silently receiving an empty body.
                     let uri = request.uri().to_string();
-                    log_debug(&format!("tube:// protocol request: {}", uri));
+                    log_debug(&format!("tube:// protocol request: {uri}"));
                     if let Some(rest) = uri.strip_prefix("tube://roundel/") {
                         let line_id = rest.trim_end_matches('/');
                         match roundel_svg_for_line(line_id) {
@@ -26668,14 +26393,14 @@ window.__consoleDupCount = 0;
 
     #[cfg(feature = "desktop")]
     mod components {
-        use super::api_client::*;
-        use super::js::*;
-        use super::leaflet::*;
-        use super::styles::*;
-        use crate::config::*;
-        use crate::logger::*;
-        use crate::network::*;
-        use crate::primitives::*;
+        use super::api_client::{fetch_api, get_api, post_api, post_api_slow};
+        use super::js::{scroll_to_bottom_query_js, build_copy_log_js, CLIPBOARD_JS, MAP_INIT_JS, MAP_LOOP_JS, call_window_js_with_json_arg, call_window_js_with_json_and_string, set_cursor_js, call_window_js, call_window_js_with_arg, focus_element_js, map_set_view_js, draw_isochrone_js, set_sat_provider_js};
+        use super::leaflet::{AnalyticsPanel, EcoPanel, AccessibilityPanel, DelayPredictionsPanel, TfLStatusPanel, HistoryPanel, ParkingPanel, MaaSPanel, NoisePanel, AirQualityPanel, CrowdDensityPanel, EnergyPanel, NightTubePanel, ConstructionPanel, DepartureBoardPanel, ServiceAlertsPanel, PhotoGalleryPanel, WifiSpeedPanel, CrowdPredictionPanel, AccessibilityAuditEnhPanel, EnergyOptimizationPanel, SignalPriorityPanel, CapacityForecastPanel};
+        use super::styles::CONSOLIDATED_UI_STYLES;
+        use crate::config::LondonBounds;
+        use crate::logger::{log_debug, log_info, log_error, log_warn, log_trace, get_all_logs};
+        use crate::network::{ApiResponse, JourneyPlanResponse, StationSearchResult, TransitScoreResponse, NetworkStatsResponse, TunnelCostResponse, JourneyPlanRequest, IsochroneRequest, IsochroneResponse, SaveStationRequest, DemandGridRequest, DemandCell, SaveLineRequest, StationSearchRequest, TransitScoreRequest, AiAddStationRequest, AiAddStationResponse, AiLinkStationsRequest, TransitDesertsRequest, CoverageStatsResponse, TunnelCostRequest};
+        use crate::primitives::{Station, StationArrival, Coordinate, RailSegment};
         use crate::routing::{Line, RailwayTrack};
         use chrono::Utc;
         use dioxus::desktop::use_window;
@@ -26685,8 +26410,8 @@ window.__consoleDupCount = 0;
         use std::sync::OnceLock;
         use std::time::Duration;
 
-        #[derive(Debug, Clone, PartialEq)]
-        pub(crate) struct Toast {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct Toast {
             pub(crate) id: usize,
             pub(crate) message: String,
             pub(crate) style: String,
@@ -26700,13 +26425,13 @@ window.__consoleDupCount = 0;
         /// handle, NOT the signal data itself). Cloning a Signal is cheap ? it's
         /// just an Arc bump ? and is safe across await points because Dioxus signals
         /// are Send + Sync.
-        pub(crate) fn show_toast(
+        pub fn show_toast(
             toasts: &mut Signal<Vec<Toast>>,
             id_counter: &mut Signal<usize>,
             message: &str,
             style: &str,
         ) {
-            log_debug(&format!("show_toast - [{}] {}", style, message));
+            log_debug(&format!("show_toast - [{style}] {message}"));
             let id = *id_counter.read() + 1;
             id_counter.set(id);
             let toast = Toast {
@@ -26724,7 +26449,7 @@ window.__consoleDupCount = 0;
 
             let mut toasts_clone = *toasts;
             spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 toasts_clone.with_mut(|t| t.retain(|item| item.id != id));
             });
         }
@@ -26800,8 +26525,7 @@ window.__consoleDupCount = 0;
                 let mut log_stream = log_stream;
                 async move {
                     log_debug(&format!(
-                        "ConsoleStandaloneApp - starting log stream polling on port {}",
-                        port
+                        "ConsoleStandaloneApp - starting log stream polling on port {port}"
                     ));
 
                     // Show a clean boot message while the engine starts up
@@ -26819,8 +26543,7 @@ window.__consoleDupCount = 0;
                         Ok(c) => c,
                         Err(e) => {
                             log_error(&format!(
-                                "ConsoleStandaloneApp - failed to create HTTP client: {}",
-                                e
+                                "ConsoleStandaloneApp - failed to create HTTP client: {e}"
                             ));
                             return;
                         }
@@ -26829,7 +26552,7 @@ window.__consoleDupCount = 0;
                     // Retry loop: try up to 60 times (~60 seconds with backoff) before giving up.
                     // The parent process may take a moment to start the HTTP server.
                     let mut retries_remaining: u32 = 60;
-                    let target_url = format!("http://127.0.0.1:{}/api/logs", port);
+                    let target_url = format!("http://127.0.0.1:{port}/api/logs");
                     let mut connected = false;
                     let mut backoff_ms: u64 = 200; // start fast, back off exponentially
 
@@ -26863,7 +26586,7 @@ window.__consoleDupCount = 0;
                                     "\n\n======================================================================\n",
                                 );
                                         current_logs.push_str(
-                                    &format!("[ENGINE DISCONNECTED] Lost connection after exhausting retries: {}\n", e),
+                                    &format!("[ENGINE DISCONNECTED] Lost connection after exhausting retries: {e}\n"),
                                 );
                                         current_logs.push_str(
                                     "The engine process may have exited. Check task manager.\n",
@@ -26887,8 +26610,7 @@ window.__consoleDupCount = 0;
                                         current_logs.push('\n');
                                     }
                                     current_logs.push_str(&format!(
-                                        "⚠ Reconnecting... ({} attempts remaining)\n",
-                                        retries_remaining
+                                        "⚠ Reconnecting... ({retries_remaining} attempts remaining)\n"
                                     ));
                                     log_stream.set(current_logs);
                                 }
@@ -26929,7 +26651,7 @@ window.__consoleDupCount = 0;
             });
 
             rsx! {
-                style { {r#"
+                style { {r"
             body { background: #020204; color: #39ff14; font-family: 'JetBrains Mono', 'Fira Code', monospace; padding: 16px; margin: 0; overflow: hidden; }
             .terminal-container { display: flex; flex-direction: column; height: 100vh; gap: 12px; padding-bottom: 32px; }
             .header-panel { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; }
@@ -26937,7 +26659,7 @@ window.__consoleDupCount = 0;
             .copy-btn { background: #00bcd4; color: #000; font-weight: bold; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-family: sans-serif; letter-spacing: 0.5px; transition: background 0.2s ease; }
             .copy-btn:hover { background: #00acc1; }
             .status-badge { color: #888; font-size: 10px; font-family: sans-serif; }
-        "#} }
+        "} }
                 div { class: "terminal-container",
                     div { class: "header-panel",
                         h3 { style: "color: #00bcd4; margin: 0; font-family: sans-serif; text-transform: uppercase; font-size: 12px; letter-spacing: 1px;", "Engine Diagnostics Stream [Standalone Console]" }
@@ -27275,34 +26997,28 @@ window.__consoleDupCount = 0;
                     let tracks_ok: Option<Vec<RailwayTrack>> = tracks_result.unwrap_or_default();
 
                     if let Some(ref loaded_lines) = lines_ok {
-                        if !loaded_lines.is_empty() {
-                            if lines.read().len() != loaded_lines.len() {
-                                lines.set(loaded_lines.clone());
-                            }
-                        } else {
+                        if loaded_lines.is_empty() {
                             log_warn("App::warm_up - /api/lines returned EMPTY list");
+                        } else if lines.read().len() != loaded_lines.len() {
+                            lines.set(loaded_lines.clone());
                         }
                     } else {
                         log_warn("App::warm_up - /api/lines fetch FAILED (server not ready?)");
                     }
                     if let Some(ref loaded_stations) = stations_ok {
-                        if !loaded_stations.is_empty() {
-                            if stations.read().len() != loaded_stations.len() {
-                                stations.set(loaded_stations.clone());
-                            }
-                        } else {
+                        if loaded_stations.is_empty() {
                             log_warn("App::warm_up - /api/stations returned EMPTY list");
+                        } else if stations.read().len() != loaded_stations.len() {
+                            stations.set(loaded_stations.clone());
                         }
                     } else {
                         log_warn("App::warm_up - /api/stations fetch FAILED (server not ready?)");
                     }
                     if let Some(ref loaded_tracks) = tracks_ok {
-                        if !loaded_tracks.is_empty() {
-                            if tracks.read().len() != loaded_tracks.len() {
-                                tracks.set(loaded_tracks.clone());
-                            }
-                        } else {
+                        if loaded_tracks.is_empty() {
                             log_warn("App::warm_up - /api/tracks returned EMPTY list");
+                        } else if tracks.read().len() != loaded_tracks.len() {
+                            tracks.set(loaded_tracks.clone());
                         }
                     } else {
                         log_warn("App::warm_up - /api/tracks fetch FAILED (server not ready?)");
@@ -27405,7 +27121,7 @@ window.__consoleDupCount = 0;
             use_future(move || async move {
                 log_debug("App::log_refresh - starting log polling loop (2s interval)");
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     if crate::logger::Globals::get()
                         .is_panicked
                         .load(std::sync::atomic::Ordering::SeqCst)
@@ -27441,15 +27157,14 @@ window.__consoleDupCount = 0;
                     {
                         weather_info.set(res);
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                    tokio::time::sleep(std::time::Duration::from_mins(5)).await;
                 }
             });
 
             use_effect(move || {
                 let enabled = *google_labels.read();
                 eval(&format!(
-                    "if (window.toggleGoogleLabels) window.toggleGoogleLabels({});",
-                    enabled
+                    "if (window.toggleGoogleLabels) window.toggleGoogleLabels({enabled});"
                 ));
             });
 
@@ -27529,7 +27244,7 @@ window.__consoleDupCount = 0;
                                         let picker_opt = journey_picking_mode.read().clone();
                                         if *cost_drawing_mode.read() {
                                             cost_points.with_mut(|pts| {
-                                                pts.push(Coordinate::new(lat, lon))
+                                                pts.push(Coordinate::new(lat, lon));
                                             });
                                             let pts = cost_points.read().clone();
                                             let pts_json = serde_json::to_string(
@@ -27546,12 +27261,12 @@ window.__consoleDupCount = 0;
                                             if picker == "from" {
                                                 journey_from_coord
                                                     .set(Some(Coordinate::new(lat, lon)));
-                                                journey_from.set(format!("{:.5}, {:.5}", lat, lon));
+                                                journey_from.set(format!("{lat:.5}, {lon:.5}"));
                                                 journey_picking_mode.set(Some("to".to_owned()));
                                             } else if picker == "to" {
                                                 journey_to_coord
                                                     .set(Some(Coordinate::new(lat, lon)));
-                                                journey_to.set(format!("{:.5}, {:.5}", lat, lon));
+                                                journey_to.set(format!("{lat:.5}, {lon:.5}"));
                                                 journey_picking_mode.set(None);
                                                 // Auto plan journey
                                                 let from_c = *journey_from_coord.read();
@@ -27642,8 +27357,7 @@ window.__consoleDupCount = 0;
                                                         serde_json::to_string(&stations_data)
                                                             .unwrap_or_default();
                                                     eval(&format!(
-                                                        "window.drawIsochrone({}, {}, {});",
-                                                        poly_json, stations_json, mins
+                                                        "window.drawIsochrone({poly_json}, {stations_json}, {mins});"
                                                     ));
                                                 }
                                             });
@@ -27655,7 +27369,7 @@ window.__consoleDupCount = 0;
                                                     "user_station_{}",
                                                     Utc::now().timestamp_millis()
                                                 ),
-                                                format!("Custom Station {}", n),
+                                                format!("Custom Station {n}"),
                                                 Coordinate::new(lat, lon),
                                             );
                                             st.lines = vec!["Sandbox".to_owned()];
@@ -27665,8 +27379,7 @@ window.__consoleDupCount = 0;
                                                 &mut toasts,
                                                 &mut toast_id_counter,
                                                 &format!(
-                                                    "Station placed at {:.4}, {:.4}",
-                                                    lat, lon
+                                                    "Station placed at {lat:.4}, {lon:.4}"
                                                 ),
                                                 "success",
                                             );
@@ -27685,9 +27398,9 @@ window.__consoleDupCount = 0;
                                         } else {
                                             selected_station.set(None);
                                             journey_from_coord.set(None);
-                                            journey_from.set("".to_owned());
+                                            journey_from.set(String::new());
                                             journey_to_coord.set(None);
-                                            journey_to.set("".to_owned());
+                                            journey_to.set(String::new());
                                             journey_result.set(None);
                                             show_transit_score.set(false);
                                             transit_score_data.set(None);
@@ -27832,8 +27545,7 @@ window.__consoleDupCount = 0;
                                                                     serde_json::to_string(&cells)
                                                                         .unwrap_or_default();
                                                                 eval(&format!(
-                                                                    "window.drawDemandHeat({});",
-                                                                    cells_json
+                                                                    "window.drawDemandHeat({cells_json});"
                                                                 ));
                                                             }
                                                             demand_heat_loading_sig.set(false);
@@ -27904,8 +27616,7 @@ window.__consoleDupCount = 0;
                                 "fps_audit" => {
                                     if let Some(fps_val) = msg.get("fps").and_then(serde_json::Value::as_i64) {
                                         log_info(&format!(
-                                    "[PERFORMANCE AUDIT] Core Graphics Layer refreshing at {} FPS",
-                                    fps_val
+                                    "[PERFORMANCE AUDIT] Core Graphics Layer refreshing at {fps_val} FPS"
                                 ));
                                     }
                                 }
@@ -27915,8 +27626,7 @@ window.__consoleDupCount = 0;
                                             msg.get("summary").and_then(|v| v.as_str())
                                         {
                                             log_warn(&format!(
-                                                "[MID-CHECK] {} runtime anomaly(ies) detected: {}",
-                                                count, summary
+                                                "[MID-CHECK] {count} runtime anomaly(ies) detected: {summary}"
                                             ));
                                         }
                                     }
@@ -27924,16 +27634,14 @@ window.__consoleDupCount = 0;
                                 "mid_heartbeat" => {
                                     if let Some(tick) = msg.get("tick").and_then(serde_json::Value::as_u64) {
                                         log_debug(&format!(
-                                    "[MID-HEARTBEAT] Diagnostics check #{} ? all systems nominal",
-                                    tick
+                                    "[MID-HEARTBEAT] Diagnostics check #{tick} ? all systems nominal"
                                 ));
                                     }
                                 }
                                 "mid_ping" => {
                                     if let Some(tick) = msg.get("tick").and_then(serde_json::Value::as_u64) {
                                         log_trace(&format!(
-                                    "[MID-PING] Bridge latency check #{} ? Dioxus IPC alive",
-                                    tick
+                                    "[MID-PING] Bridge latency check #{tick} ? Dioxus IPC alive"
                                 ));
                                     }
                                 }
@@ -27949,7 +27657,7 @@ window.__consoleDupCount = 0;
                                         {
                                             continue;
                                         }
-                                        let formatted = format!("[WebView Console] {}", msg_text);
+                                        let formatted = format!("[WebView Console] {msg_text}");
                                         match level {
                                             "error" => log_error(&formatted),
                                             "warn" => log_warn(&formatted),
@@ -27976,8 +27684,7 @@ window.__consoleDupCount = 0;
                                                 .and_then(serde_json::Value::as_u64)
                                                 .unwrap_or(0);
                                             let formatted = format!(
-                                                "[WebView JS Error] {} ({}:{})",
-                                                detail, file, line
+                                                "[WebView JS Error] {detail} ({file}:{line})"
                                             );
                                             log_error(&formatted);
                                         }
@@ -28091,7 +27798,7 @@ window.__consoleDupCount = 0;
                 let new_line = Line {
                     id: format!("custom_{}", name.to_lowercase().replace(' ', "_")),
                     name: name.clone(),
-                    color: color.clone(),
+                    color,
                     stations: Vec::new(),
                     segments: Vec::new(),
                     geometry,
@@ -28111,7 +27818,7 @@ window.__consoleDupCount = 0;
                         show_toast(
                             &mut toasts,
                             &mut toast_id_counter,
-                            &format!("Line '{}' saved successfully!", name),
+                            &format!("Line '{name}' saved successfully!"),
                             "success",
                         );
                     } else {
@@ -28514,7 +28221,7 @@ window.__consoleDupCount = 0;
                                                 spawn(async move {
                                                     if let Some(data) = post_api::<_, HashMap<String, usize>>("/api/simulate-congestion", &serde_json::json!({})).await {
                                                         let edges_json = serde_json::to_string(&data).unwrap_or_default();
-                                                        eval(&format!("window.drawCongestionHeatmap({});", edges_json));
+                                                        eval(&format!("window.drawCongestionHeatmap({edges_json});"));
                                                     }
                                                     congestion_loading.set(false);
                                                 });
@@ -28545,7 +28252,7 @@ window.__consoleDupCount = 0;
                                                             if let Some(cells) = post_api::<_, Vec<DemandCell>>("/api/demand-grid", &req).await {
                                                                 demand_heat_active_sig.set(true);
                                                                 let cells_json = serde_json::to_string(&cells).unwrap_or_default();
-                                                                eval(&format!("window.drawDemandHeat({});", cells_json));
+                                                                eval(&format!("window.drawDemandHeat({cells_json});"));
                                                             }
                                                             demand_heat_loading_sig.set(false);
                                                         });
@@ -28567,10 +28274,10 @@ window.__consoleDupCount = 0;
                                             onclick: move |_| {
                                                 let current = *create_station_mode.read();
                                                 create_station_mode.set(!current);
-                                                if !current {
-                                                    eval(&set_cursor_js("crosshair"));
-                                                } else {
+                                                if current {
                                                     eval(&set_cursor_js(""));
+                                                } else {
+                                                    eval(&set_cursor_js("crosshair"));
                                                 }
                                             },
                                             "Create Custom Station"
@@ -28718,7 +28425,7 @@ window.__consoleDupCount = 0;
                                             omnibox_query.set(q.clone());
                                             // Fire search if query is long enough
                                             if q.len() >= 2 && !q.starts_with('/') {
-                                                let query_for_search = q.clone();
+                                                let query_for_search = q;
                                                 spawn(async move {
                                                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                                                     let req = StationSearchRequest { query: query_for_search, limit: 6 };
@@ -28844,7 +28551,7 @@ window.__consoleDupCount = 0;
                         let station_status_text = if st.is_open { "Open" } else { "Closed" };
                         let dashboard_zone_label = format!("Zone {}", st.zone);
                         let target_station_name = &st.name;
-                        let sheet_aria_label = format!("Station details ÔÇö {}", target_station_name);
+                        let sheet_aria_label = format!("Station details ÔÇö {target_station_name}");
                         Some(rsx! {
                             div { class: "tfl-bottom-sheet spring-enter",
                                 role: "dialog",
@@ -29150,7 +28857,7 @@ window.__consoleDupCount = 0;
                             create_station_mode.set(!cur);
                             if !cur { construction_mode.set(false); }
                             show_toast(&mut toasts, &mut toast_id_counter,
-                                if !cur { "Create Station: click the map to place stations." } else { "Create Station mode off." },
+                                if cur { "Create Station mode off." } else { "Create Station: click the map to place stations." },
                                 "info");
                         },
                         if *create_station_mode.read() { "Create Station: ON (click map)" } else { "Create Station" }
@@ -29216,7 +28923,7 @@ window.__consoleDupCount = 0;
                                         l.extend(new_lines.into_iter());
                                     });
                                     show_toast(&mut toasts, &mut toast_id_counter,
-                                        &format!("AI built {} service line(s).", n), "success");
+                                        &format!("AI built {n} service line(s)."), "success");
                                 } else {
                                     show_toast(&mut toasts, &mut toast_id_counter, "AI: Link Stations failed (need =2 stations).", "error");
                                 }
@@ -29289,7 +28996,7 @@ window.__consoleDupCount = 0;
                                 search_results.set(Vec::new());
                                 show_search_results.set(false);
                             } else {
-                                let query_for_search = q.clone();
+                                let query_for_search = q;
                                 spawn(async move {
                                     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
                                     let req = StationSearchRequest { query: query_for_search, limit: 8 };
@@ -29923,7 +29630,7 @@ window.__consoleDupCount = 0;
                             let new_val = !current;
                             crt_overlay_enabled.set(new_val);
                             let display = if new_val { "" } else { "none" };
-                            eval(&format!("document.querySelectorAll('.tactical-crt-overlay').forEach(function(el){{ el.style.display='{}'; }});", display));
+                            eval(&format!("document.querySelectorAll('.tactical-crt-overlay').forEach(function(el){{ el.style.display='{display}'; }});"));
                         },
                         "ÔùÉ"
                     }
@@ -30010,7 +29717,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_accessibility();
                             overlay_accessibility.set(cur);
-                            eval(&format!("window.toggleAccessibilityLayer({});", cur));
+                            eval(&format!("window.toggleAccessibilityLayer({cur});"));
                         },
                         "ÔÖ¿"
                     }
@@ -30021,7 +29728,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_parking();
                             overlay_parking.set(cur);
-                            eval(&format!("window.toggleParkingLayer({}, null);", cur));
+                            eval(&format!("window.toggleParkingLayer({cur}, null);"));
                         },
                         "­ƒ°¯"
                     }
@@ -30032,7 +29739,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_cycle_docking();
                             overlay_cycle_docking.set(cur);
-                            eval(&format!("window.toggleCycleDockingLayer({});", cur));
+                            eval(&format!("window.toggleCycleDockingLayer({cur});"));
                         },
                         "­ƒÜ²"
                     }
@@ -30043,7 +29750,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_tfl_status();
                             overlay_tfl_status.set(cur);
-                            eval(&format!("window.toggleTfLStatusLayer({});", cur));
+                            eval(&format!("window.toggleTfLStatusLayer({cur});"));
                         },
                         "­ƒÜ"
                     }
@@ -30054,7 +29761,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_air_quality();
                             overlay_air_quality.set(cur);
-                            eval(&format!("window.toggleAirQualityLayer({});", cur));
+                            eval(&format!("window.toggleAirQualityLayer({cur});"));
                         },
                         "🌫️"
                     }
@@ -30065,7 +29772,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_noise();
                             overlay_noise.set(cur);
-                            eval(&format!("window.toggleNoiseLayer({});", cur));
+                            eval(&format!("window.toggleNoiseLayer({cur});"));
                         },
                         "🔊"
                     }
@@ -30076,7 +29783,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_crowd();
                             overlay_crowd.set(cur);
-                            eval(&format!("window.toggleCrowdDensityLayer({});", cur));
+                            eval(&format!("window.toggleCrowdDensityLayer({cur});"));
                         },
                         "👥"
                     }
@@ -30087,7 +29794,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_maas();
                             overlay_maas.set(cur);
-                            eval(&format!("window.toggleMaaSLayer({});", cur));
+                            eval(&format!("window.toggleMaaSLayer({cur});"));
                         },
                         "🚲"
                     }
@@ -30098,7 +29805,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_wifi();
                             overlay_wifi.set(cur);
-                            eval(&format!("window.toggleWifiLayer({});", cur));
+                            eval(&format!("window.toggleWifiLayer({cur});"));
                         },
                         "📶"
                     }
@@ -30109,7 +29816,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_emergency();
                             overlay_emergency.set(cur);
-                            eval(&format!("window.toggleEmergencyLayer({});", cur));
+                            eval(&format!("window.toggleEmergencyLayer({cur});"));
                         },
                         "⛑️"
                     }
@@ -30120,7 +29827,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_river();
                             overlay_river.set(cur);
-                            eval(&format!("window.toggleRiverLayer({});", cur));
+                            eval(&format!("window.toggleRiverLayer({cur});"));
                         },
                         "⛴️"
                     }
@@ -30131,7 +29838,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_departure();
                             overlay_departure.set(cur);
-                            eval(&format!("window.toggleDepartureLayer({});", cur));
+                            eval(&format!("window.toggleDepartureLayer({cur});"));
                         },
                         "🚉"
                     }
@@ -30142,7 +29849,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_alert();
                             overlay_alert.set(cur);
-                            eval(&format!("window.toggleAlertLayer({});", cur));
+                            eval(&format!("window.toggleAlertLayer({cur});"));
                         },
                         "⚠️"
                     }
@@ -30153,7 +29860,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_gallery();
                             overlay_gallery.set(cur);
-                            eval(&format!("window.toggleGalleryLayer({});", cur));
+                            eval(&format!("window.toggleGalleryLayer({cur});"));
                         },
                         "📷"
                     }
@@ -30164,7 +29871,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_wifi_speed();
                             overlay_wifi_speed.set(cur);
-                            eval(&format!("window.toggleWifiSpeedLayer({});", cur));
+                            eval(&format!("window.toggleWifiSpeedLayer({cur});"));
                         },
                         "📶"
                     }
@@ -30175,7 +29882,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_crowd_pred();
                             overlay_crowd_pred.set(cur);
-                            eval(&format!("window.toggleCrowdPredictionLayer({});", cur));
+                            eval(&format!("window.toggleCrowdPredictionLayer({cur});"));
                         },
                         "👥"
                     }
@@ -30186,7 +29893,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_accessibility_enh();
                             overlay_accessibility_enh.set(cur);
-                            eval(&format!("window.toggleAccessibilityAuditEnhLayer({});", cur));
+                            eval(&format!("window.toggleAccessibilityAuditEnhLayer({cur});"));
                         },
                         "♿"
                     }
@@ -30197,7 +29904,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_energy_opt();
                             overlay_energy_opt.set(cur);
-                            eval(&format!("window.toggleEnergyOptimizationLayer({});", cur));
+                            eval(&format!("window.toggleEnergyOptimizationLayer({cur});"));
                         },
                         "⚡"
                     }
@@ -30208,7 +29915,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_signal_priority();
                             overlay_signal_priority.set(cur);
-                            eval(&format!("window.toggleSignalPriorityLayer({});", cur));
+                            eval(&format!("window.toggleSignalPriorityLayer({cur});"));
                         },
                         "🚦"
                     }
@@ -30219,7 +29926,7 @@ window.__consoleDupCount = 0;
                         onclick: move |_| {
                             let cur = !overlay_capacity_fc();
                             overlay_capacity_fc.set(cur);
-                            eval(&format!("window.toggleCapacityForecastLayer({});", cur));
+                            eval(&format!("window.toggleCapacityForecastLayer({cur});"));
                         },
                         "📈"
                     }
@@ -30323,7 +30030,9 @@ window.__consoleDupCount = 0;
                 // Shown on first launch only. User must accept before using the app.
                 // Persisted via localStorage. Satisfies Consumer Rights Act 2015.
                 {
-                    if !*eula_accepted.read() {
+                    if *eula_accepted.read() {
+                        None
+                    } else {
                         Some(rsx! {
                             div {
                                 style: "position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,.92);z-index:999999;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:16px;",
@@ -30357,8 +30066,6 @@ window.__consoleDupCount = 0;
                                 }
                             }
                         })
-                    } else {
-                        None
                     }
                 }
 
@@ -30467,7 +30174,7 @@ window.__consoleDupCount = 0;
             });
 
             rsx! {
-                style { {r#"
+                style { {r"
             body { background: #020204; color: #39ff14; font-family: 'JetBrains Mono', 'Fira Code', monospace; padding: 16px; margin: 0; overflow: hidden; }
             .terminal-container { display: flex; flex-direction: column; height: 100vh; gap: 12px; padding-bottom: 32px; }
             .header-panel { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #222; padding-bottom: 8px; }
@@ -30477,7 +30184,7 @@ window.__consoleDupCount = 0;
             .status-badge { color: #888; font-size: 10px; font-family: sans-serif; }
             .filter-label { font-family: sans-serif; font-size: 11px; font-weight: bold; display: flex; align-items: center; gap: 4px; color: #888; cursor: pointer; }
             .filter-label input { cursor: pointer; }
-        "#} }
+        "} }
                 div { class: "terminal-container",
                     div { class: "header-panel",
                         h3 { style: "color: #00bcd4; margin: 0; font-family: sans-serif; text-transform: uppercase; font-size: 12px; letter-spacing: 1px;", "System Truth Engine - Companion Analytics Diagnostics Stream" }
@@ -30687,7 +30394,44 @@ window.__consoleDupCount = 0;
                 let is_hidden = hidden_set.contains(&element_id);
                 let visibility_glyph = if is_hidden { "🚫" } else { "👁️" };
 
-                if !is_custom {
+                if is_custom {
+                    rsx! {
+                        div { class: "legend-item", key: "{element_id}",
+                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
+                            span { class: "legend-name", style: "flex: 1;", "{element_name}" }
+
+                            button {
+                                style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    if hidden_lines.read().contains(&element_id_toggle) {
+                                        hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
+                                    } else {
+                                        hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
+                                    }
+                                },
+                                "{visibility_glyph}"
+                            }
+
+                            button {
+                                style: "background: none; border: none; color: #f44336; cursor: pointer; font-weight: bold; font-size: 13px;",
+                                onclick: move |e| {
+                                    e.stop_propagation();
+                                    let target_id = element_id_delete.clone();
+                                    let mut lines_sig = lines;
+                                    let mut deletions_sig = permanent_deletions;
+                                    spawn(async move {
+                                        let target_endpoint = format!("/api/lines/delete/{target_id}");
+                                        let _ = post_api::<_, bool>(&target_endpoint, &true).await;
+                                        deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
+                                        lines_sig.with_mut(|l| { l.retain(|line| line.id != target_id); });
+                                    });
+                                },
+                                "✖"
+                            }
+                        }
+                    }
+                } else {
                     rsx! {
                         details { key: "{element_id}", class: "line-dropdown", style: "margin: 6px 0; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px;",
                             summary { style: "color: {element_color}; cursor: pointer; font-weight: bold; list-style: none; display: flex; align-items: center;",
@@ -30727,7 +30471,7 @@ window.__consoleDupCount = 0;
                                             class: "station-node-link",
                                             style: "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;",
                                             onclick: move |_| {
-                                                let js = format!("window.focusOnTrackAndZoom({}, {}, []);", lat, lon);
+                                                let js = format!("window.focusOnTrackAndZoom({lat}, {lon}, []);");
                                                 eval(&js);
                                             },
                                             "{st_name}"
@@ -30735,43 +30479,6 @@ window.__consoleDupCount = 0;
                                         }
                                     }
                                 })}
-                            }
-                        }
-                    }
-                } else {
-                    rsx! {
-                        div { class: "legend-item", key: "{element_id}",
-                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
-                            span { class: "legend-name", style: "flex: 1;", "{element_name}" }
-
-                            button {
-                                style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",
-                                onclick: move |e| {
-                                    e.stop_propagation();
-                                    if hidden_lines.read().contains(&element_id_toggle) {
-                                        hidden_lines.with_mut(|h| { h.remove(&element_id_toggle); });
-                                    } else {
-                                        hidden_lines.with_mut(|h| { h.insert(element_id_toggle.clone()); });
-                                    }
-                                },
-                                "{visibility_glyph}"
-                            }
-
-                            button {
-                                style: "background: none; border: none; color: #f44336; cursor: pointer; font-weight: bold; font-size: 13px;",
-                                onclick: move |e| {
-                                    e.stop_propagation();
-                                    let target_id = element_id_delete.clone();
-                                    let mut lines_sig = lines;
-                                    let mut deletions_sig = permanent_deletions;
-                                    spawn(async move {
-                                        let target_endpoint = format!("/api/lines/delete/{}", target_id);
-                                        let _ = post_api::<_, bool>(&target_endpoint, &true).await;
-                                        deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
-                                        lines_sig.with_mut(|l| { l.retain(|line| line.id != target_id); });
-                                    });
-                                },
-                                "✖"
                             }
                         }
                     }
@@ -30831,7 +30538,7 @@ window.__consoleDupCount = 0;
                                             let mut permanent_deletions_sig = permanent_deletions;
                                             spawn(async move {
                                                 for target_id in &custom_ids {
-                                                    let endpoint = format!("/api/lines/delete/{}", target_id);
+                                                    let endpoint = format!("/api/lines/delete/{target_id}");
                                                     let _ = post_api::<_, bool>(&endpoint, &true).await;
                                                     permanent_deletions_sig.with_mut(|d| { d.insert(target_id.clone()); });
                                                 }
@@ -30889,14 +30596,14 @@ window.__consoleDupCount = 0;
 
             rsx! {
                 style {
-                    {r#"
+                    {r"
             body { background: #0f0505; color: #ff6b6b; font-family: monospace; padding: 20px; margin: 0; }
             .box { display: flex; flex-direction: column; height: 100vh; gap: 12px; }
             textarea { flex: 1; background: #1a0a0a; color: #ff8888; border: 1px solid #4a1a1a; padding: 12px; font-family: monospace; resize: none; }
             .bar { display: flex; justify-content: space-between; align-items: center; }
             button { background: #ff4444; color: #000; font-weight: bold; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; }
             button:hover { background: #ff6666; }
-            "#}
+            "}
                 }
                 div {
                     class: "box",
@@ -30938,6 +30645,17 @@ window.__consoleDupCount = 0;
 
 #[cfg(test)]
 mod tests {
+    use crate::primitives::QuantizedCoord;
+    use crate::spatial::FixedCoord;
+    use crate::routing::RoutingGraph;
+    use crate::routing::plan_infill_stations;
+    use crate::primitives::TrackGeometry;
+    use crate::primitives::StationRecord;
+    use crate::spatial::StationPod;
+    use crate::spatial::SpatialCoordPod;
+    use crate::spatial::stations_to_bytes;
+    use crate::spatial::stations_from_bytes;
+    use crate::routing::roundel_svg_for_line;
     use super::*;
 
     // ========================================================================
