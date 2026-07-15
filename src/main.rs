@@ -114,15 +114,8 @@ use dioxus::prelude::*;
 //     tan(PI/4 + lat/2) term diverges to infinity past this limit.
 //
 // ============================================================================
-#[cfg(feature = "desktop")]
-use std::path::Path;
 use std::sync::Arc;
-#[cfg(feature = "desktop")]
-use std::time::Instant;
 use std::time::Duration;
-
-#[cfg(feature = "desktop")]
-use chrono::Utc;
 
 // Silence "unused crate dependency" for crates that ARE used in submodules
 // (the crate-root check cannot see re-exports inside nested mod blocks).
@@ -334,7 +327,7 @@ where
                     // Exponential backoff, but clamp the delay so a large retry
                     // count can never produce pathological multi-minute waits
                     // (e.g. attempt 10 -> 256s) with no upper bound.
-                    let delay_ms = (2u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
+                    let delay_ms = (2_u64.pow(attempt) * 250).min(MAX_BACKOFF_MS);
                     // Retries are expected under transient network errors — keep them
                     // at debug level to avoid flooding operator logs; only the final,
                     // unrecoverable failure is surfaced as an error by the caller.
@@ -534,11 +527,10 @@ static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! 
 };
 
 pub(crate) use config::{LondonBounds, Config};
-pub(crate) use logger::{log_debug, log_error, log_info, stderr_capture, log_warn, catch_simple, get_all_logs, accumulate_crash_text, update_crash_telemetry, get_log_storage, log_trace};
-pub(crate) use primitives::{Station, embedded_stations, Coordinate};
+pub(crate) use logger::{log_debug, log_error, log_info, log_warn, get_all_logs, accumulate_crash_text, log_trace};
+pub(crate) use primitives::Station;
 pub(crate) use routing::{RailwayTrack, Line};
-pub(crate) use server::{hydrate_network_state, build_spatial_cache, libc_at_exit, AppState, load_spatial_cache_mmap, pin_memory_to_ram, MmapCacheStore};
-pub(crate) use spatial::TransitNetworkGrid;
+pub(crate) use server::AppState;
 
 
 #[cfg(feature = "desktop")]
@@ -979,24 +971,24 @@ mod logger {
 
         #[repr(C)]
         pub struct SECURITY_ATTRIBUTES {
-            pub(crate) n_length: u32,
-            pub(crate) lp_security_descriptor: *mut std::ffi::c_void,
-            pub(crate) b_inherit_handle: i32, // BOOL
+            pub n_length: u32,
+            pub lp_security_descriptor: *mut std::ffi::c_void,
+            pub b_inherit_handle: i32, // BOOL
         }
 
-        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF5u32; // -11 as u32
+        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF5_u32; // -11 as u32
         const INVALID_HANDLE_VALUE: isize = -1;
         const STD_FILENO: i32 = 2; // CRT file descriptor for stderr
 
         /// Holds the pipe handles and reader thread. When dropped, restores the
         /// original stderr and joins the reader thread.
         pub struct StderrCapture {
-            pub(crate) _reader_handle: isize,
-            pub(crate) writer_handle: isize,
-            pub(crate) original_handle: isize,
-            pub(crate) original_fd: i32, // saved fd 2 for restoration
-            pub(crate) thread: Option<std::thread::JoinHandle<()>>,
-            pub(crate) running: Arc<AtomicBool>,
+            pub _reader_handle: isize,
+            pub writer_handle: isize,
+            pub original_handle: isize,
+            pub original_fd: i32, // saved fd 2 for restoration
+            pub thread: Option<std::thread::JoinHandle<()>>,
+            pub running: Arc<AtomicBool>,
         }
 
         impl StderrCapture {
@@ -1532,10 +1524,10 @@ mod primitives {
         // data set, on first access.
         //
         // ============================================================================
-        pub static EMBEDDED_STATIONS_JSON: &'static str =
+        pub static EMBEDDED_STATIONS_JSON: &str =
             include_str!("../data/london_stations.json");
-        pub static EMBEDDED_LINES_JSON: &'static str = include_str!("../data/london_lines.json");
-        pub static EMBEDDED_RESIDENTIAL_JSON: &'static str =
+        pub static EMBEDDED_LINES_JSON: &str = include_str!("../data/london_lines.json");
+        pub static EMBEDDED_RESIDENTIAL_JSON: &str =
             include_str!("../data/london_residential.json");
 
         /// One coloured polyline segment of a rail line (matches the compact JSON keys
@@ -1671,7 +1663,7 @@ mod primitives {
                             let radius_deg_lon = 0.0028;
                             let mut polygon = Vec::with_capacity(9);
                             for step in 0..8 {
-                                let angle = f64::from(step) * std::f64::consts::PI / 4.0;
+                                let angle = f64::from(step) * PI / 4.0;
                                 polygon.push(Coordinate::new(
                                     c.lat + radius_deg_lat * angle.sin(),
                                     c.lon + radius_deg_lon * angle.cos(),
@@ -1817,7 +1809,7 @@ mod primitives {
         #[inline]
         pub(crate) fn from_mercator(x: f64, y: f64) -> Self {
             let lon = x / EARTH_RADIUS * RAD_TO_DEG;
-            let lat = 2.0f64.mul_add((y / EARTH_RADIUS).exp().atan(), -(PI / 2.0)) * RAD_TO_DEG;
+            let lat = 2.0_f64.mul_add((y / EARTH_RADIUS).exp().atan(), -(PI / 2.0)) * RAD_TO_DEG;
             Self { lat, lon }
         }
 
@@ -2078,8 +2070,8 @@ mod primitives {
 }
 
 mod spatial {
-    pub use morton::*;
-    pub use transit_grid::*;
+    pub(crate) use morton::*;
+    pub(crate) use transit_grid::*;
 
     mod transit_grid {
         use crate::logger::{log_info, log_warn};
@@ -2515,7 +2507,7 @@ mod spatial {
 }
 
 mod routing {
-    pub use graph::*;
+    pub(crate) use graph::*;
 
     mod graph {
         use crate::logger::{log_info, log_trace, log_warn, log_debug, log_error, log_info_with_context, log_debug_with_context};
@@ -2571,7 +2563,7 @@ mod routing {
 
             // Remove nodes nearest to the disrupted line's stations
             let mut removed_count = 0;
-            let mut removed_nodes = std::collections::HashSet::new();
+            let mut removed_nodes = HashSet::new();
             for station in &line_stations {
                 if let Some(node_id) = new_graph.find_nearest_node(&station.coord) {
                     new_graph.nodes.remove(&node_id);
@@ -2717,7 +2709,7 @@ mod routing {
         #[derive(Debug, Clone)]
         pub struct SpatialPoint {
             pub coord: Coordinate,
-            pub(crate) index: usize,
+            pub index: usize,
         }
 
         impl RTreeObject for SpatialPoint {
@@ -2781,7 +2773,7 @@ mod routing {
         /// ```
         pub struct GeometryEngine {
             /// R*-tree spatial index. Built via STR bulk loading.
-            pub(crate) station_index: RTree<SpatialPoint>,
+            pub station_index: RTree<SpatialPoint>,
         }
 
         impl GeometryEngine {
@@ -3013,7 +3005,7 @@ mod routing {
                 let tree = RTree::bulk_load(points);
 
                 let mut merged = Vec::new();
-                let mut processed = std::collections::HashSet::new();
+                let mut processed = HashSet::new();
                 let threshold_meters = threshold * 111_000.0;
                 log_debug(&format!(
                     "Merge threshold: {threshold_meters:.2} meters (threshold={threshold:.6} degrees)"
@@ -4135,15 +4127,15 @@ mod routing {
 
         #[derive(Debug, Clone)]
         pub struct Node {
-            pub(crate) id: usize,
+            pub id: usize,
             pub coord: Coordinate,
-            pub(crate) neighbors: Vec<(usize, f64)>,
+            pub neighbors: Vec<(usize, f64)>,
         }
 
         #[derive(Debug, Clone, PartialEq)]
         pub struct PriorityQueueItem {
-            pub(crate) cost: f64,
-            pub(crate) node_id: usize,
+            pub cost: f64,
+            pub node_id: usize,
         }
 
         impl Ord for PriorityQueueItem {
@@ -4198,7 +4190,7 @@ mod routing {
         /// `Copy + Clone` — passed by value, never borrowed. At 16 bytes (two `usize`),
         /// it fits in a single cache line and hashes in O(1).
         #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
-        pub struct EdgeKey(pub(crate) usize, pub(crate) usize);
+        pub struct EdgeKey(pub usize, pub usize);
 
         /// Graph-based routing engine for A* pathfinding across London's transport network.
         ///
@@ -4242,12 +4234,12 @@ mod routing {
         #[derive(Clone)]
         pub struct RoutingGraph {
             /// Station nodes with edges to adjacent stations.
-            pub(crate) nodes: HashMap<usize, Node>,
+            pub nodes: HashMap<usize, Node>,
             /// Spatial grid index for O(1) nearest-node lookup.
-            pub(crate) grid_index: HashMap<(i32, i32), Vec<usize>>,
+            pub grid_index: HashMap<(i32, i32), Vec<usize>>,
             /// Morton Code spatial index for cache-perfect binary search nearest-neighbor.
             /// Built once after graph construction; used as fast-path alternative to `grid_index`.
-            pub(crate) morton_index: Option<MortonSpatialIndex>,
+            pub morton_index: Option<MortonSpatialIndex>,
         }
 
         impl RoutingGraph {
@@ -4454,7 +4446,7 @@ mod routing {
 
         #[derive(Clone)]
         pub struct NetworkManager {
-            pub(crate) client: Arc<Client>,
+            pub client: Arc<Client>,
         }
 
         impl NetworkManager {
@@ -4523,8 +4515,8 @@ mod routing {
 
         #[derive(Clone)]
         pub struct TflApiClient {
-            pub(crate) network: NetworkManager,
-            pub(crate) base_url: String,
+            pub network: NetworkManager,
+            pub base_url: String,
         }
 
         impl TflApiClient {
@@ -4697,9 +4689,9 @@ mod routing {
 
         #[derive(Clone)]
         pub struct OverpassApiClient {
-            pub(crate) network: NetworkManager,
-            pub(crate) base_url: String,
-            pub(crate) fallback_urls: Vec<String>,
+            pub network: NetworkManager,
+            pub base_url: String,
+            pub fallback_urls: Vec<String>,
         }
 
         impl OverpassApiClient {
@@ -4788,7 +4780,7 @@ out body; >; out skel qt;"#
                             log_warn(&err_msg);
                             last_error = Some(err_msg);
                             if (status == 429 || status == 503) && retry < max_retries - 1 {
-                                let delay = 2u64.pow(retry as u32 + 1) * 2;
+                                let delay = 2_u64.pow(retry as u32 + 1) * 2;
                                 tokio::time::sleep(Duration::from_secs(delay)).await;
                                 continue;
                             }
@@ -4868,7 +4860,7 @@ out body; >; out skel qt;"#
                                 ));
                                 if retry < 2 {
                                     tokio::time::sleep(Duration::from_millis(
-                                        500 * (1u64 << retry),
+                                        500 * (1_u64 << retry),
                                     ))
                                     .await;
                                 }
@@ -4877,7 +4869,7 @@ out body; >; out skel qt;"#
                         };
                         let status = resp.status();
                         if status == 429 || status == 503 {
-                            let delay = 2u64.pow(retry + 1) * 2;
+                            let delay = 2_u64.pow(retry + 1) * 2;
                             log_warn(&format!("OverpassApiClient::fetch_residential_areas - {url} rate limited ({status}), retry in {delay}s"));
                             tokio::time::sleep(Duration::from_secs(delay)).await;
                             continue;
@@ -4994,9 +4986,9 @@ out body;"#
                 if let Some(elements) = data.get("elements").and_then(|v| v.as_array()) {
                     for el in elements {
                         if el.get("type").and_then(|v| v.as_str()) == Some("node") {
-                            let id_num = el.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0);
-                            let lat = el.get("lat").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
-                            let lon = el.get("lon").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                            let id_num = el.get("id").and_then(Value::as_i64).unwrap_or(0);
+                            let lat = el.get("lat").and_then(Value::as_f64).unwrap_or(0.0);
+                            let lon = el.get("lon").and_then(Value::as_f64).unwrap_or(0.0);
                             let tags = el.get("tags");
 
                             let name = tags
@@ -5060,9 +5052,9 @@ out body;"#
                     for el in elements {
                         if el.get("type").and_then(|v| v.as_str()) == Some("node") {
                             if let (Some(id), Some(lat), Some(lon)) = (
-                                el.get("id").and_then(serde_json::Value::as_i64),
-                                el.get("lat").and_then(serde_json::Value::as_f64),
-                                el.get("lon").and_then(serde_json::Value::as_f64),
+                                el.get("id").and_then(Value::as_i64),
+                                el.get("lat").and_then(Value::as_f64),
+                                el.get("lon").and_then(Value::as_f64),
                             ) {
                                 nodes_extracted += 1;
                                 nodes_map.insert(id, Coordinate::new(lat, lon));
@@ -5083,8 +5075,8 @@ out body;"#
                             {
                                 for coord in way_data {
                                     if let (Some(lat), Some(lon)) = (
-                                        coord.get("lat").and_then(serde_json::Value::as_f64),
-                                        coord.get("lon").and_then(serde_json::Value::as_f64),
+                                        coord.get("lat").and_then(Value::as_f64),
+                                        coord.get("lon").and_then(Value::as_f64),
                                     ) {
                                         geometry.push(Coordinate::new(lat, lon));
                                     } else {
@@ -5108,7 +5100,7 @@ out body;"#
                             } else {
                                 let id = element
                                     .get("id")
-                                    .and_then(serde_json::Value::as_i64)
+                                    .and_then(Value::as_i64)
                                     .unwrap_or(idx as i64)
                                     .to_string();
                                 let operator = element
@@ -6124,12 +6116,12 @@ mod network {
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
     pub struct SaveLineRequest {
-        pub(crate) line: Line,
+        pub line: Line,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
     pub struct SaveStationRequest {
-        pub(crate) station: Station,
+        pub station: Station,
     }
 
     #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -6363,7 +6355,7 @@ mod network {
 
     /// Estimate fare based on distance and zones crossed. `TfL` pricing model.
     pub fn estimate_fare_gbp(distance_m: f64, zones: &[i32]) -> f64 {
-        let zone_count = zones.iter().collect::<std::collections::HashSet<_>>().len();
+        let zone_count = zones.iter().collect::<HashSet<_>>().len();
         let base = 2.80_f64;
         let distance_factor = (distance_m / 1000.0) * 0.04;
         let zone_factor = match zone_count {
@@ -6843,14 +6835,14 @@ mod network {
         if lines.is_empty() && stations.is_empty() && tracks.is_empty() {
             log_warn("export_geojson - ALL collections are empty! Export will be an empty FeatureCollection.");
         }
-        let mut features: Vec<serde_json::Value> = Vec::new();
+        let mut features: Vec<Value> = Vec::new();
 
         if req.include_lines {
             for line in lines {
                 if req.include_custom_only && !line.is_custom {
                     continue;
                 }
-                let coords: Vec<serde_json::Value> = line
+                let coords: Vec<Value> = line
                     .geometry
                     .iter()
                     .map(|c| serde_json::json!([c.lon, c.lat]))
@@ -6889,7 +6881,7 @@ mod network {
 
         if req.include_tracks {
             for t in tracks {
-                let coords: Vec<serde_json::Value> = t
+                let coords: Vec<Value> = t
                     .geometry
                     .iter()
                     .map(|c| serde_json::json!([c.lon, c.lat]))
@@ -6954,7 +6946,7 @@ mod network {
                 .map(|arrival| {
                     let mut enriched = arrival.clone();
                     // timeToStation is in seconds from now
-                    if let Some(tts) = arrival.get("timeToStation").and_then(serde_json::Value::as_f64) {
+                    if let Some(tts) = arrival.get("timeToStation").and_then(Value::as_f64) {
                         if tts > 0.0 {
                             // Distance the train will travel in timeToStation seconds
                             // (negative because the train is approaching)
