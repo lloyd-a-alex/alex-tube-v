@@ -21728,6 +21728,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
 
         // Clippy fallback: empty string so clippy doesn't have to parse the 330-line CSS blob
         #[cfg(clippy)]
+        #[expect(dead_code, reason = "clippy fallback; real CSS loaded at non-clippy cfg")]
         pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> =
             std::sync::LazyLock::new(String::new);
 
@@ -21750,6 +21751,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // ============================================================================
 
 
+        #[expect(dead_code, reason = "JS helper for clipboard copy via textarea")]
         pub(crate) fn copy_to_clipboard_js(text: &str) -> String {
             let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
             format!(
@@ -21772,11 +21774,13 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for copying log text to clipboard")]
         pub(crate) fn build_copy_log_js(text: &str) -> String {
             copy_to_clipboard_js(&serde_json::to_string(text).unwrap_or_default())
         }
 
 
+        #[expect(dead_code, reason = "JS helper for auto-scrolling elements")]
         pub(crate) fn scroll_to_bottom_query_js(selector: &str) -> String {
             format!(
                 r#"setTimeout(() => {{
@@ -21793,21 +21797,25 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for setting map container cursor")]
         pub(crate) fn set_cursor_js(cursor: &str) -> String {
             format!("window.map.getContainer().style.cursor = '{}';", cursor)
         }
 
 
+        #[expect(dead_code, reason = "JS helper for calling a window function")]
         pub(crate) fn call_window_js(func: &str) -> String {
             format!("window.{}();", func)
         }
 
 
+        #[expect(dead_code, reason = "JS helper for calling a window function with a string argument")]
         pub(crate) fn call_window_js_with_arg(func: &str, arg: &str) -> String {
             format!("window.{}('{}');", func, arg)
         }
 
 
+        #[expect(dead_code, reason = "JS helper for focusing an element by selector")]
         pub(crate) fn focus_element_js(selector: &str) -> String {
             format!(
                 "let si = document.getElementById('{}'); if (si) si.focus();",
@@ -21816,11 +21824,13 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for calling a window function with a JSON argument")]
         pub(crate) fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
             format!("window.{}({});", func, json_arg)
         }
 
 
+        #[expect(dead_code, reason = "JS helper for calling a window function with JSON and string args")]
         pub(crate) fn call_window_js_with_json_and_string(
             func: &str,
             json_arg: &str,
@@ -21830,6 +21840,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for panning/zooming the Leaflet map")]
         pub(crate) fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
             format!(
                 "window.map.setView([{}, {}], {}, {{ animate: true }});",
@@ -21838,6 +21849,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for switching satellite tile provider")]
         pub(crate) fn set_sat_provider_js(idx: i32) -> String {
             format!(
                 "window.satProviderIdx = {}; window.setBaseMode('satellite');",
@@ -21846,6 +21858,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         }
 
 
+        #[expect(dead_code, reason = "JS helper for drawing isochrone polygons on the map")]
         pub(crate) fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
             format!(
                 "window.drawIsochrone({}, {}, {});",
@@ -21877,6 +21890,7 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
         // CLIPBOARD HELPER (JavaScript) – defines a global copyText function
         // ============================================================================
 
+        #[expect(dead_code, reason = "JavaScript clipboard helper injected into the WebView")]
         pub(crate) static CLIPBOARD_JS: &str = r#"
 function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -21946,6 +21960,7 @@ window.close = function() {
         // ============================================================================
 
 
+        #[expect(dead_code, reason = "JavaScript map initialisation code injected into the WebView")]
         pub(crate) static MAP_INIT_JS: &str = r##"
 window.addEventListener('error', function(e) {
     var msg = e.message || "Unknown Opaque Error";
@@ -24954,6 +24969,7 @@ window.initMap = async function() {
 "##;
 
 
+        #[expect(dead_code, reason = "JavaScript map render loop injected into the WebView")]
         pub(crate) static MAP_LOOP_JS: &str = r##"
 // ── Parallel Line Offset Helpers ─────────────────────────────────────────────
 // Generate a deterministic colour for lines missing a custom colour
@@ -25313,6 +25329,7 @@ while (true) {
         use std::time::Duration;
 
 
+        #[expect(dead_code, reason = "shared HTTP client with 15s timeout for API requests")]
         pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
@@ -25324,6 +25341,7 @@ while (true) {
         /// single client across all handlers means TCP connections are reused, avoiding
         /// the overhead of TLS handshakes and DNS resolution on every API call. Do NOT
         /// create a new client per request.
+        #[expect(dead_code, reason = "initialises and returns the shared 15s API client")]
         pub(crate) fn get_api_client() -> &'static reqwest::Client {
             API_CLIENT.get_or_init(|| {
                 log_debug("get_api_client - initialising shared API client (15s timeout)");
@@ -25336,9 +25354,11 @@ while (true) {
 
         /// Separate client with a 5-minute timeout for CPU-heavy endpoints
         /// (AI station planning, coverage stats, transit deserts).
+        #[expect(dead_code, reason = "shared HTTP client with 5-min timeout for heavy endpoints")]
         pub(crate) static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
+        #[expect(dead_code, reason = "initialises and returns the shared 5-min API client")]
         pub(crate) fn get_api_client_slow() -> &'static reqwest::Client {
             API_CLIENT_SLOW.get_or_init(|| {
                 log_debug("get_api_client_slow - initialising slow API client (300s timeout)");
@@ -25350,6 +25370,7 @@ while (true) {
         }
 
 
+        #[expect(dead_code, reason = "POST helper using the slow 5-min API client")]
         pub(crate) async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25382,6 +25403,7 @@ while (true) {
         }
 
 
+        #[expect(dead_code, reason = "GET helper using the standard API client")]
         pub(crate) async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25412,6 +25434,7 @@ while (true) {
         }
 
 
+        #[expect(dead_code, reason = "POST helper using the standard API client")]
         pub(crate) async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
             url: &str,
             body: &REQ,
@@ -25445,6 +25468,7 @@ while (true) {
         }
 
 
+        #[expect(dead_code, reason = "GET helper using the standard API client")]
         pub(crate) async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
             let client = get_api_client();
             let base_url = crate::logger::Globals::get()
@@ -25483,8 +25507,10 @@ while (true) {
         #[cfg(feature = "desktop")]
         use dioxus::prelude::*;
 
+        #[expect(dead_code, reason = "Leaflet CSS embedded from filesystem for WebView")]
         pub(crate) static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
 
+        #[expect(dead_code, reason = "Leaflet JS embedded from filesystem for WebView")]
         pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
         /// Build the HTML \<head> string for the desktop `WebView`.
@@ -25498,6 +25524,7 @@ while (true) {
         /// - ARIA live region announcements
         /// - Keyboard navigation support (Tab, Enter, Escape)
         /// - Screen reader announcements via aria-live regions
+        #[expect(dead_code, reason = "builds the HTML head string for the desktop WebView")]
         pub(crate) fn build_webview_head(api_base: &str) -> String {
             log_debug(&format!("build_webview_head - api_base={}", api_base));
             let mut h = String::with_capacity(512 * 1024);
@@ -25755,6 +25782,7 @@ window.__consoleDupCount = 0;
 
         /// Analytics dashboard panel showing network statistics
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AnalyticsPanel() -> Element {
             let analytics = use_signal(|| String::from("Loading..."));
@@ -25797,6 +25825,7 @@ window.__consoleDupCount = 0;
 
         /// Eco routing panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EcoPanel() -> Element {
             let mut from = use_signal(String::new);
@@ -25855,6 +25884,7 @@ window.__consoleDupCount = 0;
 
         /// Accessibility panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -25905,6 +25935,7 @@ window.__consoleDupCount = 0;
 
         /// Delay predictions panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DelayPredictionsPanel() -> Element {
             let result = use_signal(|| String::from("Loading..."));
@@ -25947,6 +25978,7 @@ window.__consoleDupCount = 0;
 
         /// `TfL` Live Status panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn TfLStatusPanel() -> Element {
             let result = use_signal(String::new);
@@ -25989,6 +26021,7 @@ window.__consoleDupCount = 0;
 
         /// Historical timeline panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn HistoryPanel() -> Element {
             let result = use_signal(String::new);
@@ -26031,6 +26064,7 @@ window.__consoleDupCount = 0;
 
         /// Parking availability panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ParkingPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -26081,6 +26115,7 @@ window.__consoleDupCount = 0;
 
         /// `MaaS` (Mobility as a Service) panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn MaaSPanel() -> Element {
             let providers = use_signal(|| String::from("Loading..."));
@@ -26117,6 +26152,7 @@ window.__consoleDupCount = 0;
 
         /// Noise monitoring panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NoisePanel() -> Element {
             let noise = use_signal(|| String::from("Loading..."));
@@ -26153,6 +26189,7 @@ window.__consoleDupCount = 0;
 
         /// Air quality panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AirQualityPanel() -> Element {
             let air = use_signal(|| String::from("Loading..."));
@@ -26189,6 +26226,7 @@ window.__consoleDupCount = 0;
 
         /// Crowd density panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdDensityPanel() -> Element {
             let crowd = use_signal(|| String::from("Loading..."));
@@ -26225,6 +26263,7 @@ window.__consoleDupCount = 0;
 
         /// Energy grid panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyPanel() -> Element {
             let energy = use_signal(|| String::from("Loading..."));
@@ -26261,6 +26300,7 @@ window.__consoleDupCount = 0;
 
         /// Night tube panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NightTubePanel() -> Element {
             let night = use_signal(|| String::from("Loading..."));
@@ -26297,6 +26337,7 @@ window.__consoleDupCount = 0;
 
         /// Construction tracker panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ConstructionPanel() -> Element {
             let construction = use_signal(|| String::from("Loading..."));
@@ -26333,6 +26374,7 @@ window.__consoleDupCount = 0;
 
         /// Departure board panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DepartureBoardPanel() -> Element {
             let departures = use_signal(|| String::from("Loading..."));
@@ -26369,6 +26411,7 @@ window.__consoleDupCount = 0;
 
         /// Service alerts panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ServiceAlertsPanel() -> Element {
             let alerts = use_signal(|| String::from("Loading..."));
@@ -26405,6 +26448,7 @@ window.__consoleDupCount = 0;
 
         /// Photo gallery panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn PhotoGalleryPanel() -> Element {
             let photos = use_signal(|| String::from("Loading..."));
@@ -26441,6 +26485,7 @@ window.__consoleDupCount = 0;
 
         /// `WiFi` speed panel
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn WifiSpeedPanel() -> Element {
             let speeds = use_signal(|| String::from("Loading..."));
@@ -26476,6 +26521,7 @@ window.__consoleDupCount = 0;
         }
 
 
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdPredictionPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26511,6 +26557,7 @@ window.__consoleDupCount = 0;
         }
 
 
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityAuditEnhPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26546,6 +26593,7 @@ window.__consoleDupCount = 0;
         }
 
 
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyOptimizationPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26581,6 +26629,7 @@ window.__consoleDupCount = 0;
         }
 
 
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn SignalPriorityPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26616,6 +26665,7 @@ window.__consoleDupCount = 0;
         }
 
 
+        #[expect(dead_code, reason = "Dioxus component; rendered in desktop sidebar")]
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CapacityForecastPanel() -> Element {
             let data = use_signal(|| String::from("Loading..."));
@@ -26657,6 +26707,7 @@ window.__consoleDupCount = 0;
         /// Desktop-only: configure the Dioxus `WebView` window.
         /// This function uses Dioxus types and is only compiled when `desktop` feature is active.
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "desktop-only window configuration factory")]
         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
             log_info("build_desktop_window_configuration - configuring desktop WebView");
             // The WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is set once, early, in
@@ -26784,6 +26835,7 @@ window.__consoleDupCount = 0;
         /// handle, NOT the signal data itself). Cloning a Signal is cheap ? it's
         /// just an Arc bump ? and is safe across await points because Dioxus signals
         /// are Send + Sync.
+        #[expect(dead_code, reason = "utility for displaying toast notifications in the UI")]
         pub(crate) fn show_toast(
             toasts: &mut Signal<Vec<Toast>>,
             id_counter: &mut Signal<usize>,
@@ -26814,6 +26866,7 @@ window.__consoleDupCount = 0;
         }
 
         #[cfg(feature = "desktop")]
+        #[expect(dead_code, reason = "desktop-only console window configuration factory")]
         pub fn build_console_window_configuration() -> dioxus::desktop::Config {
             log_info("build_console_window_configuration - configuring analytics console window");
             let window = dioxus::desktop::WindowBuilder::new()
@@ -27105,6 +27158,7 @@ window.__consoleDupCount = 0;
         /// nested Dioxus trees.
         #[cfg(feature = "desktop")]
         #[expect(dependency_on_unit_never_type_fallback, reason = "Dioxus requires this for desktop rendering")]
+        #[expect(dead_code, reason = "Dioxus root component; entry point for desktop rendering")]
         pub fn app() -> Element {
             // ── Panic-safe guard: if a prior Dioxus rendering panic occurred, render a
             //    minimal recovery UI that keeps the Axum server alive for browser users.
