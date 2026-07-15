@@ -108,7 +108,7 @@ fn build_synthetic_grid(node_count: usize) -> BenchGrid {
 
     for index in 0..node_count {
         let index_u32 = u32::try_from(index).unwrap_or(0);
-        let f_index = index_u32 as f64 as f32;
+        let f_index = f64::from(index_u32) as f32;
         coords_x.push(f_index.mul_add(0.001, -0.1));
         coords_y.push(f_index.mul_add(0.001, 51.5));
         edge_offsets.push(u32::try_from(edge_targets.len()).unwrap_or(0));

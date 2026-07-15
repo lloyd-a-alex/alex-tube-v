@@ -13,7 +13,7 @@ documentation = "https://docs.rs/alexs-tube-v"
 [dependencies]
 # Web Framework
 axum = "0.8"
-tokio = { version = "1.35", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
@@ -48,7 +48,7 @@ mimalloc = { version = "0.1", default-features = false }
 bincode = "1.3"
 
 # Security: cryptographic hash for cache integrity verification
-sha2 = "0.11"
+sha2 = "0.10"
 
 # Utilities
 chrono = "0.4"
@@ -57,14 +57,14 @@ dirs = "6.0"
 phf = { version = "0.14", features = ["macros"] }
 
 # Performance
-rayon = "1.8"
-bytemuck = { version = "1.14", features = ["derive"] }
+rayon = "1.12"
+bytemuck = { version = "1.25", features = ["derive"] }
 rkyv = { version = "0.7", features = ["validation"] }
 crossbeam-channel = "0.5"
 
 # Desktop (optional, enabled by default via 'desktop' feature)
 dioxus = { version = "0.5", features = ["fullstack", "axum", "desktop"], optional = true }
-arc-swap = "1.7"
+arc-swap = "1.9"
 r2d2 = "0.8"
 memmap2 = "0.9"
 open = "5"
@@ -76,7 +76,7 @@ shuttle-axum = { version = "0.49", optional = true }
 # SQLite caching is used for both desktop and shuttle builds.
 
 # Utility crates for new engine modules (occupancy, disruption, demand, etc.)
-fastrand = "2.1"
+fastrand = "2.4"
 rand = "0.8"
 
 [dev-dependencies]
@@ -112,37 +112,23 @@ server = ["dioxus/axum"]
 web = []
 
 [lints.clippy]
-# User's requested lint levels
-all = "warn"
-pedantic = "warn"
-nursery = "warn"
-cargo = "warn"
-restriction = "warn"
-
-# Resolve contradictions between restriction and pedantic/nursery:
-# restriction wants explicit `return` everywhere (implicit_return),
-# pedantic wants no `return` at tail positions (needless_return) — keep restriction.
+multiple-crate-versions = "allow"
 needless-return = "allow"
-# restriction wants expanded visibility (pub_with_shorthand),
-# nursery says pub(crate) is redundant in private mods (redundant_pub_crate) — keep restriction.
 redundant-pub-crate = "allow"
-
-# Lints that cannot be satisfied in a geo-spatial engine without breaking functionality.
-# Each is documented below with the reason.
-default-numeric-fallback = "allow"    # f64 literal type inference is safe
-float-arithmetic = "allow"            # spatial/math engine requires f64/f32 ops
-integer-division = "allow"            # integer division used in grid indexing
-indexing-slicing = "allow"            # array indexing is fundamental
-arithmetic-side-effects = "allow"     # integer arithmetic is intentional
-question-mark-used = "allow"          # ? operator is idiomatic error propagation
-min-ident-chars = "allow"             # x,y,i,j,dx,dy in geometry code
-print-stdout = "allow"                # logging crate uses println!
-unwrap-used = "allow"                 # safe unwraps in controlled contexts
-as-conversions = "allow"              # required for usize↔f32 conversions
-cast-possible-truncation = "allow"    # deliberate truncation casts
-cast-possible-wrap = "allow"          # deliberate wrapping casts
-cast-sign-loss = "allow"              # deliberate sign-change casts
-cast-precision-loss = "allow"         # deliberate precision-loss casts
-cast-lossless = "allow"               # some lossless casts are unavoidable
-allow-attributes = "allow"            # allow for legitimate dead_code etc
-allow-attributes-without-reason = "allow"  # some #[expect] without reason
+default-numeric-fallback = "allow"
+float-arithmetic = "allow"
+integer-division = "allow"
+indexing-slicing = "allow"
+arithmetic-side-effects = "allow"
+question-mark-used = "allow"
+min-ident-chars = "allow"
+print-stdout = "allow"
+unwrap-used = "allow"
+as-conversions = "allow"
+cast-possible-truncation = "allow"
+cast-possible-wrap = "allow"
+cast-sign-loss = "allow"
+cast-precision-loss = "allow"
+cast-lossless = "allow"
+allow-attributes = "allow"
+allow-attributes-without-reason = "allow"

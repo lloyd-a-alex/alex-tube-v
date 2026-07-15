@@ -21,32 +21,32 @@
 //! a single Tokio runtime to avoid reactor-lock contention:
 //!
 //! 1. **Axum web server** — serves spatial/network data + AI station-planning
-//!    endpoints to the embedded WebView.
+//!    endpoints to the embedded `WebView`.
 //! 2. **R*-tree spatial engine + A* pathfinder** — geospatial indexing and
 //!    graph traversal for route optimisation, catchment analysis, and
 //!    station-placement algorithms.
 //! 3. **Dioxus desktop UI** — reactive component tree rendered inside a
-//!    native WebView window, communicating with the backend via IPC eval.
+//!    native `WebView` window, communicating with the backend via IPC eval.
 //!
 //! ## Concepts
 //!
-//! - **ArcSwap RCU** — All mutable global state (stations, lines, tracks)
+//! - **`ArcSwap` RCU** — All mutable global state (stations, lines, tracks)
 //!   uses `arc_swap::ArcSwap` with Read-Copy-Update loops. Reads are 100%
 //!   lock-free; writes clone the Arc, mutate locally, then atomically swap
-//!   the pointer. This eliminates RwLock contention under concurrent API load.
+//!   the pointer. This eliminates `RwLock` contention under concurrent API load.
 //! - **STR Bulk Loading** — Spatial indexes use `RTree::bulk_load()` with
 //!   Sort-Tile-Recursive algorithm for optimal bounding box packing.
 //! - **Mercator Calibration** — All spatial queries use Web-Mercator [x, y]
 //!   coordinates. Ground distances must be calibrated via `sec(lat)` before
 //!   comparison (see [`GeometryEngine::mercator_calibrated_sq_radius`]).
-//! - **QuantizedCoord** — f64 coordinates are quantized to i32 (6 decimal
+//! - **`QuantizedCoord`** — f64 coordinates are quantized to i32 (6 decimal
 //!   places, ~11.1cm precision) for deterministic Eq/Hash implementations.
 //!
 //! ## Crate Features
 //!
 //! | Feature | Description |
 //! |---------|-------------|
-//! | `desktop` | (Default) Enables Dioxus desktop UI with native WebView |
+//! | `desktop` | (Default) Enables Dioxus desktop UI with native `WebView` |
 //! | `shuttle` | Enables Shuttle deployment runtime (disables desktop UI) |
 //! | `server` | Enables Axum integration (implies `dioxus/axum`) |
 //! | `web` | Enables web-specific Dioxus features |
@@ -55,14 +55,14 @@
 //!
 //! The application reads configuration from `config.toml` in the project root.
 //! Key settings:
-//! - `tfl_api_key` — TfL API credentials
+//! - `tfl_api_key` — `TfL` API credentials
 //! - `overpass_endpoint` — Overpass API URL for OpenStreetMap data
-//! - `cache_db_path` — SQLite database location
+//! - `cache_db_path` — `SQLite` database location
 //!
 //! ## Limitations
 //!
 //! - Single-file architecture (~16,000 lines) — all modules in one binary
-//! - SQLite for caching — not suitable for high-concurrency production
+//! - `SQLite` for caching — not suitable for high-concurrency production
 //! - Mercator projection — latitude clamped to ±85.0511°
 //!
 //! ## Platform Support
@@ -70,8 +70,8 @@
 //! | Platform | Tier | Notes |
 //! |----------|------|-------|
 //! | Windows 10+ | Tier 1 | Primary target |
-//! | macOS 12+ | Tier 2 | WebView2 backend |
-//! | Linux (GTK) | Tier 3 | Requires WebKit2GTK |
+//! | macOS 12+ | Tier 2 | `WebView2` backend |
+//! | Linux (GTK) | Tier 3 | Requires `WebKit2GTK` |
 //!
 //! ## License
 //!
@@ -262,7 +262,7 @@ mod error {
 //
 // ============================================================================
 
-/// Trait abstracting TfL (Transport for London) API access.
+/// Trait abstracting `TfL` (Transport for London) API access.
 /// Implementations can be swapped for testing or staging environments.
 #[async_trait::async_trait]
 pub trait TflApi: Send + Sync {
@@ -584,8 +584,7 @@ mod logger {
     fn routing_diag_downgrading_enabled() -> bool {
         *ROUTING_DIAG_DOWNGRADING_ENABLED.get_or_init(|| {
             std::env::var("ALEXTUBE_LOG_ROUTING_ERRORS")
-                .map(|v| v != "1" && v.to_lowercase() != "true")
-                .unwrap_or(true)
+                .map_or(true, |v| v != "1" && v.to_lowercase() != "true")
         })
     }
 
@@ -611,14 +610,16 @@ mod logger {
                 is_panicked: std::sync::atomic::AtomicBool::new(false),
                 crash_log: std::sync::Mutex::new(String::new()),
                 crash_telemetry: std::sync::Mutex::new(String::new()),
-                log_buffer: Arc::new(std::sync::RwLock::new(VecDeque::with_capacity(20000))),
+                log_buffer: Arc::new(std::sync::RwLock::new(VecDeque::with_capacity(20_000))),
                 api_base: std::sync::RwLock::new(None),
                 console_port: std::sync::RwLock::new(None),
                 config: std::sync::RwLock::new(None),
             })
         }
 
-
+        pub(crate) fn get_api_base() -> String {
+            Self::get().api_base.read().unwrap().clone().unwrap_or_else(|| "http://127.0.0.1:3000".to_owned())
+        }
     }
 
     /// Hard cap on accumulated crash text so a long-running process that hits
@@ -668,7 +669,7 @@ mod logger {
     // leaks from runaway log output.
     //
     // ============================================================================
-    pub(crate) const DEFAULT_MAX_LOG_ENTRIES: usize = 20000;
+    pub(crate) const DEFAULT_MAX_LOG_ENTRIES: usize = 20_000;
 
     pub(crate) fn get_log_storage() -> &'static Arc<std::sync::RwLock<VecDeque<String>>> {
         &Globals::get().log_buffer
@@ -997,7 +998,7 @@ mod logger {
             pub(crate) b_inherit_handle: i32, // BOOL
         }
 
-        const STD_ERROR_HANDLE: u32 = 0xFFFFFFF5_u32; // -11 as u32
+        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF5_u32; // -11 as u32
         const INVALID_HANDLE_VALUE: isize = -1;
         const STD_FILENO: i32 = 2; // CRT file descriptor for stderr
 
@@ -1196,7 +1197,7 @@ mod logger {
                                 }
 
                                 // Prevent unbounded memory from lines without newline
-                                if partial.len() > 65536 {
+                                if partial.len() > 65_536 {
                                     partial.clear();
                                 }
                             }
@@ -1337,7 +1338,7 @@ mod config {
     ///
     /// Contains all runtime settings: API endpoints, server binding,
     /// cache expiry, logging limits, London geographic bounds, and
-    /// the list of TfL line IDs to seed at startup.
+    /// the list of `TfL` line IDs to seed at startup.
     ///
     /// # Configuration
     ///
@@ -1357,7 +1358,7 @@ mod config {
     /// lines are needed. The full London network takes ~30s to load.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Config {
-        /// TfL API base URL (e.g., "<https://api.tfl.gov.uk>").
+        /// `TfL` API base URL (e.g., "<https://api.tfl.gov.uk>").
         pub(crate) tfl_base_url: String,
         /// Overpass API endpoint for OpenStreetMap queries.
         pub(crate) overpass_base_url: String,
@@ -1365,15 +1366,15 @@ mod config {
         pub(crate) server_host: String,
         /// Axum server port (default: 3000).
         pub(crate) server_port: u16,
-        /// SQLite cache TTL in hours (default: 168 = 1 week).
+        /// `SQLite` cache TTL in hours (default: 168 = 1 week).
         pub(crate) cache_expiry_hours: i64,
         /// Maximum ring-buffer log entries before oldest are overwritten.
         pub(crate) log_max_entries: usize,
         /// Greater London bounding box for spatial queries.
         pub(crate) london_bounds: LondonBounds,
-        /// TfL line IDs to load at startup (e.g., ["victoria", "northern"]).
+        /// `TfL` line IDs to load at startup (e.g., ["victoria", "northern"]).
         pub(crate) sample_lines: Vec<String>,
-        /// Maximum iterations for A* pathfinding (prevents algorithmic DoS).
+        /// Maximum iterations for A* pathfinding (prevents algorithmic `DoS`).
         pub(crate) max_astar_iterations: usize,
         /// Interchange penalty in minutes for journey planning.
         pub(crate) interchange_penalty_min: f64,
@@ -1430,12 +1431,12 @@ mod config {
                 server_host: "127.0.0.1".to_owned(),
                 server_port: 3000,
                 cache_expiry_hours: 24,
-                log_max_entries: 10000,
+                log_max_entries: 10_000,
                 london_bounds: LondonBounds {
-                    min_lat: 51.280000,
-                    min_lon: -0.510000,
-                    max_lat: 51.690000,
-                    max_lon: 0.330000,
+                    min_lat: 51.28,
+                    min_lon: -0.51,
+                    max_lat: 51.69,
+                    max_lon: 0.33,
                 },
                 // Fix #7: Configurable sample lines list
                 sample_lines: vec![
@@ -1453,7 +1454,7 @@ mod config {
                     "elizabeth".to_owned(),
                     "dlr".to_owned(),
                 ],
-                max_astar_iterations: 50000,
+                max_astar_iterations: 50_000,
                 interchange_penalty_min: 3.5,
                 parallel_offset_m: 80.0,
                 catchment_radius_m: 800.0,
@@ -1532,7 +1533,7 @@ mod primitives {
         //
         // ============================================================================
 
-        pub(crate) const EARTH_RADIUS: f64 = 6378137.0;
+        pub(crate) const EARTH_RADIUS: f64 = 6_378_137.0;
         pub(crate) const DEG_TO_RAD: f64 = PI / 180.0;
         pub(crate) const RAD_TO_DEG: f64 = 180.0 / PI;
         pub(crate) const TILE_SIZE: f64 = 256.0;
@@ -1605,7 +1606,7 @@ mod primitives {
                 .join(" ")
         }
 
-        /// All embedded rail segments (TfL first, then National Rail), parsed once.
+        /// All embedded rail segments (`TfL` first, then National Rail), parsed once.
         /// During parsing, variant spellings of the same operator (e.g.
         /// "Southeastern" vs "South Eastern") are merged into a single segment.
         pub(crate) fn embedded_rail_segments() -> &'static Vec<RailSegment> {
@@ -1761,7 +1762,7 @@ mod primitives {
     ///
     /// # Usage Notes
     ///
-    /// Do NOT use `Coordinate` as a HashMap key — floating-point equality
+    /// Do NOT use `Coordinate` as a `HashMap` key — floating-point equality
     /// is unreliable. Use [`QuantizedCoord`] instead for deterministic hashing.
     ///
     /// # Examples
@@ -1887,8 +1888,8 @@ mod primitives {
     /// # Usage Notes
     ///
     /// Use this instead of [`Coordinate`] when you need to:
-    /// - Use coordinates as HashMap keys
-    /// - Store coordinates in HashSet for deduplication
+    /// - Use coordinates as `HashMap` keys
+    /// - Store coordinates in `HashSet` for deduplication
     /// - Compare coordinates for exact equality
     ///
     /// # Examples
@@ -1909,7 +1910,7 @@ mod primitives {
 
     impl QuantizedCoord {
         /// Quantizes f64 coordinates to 6 decimal places (~11.1 cm precision at the equator).
-        /// Security: clamps to i32::MIN/MAX to prevent silent overflow wrapping
+        /// Security: clamps to `i32::MIN/MAX` to prevent silent overflow wrapping
         /// from extreme (but validated) coordinate values.
         pub fn new(lat: f64, lon: f64) -> Self {
             Self {
@@ -1981,7 +1982,7 @@ mod primitives {
     }
 
     impl TrackGeometry {
-        /// Serialize to bytes for storage in SQLite BLOB.
+        /// Serialize to bytes for storage in `SQLite` BLOB.
         pub fn to_bytes(&self) -> Vec<u8> {
             rkyv::to_bytes::<_, 256>(self)
                 .map(|b| b.to_vec())
@@ -1999,7 +2000,7 @@ mod primitives {
     }
 
     impl StationRecord {
-        /// Serialize to bytes for storage in SQLite BLOB.
+        /// Serialize to bytes for storage in `SQLite` BLOB.
         pub fn to_bytes(&self) -> Vec<u8> {
             rkyv::to_bytes::<_, 256>(self)
                 .map(|b| b.to_vec())
@@ -2019,12 +2020,12 @@ mod primitives {
     ///
     /// # Layout
     ///
-    /// Each station has a unique TfL ID, human-readable name, WGS-84 coordinate,
+    /// Each station has a unique `TfL` ID, human-readable name, WGS-84 coordinate,
     /// list of serving lines, interchange flag, open/closed status, and fare zone.
     ///
     /// # Structural Invariants
     ///
-    /// - `id` is unique across all loaded stations (TfL naptan code)
+    /// - `id` is unique across all loaded stations (`TfL` naptan code)
     /// - `lines` contains at least one line name (never empty)
     /// - `is_interchange` is true iff `lines.len() > 1`
     /// - `zone` is 1-9 (London fare zones), or 0 for out-of-system stations
@@ -2045,7 +2046,7 @@ mod primitives {
     /// ```
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub struct Station {
-        /// TfL naptan code (e.g., "940GZZLUBNK" for Bank).
+        /// `TfL` naptan code (e.g., "940GZZLUBNK" for Bank).
         pub id: String,
         /// Human-readable station name (e.g., "King's Cross St. Pancras").
         pub name: String,
@@ -2092,7 +2093,7 @@ mod primitives {
         pub platform_name: String,
     }
 
-    /// A disruption event on the network (from TfL API or simulated).
+    /// A disruption event on the network (from `TfL` API or simulated).
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Disruption {
         pub id: String,
@@ -2117,10 +2118,10 @@ mod spatial {
         use std::collections::HashMap;
 
         #[derive(Debug, Clone)]
-        /// Cache-dense SoA (Structure-of-Arrays) transit network representation.
+        /// Cache-dense `SoA` (Structure-of-Arrays) transit network representation.
         ///
         /// The high-performance graph layout for the routing engine. Unlike the
-        /// pointer-based `RoutingGraph` (HashMap of Nodes), this uses contiguous
+        /// pointer-based `RoutingGraph` (`HashMap` of Nodes), this uses contiguous
         /// arrays with CSR (Compressed Sparse Row) edge storage — optimized for
         /// CPU cache-line utilization, SIMD vectorization, and zero-copy mmap loading.
         ///
@@ -2374,7 +2375,7 @@ mod spatial {
         pub struct StationPod {
             /// Web-Mercator projected coordinate.
             pub coord: SpatialCoordPod,
-            /// TfL fare zone (1-9). 0 for out-of-system.
+            /// `TfL` fare zone (1-9). 0 for out-of-system.
             pub zone: u8,
             /// 1 if station serves multiple lines (interchange), 0 otherwise.
             pub is_interchange: u8,
@@ -2388,14 +2389,14 @@ mod spatial {
         unsafe impl bytemuck::Zeroable for StationPod {}
         unsafe impl bytemuck::Pod for StationPod {}
 
-        /// Cast a byte slice to a slice of StationPod — zero copy, zero allocation.
+        /// Cast a byte slice to a slice of `StationPod` — zero copy, zero allocation.
         /// Panics if the byte slice is not properly aligned or sized.
         #[inline]
         pub fn stations_from_bytes(bytes: &[u8]) -> &[StationPod] {
             bytemuck::cast_slice(bytes)
         }
 
-        /// Cast a StationPod slice back to bytes — for writing to disk/mmap.
+        /// Cast a `StationPod` slice back to bytes — for writing to disk/mmap.
         #[inline]
         pub fn stations_to_bytes(pods: &[StationPod]) -> &[u8] {
             bytemuck::cast_slice(pods)
@@ -2465,11 +2466,11 @@ mod spatial {
                 #[inline(always)]
                 fn expand_bits(v: u32) -> u64 {
                     let mut x = v as u64;
-                    x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
-                    x = (x | (x << 8)) & 0x00FF00FF00FF00FF;
-                    x = (x | (x << 4)) & 0x0F0F0F0F0F0F0F0F;
-                    x = (x | (x << 2)) & 0x3333333333333333;
-                    x = (x | (x << 1)) & 0x5555555555555555;
+                    x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
+                    x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
+                    x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
+                    x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+                    x = (x | (x << 1)) & 0x5555_5555_5555_5555;
                     x
                 }
 
@@ -2486,16 +2487,16 @@ mod spatial {
         // ============================================================================
 
         /// Cache-perfect spatial index using Morton Code (Z-Order Curve) hashing.
-        /// A sorted Vec<(morton_code, node_id)> enables O(log N) nearest-neighbor
-        /// via binary_search_by_key — no pointer chasing, no cache misses.
+        /// A sorted Vec<(`morton_code`, `node_id`)> enables O(log N) nearest-neighbor
+        /// via `binary_search_by_key` — no pointer chasing, no cache misses.
         #[derive(Clone)]
         pub struct MortonSpatialIndex {
-            /// Sorted array of (morton_code, node_id) pairs.
+            /// Sorted array of (`morton_code`, `node_id`) pairs.
             pub(crate) entries: Vec<(u64, usize)>,
         }
 
         impl MortonSpatialIndex {
-            /// Build the index from a set of (node_id, coordinate) pairs.
+            /// Build the index from a set of (`node_id`, coordinate) pairs.
             /// O(N log N) sort produces the Z-order curve layout.
             pub(crate) fn build(nodes: &HashMap<usize, Node>) -> Self {
                 let mut entries: Vec<(u64, usize)> = nodes
@@ -2584,7 +2585,7 @@ mod routing {
         }
 
         /// Handle a disruption by cloning the current graph, removing a line's edges,
-        /// and hot-swapping the modified graph into AppState.
+        /// and hot-swapping the modified graph into `AppState`.
         pub(crate) async fn handle_disruption(
             state: &AppState,
             line_id: &str,
@@ -3598,8 +3599,8 @@ mod routing {
             let mut seed = ((start.lat * 1_000_000.0) as u64) ^ ((start.lon * 1_000_000.0) as u64);
             let lcg_next = |s: &mut u64| -> f64 {
                 *s = s
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 (*s >> 33) as f64 / (u32::MAX as f64)
             };
 
@@ -3765,7 +3766,7 @@ mod routing {
         }
 
         /// Prim's minimum spanning tree over a set of points using exact haversine
-        /// edge weights. Returns the tree as a list of (a, b, weight_metres) edges.
+        /// edge weights. Returns the tree as a list of (a, b, `weight_metres`) edges.
         ///
         /// PERFORMANCE: O(N?) ? computes a complete distance matrix on the fly without
         /// storing it. This is optimal for dense graphs where the MST is needed; for
@@ -4230,7 +4231,7 @@ mod routing {
         ///
         /// The struct derives [`Hash`], [`Eq`], and [`PartialEq`] for use as a
         /// `HashMap` key, and [`Serialize`] / [`Deserialize`] for JSON IPC transport
-        /// to the Dioxus WebView frontend.
+        /// to the Dioxus `WebView` frontend.
         ///
         /// # Examples
         ///
@@ -4256,8 +4257,8 @@ mod routing {
         ///
         /// # Representation
         ///
-        /// - `nodes`: HashMap<usize, Node> — station ID → graph node with edges
-        /// - `grid_index`: HashMap<(i32, i32), Vec\<usize\>> — quantized grid cell → station IDs
+        /// - `nodes`: `HashMap`<usize, Node> — station ID → graph node with edges
+        /// - `grid_index`: `HashMap`<(i32, i32), Vec\<usize\>> — quantized grid cell → station IDs
         /// - Grid cells are 0.01° × 0.01° (~1.1km × ~0.7km at London's latitude)
         ///
         /// # Structural Invariants
@@ -4293,7 +4294,7 @@ mod routing {
             /// Spatial grid index for O(1) nearest-node lookup.
             pub(crate) grid_index: HashMap<(i32, i32), Vec<usize>>,
             /// Morton Code spatial index for cache-perfect binary search nearest-neighbor.
-            /// Built once after graph construction; used as fast-path alternative to grid_index.
+            /// Built once after graph construction; used as fast-path alternative to `grid_index`.
             pub(crate) morton_index: Option<MortonSpatialIndex>,
         }
 
@@ -4925,7 +4926,7 @@ out body; >; out skel qt;"#,
                 );
 
                 let all_urls: Vec<&str> = std::iter::once(self.base_url.as_str())
-                    .chain(self.fallback_urls.iter().map(|s| s.as_str()))
+                    .chain(self.fallback_urls.iter().map(String::as_str))
                     .collect();
 
                 for url in &all_urls {
@@ -5094,28 +5095,25 @@ out body;"#,
                 if let Some(elements) = data.get("elements").and_then(|v| v.as_array()) {
                     for el in elements {
                         if el.get("type").and_then(|v| v.as_str()) == Some("node") {
-                            let id_num = el.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                            let lat = el.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let lon = el.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let id_num = el.get("id").and_then(serde_json::Value::as_i64).unwrap_or(0);
+                            let lat = el.get("lat").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+                            let lon = el.get("lon").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
                             let tags = el.get("tags");
 
                             let name = tags
                                 .and_then(|t| t.get("name"))
                                 .and_then(|v| v.as_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| format!("Unnamed Station {}", id_num));
+                                .map_or_else(|| format!("Unnamed Station {}", id_num), ToString::to_string);
 
                             let is_historic = tags
-                                .map(|t| {
+                                .map_or(false, |t| {
                                     t.get("historic").is_some()
                                         || t.get("disused").is_some()
                                         || t.get("ceremonial").is_some()
                                         || t.get("railway")
                                             .and_then(|v| v.as_str())
-                                            .map(|s| s == "disused" || s == "abandoned")
-                                            .unwrap_or(false)
-                                })
-                                .unwrap_or(false);
+                                            .map_or(false, |s| s == "disused" || s == "abandoned")
+                                });
 
                             let mut station_lines = Vec::new();
                             if is_historic {
@@ -5163,9 +5161,9 @@ out body;"#,
                     for el in elements {
                         if el.get("type").and_then(|v| v.as_str()) == Some("node") {
                             if let (Some(id), Some(lat), Some(lon)) = (
-                                el.get("id").and_then(|v| v.as_i64()),
-                                el.get("lat").and_then(|v| v.as_f64()),
-                                el.get("lon").and_then(|v| v.as_f64()),
+                                el.get("id").and_then(serde_json::Value::as_i64),
+                                el.get("lat").and_then(serde_json::Value::as_f64),
+                                el.get("lon").and_then(serde_json::Value::as_f64),
                             ) {
                                 nodes_extracted += 1;
                                 nodes_map.insert(id, Coordinate::new(lat, lon));
@@ -5187,8 +5185,8 @@ out body;"#,
                             {
                                 for coord in way_data {
                                     if let (Some(lat), Some(lon)) = (
-                                        coord.get("lat").and_then(|v| v.as_f64()),
-                                        coord.get("lon").and_then(|v| v.as_f64()),
+                                        coord.get("lat").and_then(serde_json::Value::as_f64),
+                                        coord.get("lon").and_then(serde_json::Value::as_f64),
                                     ) {
                                         geometry.push(Coordinate::new(lat, lon));
                                     } else {
@@ -5210,7 +5208,7 @@ out body;"#,
                             if !geometry.is_empty() {
                                 let id = element
                                     .get("id")
-                                    .and_then(|v| v.as_i64())
+                                    .and_then(serde_json::Value::as_i64)
                                     .unwrap_or(idx as i64)
                                     .to_string();
                                 let operator = element
@@ -5341,7 +5339,7 @@ out body;"#,
                         .read()
                         .ok()
                         .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50000);
+                        .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
                             "RoutingGraph::astar aborted after {} iterations (limit: {})",
@@ -5444,7 +5442,7 @@ out body;"#,
                     .read()
                     .ok()
                     .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                    .unwrap_or(50000);
+                    .unwrap_or(50_000);
 
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
@@ -5488,7 +5486,7 @@ out body;"#,
                         .read()
                         .ok()
                         .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50000);
+                        .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
                     "RoutingGraph::astar_with_disruptions aborted after {} iterations (limit: {})",
@@ -5691,8 +5689,7 @@ out body;"#,
                     std::sync::OnceLock::new();
                 let pool = MONTE_CARLO_POOL.get_or_init(|| {
                     let num_threads = std::thread::available_parallelism()
-                        .map(|n| n.get())
-                        .unwrap_or(4)
+                        .map_or(4, std::num::NonZero::get)
                         / 2;
                     let num_threads = num_threads.max(1);
                     rayon::ThreadPoolBuilder::new()
@@ -5954,7 +5951,7 @@ out body;"#,
                         .read()
                         .ok()
                         .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50000);
+                        .unwrap_or(50_000);
                     if iterations > max_iter {
                         log_warn(&format!(
                             "RoutingGraph::astar_kinematic aborted after {} iterations (limit: {})",
@@ -6188,6 +6185,39 @@ out body;"#,
                 ));
             }
         }
+    }
+
+    pub(crate) fn roundel_svg_for_line(line_id: &str) -> Option<String> {
+        use std::collections::HashMap;
+        use std::sync::LazyLock;
+
+        static ROUNDELS: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+            let raw = include_str!("../assets/roundels.json");
+            serde_json::from_str(raw).unwrap_or_default()
+        });
+
+        let key = match line_id {
+            "bakerloo" => "ROUNDEL_BAKERLOO",
+            "central" => "ROUNDEL_CENTRAL",
+            "circle" => "ROUNDEL_CIRCLE",
+            "district" => "ROUNDEL_DISTRICT",
+            "hammersmith-city" => "ROUNDEL_HAMMERSMITH_CITY",
+            "jubilee" => "ROUNDEL_JUBILEE",
+            "metropolitan" => "ROUNDEL_METROPOLITAN",
+            "northern" => "ROUNDEL_NORTHERN",
+            "piccadilly" => "ROUNDEL_PICCADILLY",
+            "victoria" => "ROUNDEL_VICTORIA",
+            "waterloo-city" => "ROUNDEL_WATERLOO_CITY",
+            "elizabeth" => "ROUNDEL_ELIZABETH",
+            "dlr" => "ROUNDEL_DLR",
+            "tramlink" => "ROUNDEL_TRAMLINK",
+            "underground" => "ROUNDEL_UNDERGROUND",
+            "overground" | "london overground" => "ROUNDEL_OVERGROUND",
+            "national-rail" | "national rail" => "ROUNDEL_NATIONAL_RAIL",
+            "emirates-airline" | "emirates" | "airline" => "ROUNDEL_EMIRATES_AIRLINE",
+            _ => return None,
+        };
+        ROUNDELS.get(key).cloned()
     }
 }
 
@@ -6473,7 +6503,7 @@ mod network {
     /// Max walking distance to/from a station for journey planning
     pub(crate) const MAX_WALK_M: f64 = 900.0;
 
-    /// Estimate fare based on distance and zones crossed. TfL pricing model.
+    /// Estimate fare based on distance and zones crossed. `TfL` pricing model.
     pub(crate) fn estimate_fare_gbp(distance_m: f64, zones: &[i32]) -> f64 {
         let zone_count = zones.iter().collect::<std::collections::HashSet<_>>().len();
         let base = 2.80_f64;
@@ -6573,7 +6603,7 @@ mod network {
             .collect();
         nearby.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(CmpOrdering::Equal));
 
-        let walk_nearest = nearby.first().map(|(d, _)| *d).unwrap_or(f64::MAX);
+        let walk_nearest = nearby.first().map_or(f64::MAX, |(d, _)| *d);
 
         // Proximity score: 40pts, decays with walk distance
         let proximity = if walk_nearest < 200.0 {
@@ -6943,7 +6973,7 @@ mod network {
         (area.abs() / 2.0) / 1_000_000.0
     }
 
-    /// Export the full network state as a GeoJSON FeatureCollection string.
+    /// Export the full network state as a `GeoJSON` `FeatureCollection` string.
     pub(crate) fn export_geojson(
         lines: &[Line],
         stations: &[Station],
@@ -7071,7 +7101,7 @@ mod network {
                     .map(|arrival| {
                         let mut enriched = arrival.clone();
                         // timeToStation is in seconds from now
-                        if let Some(tts) = arrival.get("timeToStation").and_then(|v| v.as_f64()) {
+                        if let Some(tts) = arrival.get("timeToStation").and_then(serde_json::Value::as_f64) {
                             if tts > 0.0 {
                                 // Distance the train will travel in timeToStation seconds
                                 // (negative because the train is approaching)
@@ -7177,7 +7207,7 @@ mod server {
         {
             use std::os::windows::io::RawHandle;
             // SYNCHRONIZE (0x001F0000) | PROCESS_QUERY_LIMITED_INFORMATION (0x1000)
-            const SYNCHRONIZE: u32 = 0x001F0000;
+            const SYNCHRONIZE: u32 = 0x001F_0000;
             const QUERY_LIMITED: u32 = 0x1000;
             unsafe extern "system" {
                 fn OpenProcess(dwAccess: u32, bInherit: i32, dwProcessId: u32) -> RawHandle;
@@ -7714,7 +7744,7 @@ mod server {
         ///
         /// All mutable collections use `arc_swap::ArcSwap` for lock-free reads.
         /// Writes use RCU (Read-Copy-Update): load the Arc, clone it, mutate
-        /// locally, then atomically swap the pointer. This eliminates RwLock
+        /// locally, then atomically swap the pointer. This eliminates `RwLock`
         /// contention under concurrent API load.
         ///
         /// # Representation
@@ -7723,22 +7753,22 @@ mod server {
         /// - `stations`: All stations with coordinates, lines, zones
         /// - `tracks`: Railway track geometry (polylines from Overpass)
         /// - `construction_state`: AI station placement mode state
-        /// - `tfl_client`: HTTP client for TfL API
+        /// - `tfl_client`: HTTP client for `TfL` API
         /// - `overpass_client`: HTTP client for Overpass API
-        /// - `cache`: SQLite cache manager (WAL mode for concurrent access)
+        /// - `cache`: `SQLite` cache manager (WAL mode for concurrent access)
         /// - `geometry_engine`: R*-tree spatial index (STR bulk-loaded)
-        /// - `routing_graph`: A* pathfinding graph (lock-free via ArcSwap)
+        /// - `routing_graph`: A* pathfinding graph (lock-free via `ArcSwap`)
         /// - `config`: Application configuration
         ///
         /// # Thread Safety
         ///
         /// `Send + Sync` implemented manually because `arc_swap::ArcSwap` does not
         /// implicitly derive `Sync` on all platforms. The struct contains no interior
-        /// mutability beyond what ArcSwap provides, so this is safe.
+        /// mutability beyond what `ArcSwap` provides, so this is safe.
         ///
         /// # Structural Invariants
         ///
-        /// - All ArcSwap fields are updated atomically — no partial state visible
+        /// - All `ArcSwap` fields are updated atomically — no partial state visible
         /// - `geometry_engine` and `routing_graph` must be rebuilt after `stations`
         ///   or `tracks` change (see `register_line_stations_in_global_state`)
         ///
@@ -7767,11 +7797,11 @@ mod server {
             pub(crate) tracks: Arc<arc_swap::ArcSwap<Vec<RailwayTrack>>>,
             /// AI construction mode state. Lock-free read via `.load()`.
             pub(crate) construction_state: Arc<arc_swap::ArcSwap<ConstructionState>>,
-            /// HTTP client for TfL API requests.
+            /// HTTP client for `TfL` API requests.
             pub(crate) tfl_client: Arc<TflApiClient>,
             /// HTTP client for Overpass API requests.
             pub(crate) overpass_client: Arc<OverpassApiClient>,
-            /// SQLite cache manager (WAL mode enabled).
+            /// `SQLite` cache manager (WAL mode enabled).
             pub(crate) cache: Arc<CacheManager>,
             /// R*-tree spatial indexing engine.
             pub(crate) geometry_engine: Arc<arc_swap::ArcSwap<GeometryEngine>>,
@@ -7780,7 +7810,7 @@ mod server {
             /// Live Monte Carlo edge load state, continuously refreshed by the
             /// background Tokio living-engine task. Lock-free read via `.load()`.
             pub(crate) edge_loads: Arc<arc_swap::ArcSwap<HashMap<EdgeKey, usize>>>,
-            /// Application configuration (TfL API key, endpoints, etc.).
+            /// Application configuration (`TfL` API key, endpoints, etc.).
             pub(crate) config: Arc<Config>,
             /// Data-oriented transit grid for SIMD-accelerated spatial queries.
             pub(crate) transit_grid: Arc<arc_swap::ArcSwap<TransitNetworkGrid>>,
@@ -8176,8 +8206,8 @@ mod server {
                         if let (Some(id), Some(name), Some(lat), Some(lon)) = (
                             st_val.get("id").and_then(|v| v.as_str()),
                             st_val.get("name").and_then(|v| v.as_str()),
-                            st_val.get("lat").and_then(|v| v.as_f64()),
-                            st_val.get("lon").and_then(|v| v.as_f64()),
+                            st_val.get("lat").and_then(serde_json::Value::as_f64),
+                            st_val.get("lon").and_then(serde_json::Value::as_f64),
                         ) {
                             if lat.abs() > 90.0 || lon.abs() > 180.0 {
                                 log_warn(&format!("AppState::parse_line_data - station {} has invalid coords lat={}, lon={}; skipping", name, lat, lon));
@@ -8541,8 +8571,8 @@ mod server {
                             if let Some(geom) = el.get("geometry").and_then(|g| g.as_array()) {
                                 for pt in geom {
                                     if let (Some(la), Some(lo)) = (
-                                        pt.get("lat").and_then(|v| v.as_f64()),
-                                        pt.get("lon").and_then(|v| v.as_f64()),
+                                        pt.get("lat").and_then(serde_json::Value::as_f64),
+                                        pt.get("lon").and_then(serde_json::Value::as_f64),
                                     ) {
                                         polygon.push(Coordinate::new(la, lo));
                                     }
@@ -8559,8 +8589,8 @@ mod server {
                                         {
                                             for pt in geom {
                                                 if let (Some(la), Some(lo)) = (
-                                                    pt.get("lat").and_then(|v| v.as_f64()),
-                                                    pt.get("lon").and_then(|v| v.as_f64()),
+                                                    pt.get("lat").and_then(serde_json::Value::as_f64),
+                                                    pt.get("lon").and_then(serde_json::Value::as_f64),
                                                 ) {
                                                     polygon.push(Coordinate::new(la, lo));
                                                 }
@@ -8576,15 +8606,15 @@ mod server {
 
                         // --- Step 2: Determine centroid ---
                         // Priority: top-level lat/lon > center object > computed from polygon vertices
-                        let top_lat = el.get("lat").and_then(|v| v.as_f64()).or_else(|| {
+                        let top_lat = el.get("lat").and_then(serde_json::Value::as_f64).or_else(|| {
                             el.get("center")
                                 .and_then(|c| c.get("lat"))
-                                .and_then(|v| v.as_f64())
+                                .and_then(serde_json::Value::as_f64)
                         });
-                        let top_lon = el.get("lon").and_then(|v| v.as_f64()).or_else(|| {
+                        let top_lon = el.get("lon").and_then(serde_json::Value::as_f64).or_else(|| {
                             el.get("center")
                                 .and_then(|c| c.get("lon"))
-                                .and_then(|v| v.as_f64())
+                                .and_then(serde_json::Value::as_f64)
                         });
 
                         let centroid = if let (Some(la), Some(lo)) = (top_lat, top_lon) {
@@ -8673,7 +8703,7 @@ mod server {
                         let norm_poly = area
                             .polygon
                             .iter()
-                            .map(|c| c.normalize_projections())
+                            .map(Coordinate::normalize_projections)
                             .collect();
                         ResidentialArea {
                             centroid: norm_centroid,
@@ -9085,7 +9115,7 @@ mod server {
         }
 
         /// Build the full standalone HTML page for the interactive web map application.
-        /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
+        /// Includes the Leaflet map, all JavaScript (`MAP_INIT_JS`, `MAP_LOOP_JS`),
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
         /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
         pub(crate) fn build_webapp_html() -> String {
@@ -9128,7 +9158,7 @@ mod server {
 
         /// Build the full static HTML page served to crawlers at `/`.
         /// Contains all Open Graph, Twitter Card, Schema.org, and canonical metadata
-        /// so that Discord, Twitter/X, Slack, iMessage, WhatsApp, and search engines
+        /// so that Discord, Twitter/X, Slack, iMessage, `WhatsApp`, and search engines
         /// render a rich preview card without executing JavaScript.
         pub(crate) fn build_crawler_html() -> String {
             let mut html = String::with_capacity(8192);
@@ -9346,8 +9376,7 @@ mod server {
                             .fold(f64::MAX, f64::min);
                         da.partial_cmp(&db).unwrap_or(CmpOrdering::Equal)
                     })
-                    .map(|l| (l.name.clone(), l.color.clone(), l.id.clone()))
-                    .unwrap_or_else(|| ("Direct".into(), "#00bcd4".into(), "direct".into()));
+                    .map_or_else(|| ("Direct".into(), "#00bcd4".into(), "direct".into()), |l| (l.name.clone(), l.color.clone(), l.id.clone()));
 
                 let fare = estimate_fare_gbp(total_dist, &zones_crossed);
                 let co2 = co2_saved_vs_car(total_dist);
@@ -10021,7 +10050,7 @@ mod server {
             Json(ApiResponse::success(tracks))
         }
 
-        /// Serve the baked-in coloured rail network (every TfL line in its official
+        /// Serve the baked-in coloured rail network (every `TfL` line in its official
         /// colour + National Rail coloured by operator). This is the offline-first
         /// basemap that guarantees the lines always render.
         #[tracing::instrument(name = "get_basemap_lines", skip_all)]
@@ -10497,7 +10526,7 @@ mod server {
         /// - The `/congestion` omnibox command
         ///
         /// Both pipe the JSON response into `window.renderCongestionHeatmap()` in
-        /// the Leaflet WebView to visualise edge loads as a glowing heatmap overlay.
+        /// the Leaflet `WebView` to visualise edge loads as a glowing heatmap overlay.
         ///
         /// # Examples
         ///
@@ -11150,7 +11179,7 @@ mod server {
             let mut temp1 = None;
             if let Ok(resp) = client.get("https://api.open-meteo.com/v1/forecast?latitude=51.5074&longitude=-0.1278&current_weather=true").send().await {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    if let Some(t) = json.get("current_weather").and_then(|cw| cw.get("temperature")).and_then(|v| v.as_f64()) {
+                    if let Some(t) = json.get("current_weather").and_then(|cw| cw.get("temperature")).and_then(serde_json::Value::as_f64) {
                         temp1 = Some(t);
                     }
                 }
@@ -11167,7 +11196,7 @@ mod server {
                         .and_then(|d| d.get("instant"))
                         .and_then(|i| i.get("details"))
                         .and_then(|det| det.get("air_temperature"))
-                        .and_then(|v| v.as_f64()) {
+                        .and_then(serde_json::Value::as_f64) {
                         temp2 = Some(t);
                     }
                 }
@@ -11356,7 +11385,7 @@ mod server {
             }
         }
 
-        /// Enriches TfL arrival predictions with interpolated live coordinates by
+        /// Enriches `TfL` arrival predictions with interpolated live coordinates by
         /// mapping `timeToStation` onto the line's geometry polyline. Each arrival
         /// gets a `live_lat`/`live_lon` pair injected into its JSON properties.
 
@@ -11376,8 +11405,7 @@ mod server {
                 stations
                     .iter()
                     .find(|s| s.id == station_id)
-                    .map(|s| s.is_historical)
-                    .unwrap_or(false)
+                    .map_or(false, |s| s.is_historical)
             };
 
             if is_historical {
@@ -11411,7 +11439,7 @@ mod server {
                                     .to_string();
                                 let time_to_station = item
                                     .get("timeToStation")
-                                    .and_then(|v| v.as_f64())
+                                    .and_then(serde_json::Value::as_f64)
                                     .unwrap_or(0.0);
                                 let platform_name = item
                                     .get("platformName")
@@ -11674,7 +11702,7 @@ mod server {
         pub(crate) async fn get_citizen_reports_handler(
             Query(query): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::citizen_reports::CitizenReport>>> {
-            let include_resolved = query.get("include_resolved").map(|v| v == "true").unwrap_or(false);
+            let include_resolved = query.get("include_resolved").map_or(false, |v| v == "true");
             Json(ApiResponse::success(crate::citizen_reports::get_reports(include_resolved)))
         }
 
@@ -11888,7 +11916,7 @@ mod server {
             Json(ApiResponse::success(vehicles))
         }
 
-        /// GET /api/realtime/arrivals/{station_id} — Real-time arrival predictions
+        /// GET /`api/realtime/arrivals/{station_id`} — Real-time arrival predictions
         pub(crate) async fn get_realtime_arrivals(
             State(state): State<AppState>,
             AxumPath(station_id): AxumPath<String>,
@@ -11925,7 +11953,7 @@ mod server {
         pub(crate) async fn set_offline_mode_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
-            let enabled = params.get("enabled").map(|s| s == "true" || s == "1").unwrap_or(false);
+            let enabled = params.get("enabled").map_or(false, |s| s == "true" || s == "1");
             crate::offline_mode::set_offline_mode(enabled);
             Json(ApiResponse::success(format!("Offline mode {}", if enabled { "enabled" } else { "disabled" })))
         }
@@ -12121,7 +12149,7 @@ mod server {
             let lines = state.lines.load().as_ref().clone();
             let from = params.get("from").cloned().unwrap_or_default();
             let to = params.get("to").cloned().unwrap_or_default();
-            let require_step_free = params.get("step_free").map(|v| v == "true").unwrap_or(false);
+            let require_step_free = params.get("step_free").map_or(false, |v| v == "true");
             match crate::accessibility_route_planner::plan_accessible_route(&from, &to, &stations, &lines, require_step_free) {
                 Some(route) => Json(ApiResponse::success(route)),
                 None => Json(ApiResponse::error("No accessible route found")),
@@ -12193,7 +12221,7 @@ mod server {
         pub(crate) async fn get_contributions_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::crowd_sourcing::Contribution>>> {
-            let status = params.get("status").map(|s| s.as_str());
+            let status = params.get("status").map(String::as_str);
             let contribs = crate::crowd_sourcing::get_contributions(status);
             Json(ApiResponse::success(contribs))
         }
@@ -12202,7 +12230,7 @@ mod server {
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let id = params.get("id").cloned().unwrap_or_default();
-            let approve = params.get("approve").map(|v| v == "true").unwrap_or(false);
+            let approve = params.get("approve").map_or(false, |v| v == "true");
             if crate::crowd_sourcing::vote_contribution(&id, approve) {
                 Json(ApiResponse::success(format!("Voted on {}", id)))
             } else {
@@ -12264,7 +12292,7 @@ mod server {
             let lat: f64 = params.get("lat").and_then(|v| v.parse().ok()).unwrap_or(51.5074);
             let lon: f64 = params.get("lon").and_then(|v| v.parse().ok()).unwrap_or(-0.1278);
             let radius: f64 = params.get("radius").and_then(|v| v.parse().ok()).unwrap_or(1500.0);
-            let stype = params.get("type").map(|s| s.as_str());
+            let stype = params.get("type").map(String::as_str);
             let providers = crate::mobility_service::get_nearby_maas(lat, lon, radius, stype);
             Json(ApiResponse::success(providers))
         }
@@ -13273,7 +13301,7 @@ mod server {
             log_info(&format!(
                 "hydrate_network_state - network state saved to {:?} ({} bytes)",
                 cache_path,
-                std::fs::metadata(&cache_path).map(|m| m.len()).unwrap_or(0)
+                std::fs::metadata(&cache_path).map_or(0, |m| m.len())
             ));
             Ok(())
         }
@@ -13293,10 +13321,10 @@ mod server {
                 .iter()
                 .map(|s| {
                     // FNV-1a hash of station name for O(1) identity check
-                    let mut hash: u64 = 0xcbf29ce484222325;
+                    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
                     for byte in s.name.as_bytes() {
                         hash ^= *byte as u64;
-                        hash = hash.wrapping_mul(0x100000001b3);
+                        hash = hash.wrapping_mul(0x10_0000_01b3);
                     }
                     StationPod {
                         coord: SpatialCoordPod {
@@ -13523,7 +13551,7 @@ mod server {
 #[cfg(feature = "desktop")]
 use crate::server::run_server;
 
-/// Desktop entry point — launches the Dioxus desktop window with the embedded WebView.
+/// Desktop entry point — launches the Dioxus desktop window with the embedded `WebView`.
 /// Only compiled when the `desktop` feature is enabled (default).
 /// For the Shuttle web deployment, see `shuttle_main` instead.
 #[cfg(feature = "desktop")]
@@ -13696,8 +13724,7 @@ fn main() {
         let target_arch = std::env::consts::ARCH;
         let target_os = std::env::consts::OS;
         let exe_path = std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "unknown".to_owned());
+            .map_or_else(|_| "unknown".to_owned(), |p| p.to_string_lossy().to_string());
 
         log_info(&format!(
             "London Transport Network v{} ? {} profile (opt-level {})",
@@ -13792,13 +13819,12 @@ fn main() {
 
         let location = info
             .location()
-            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "Unknown Location".to_owned());
+            .map_or_else(|| "Unknown Location".to_owned(), |l| format!("{}:{}:{}", l.file(), l.line(), l.column()));
         let payload = info
             .payload()
             .downcast_ref::<&str>()
             .cloned()
-            .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("Explicit thread execution collapse");
 
         // ── EXTREME PANIC INTERCEPTOR: Force-capture native OS backtrace ──
@@ -15329,7 +15355,6 @@ mod multi_modal_router {
 // REAL-TIME DATA INTEGRATION — GTFS-RT, TfL streaming, OpenTripPlanner
 // ============================================================================
 mod realtime_integration {
-    use crate::primitives::*;
     use crate::routing::*;
     pub(crate) type Departure = String;
     pub(crate) fn get_departures(_station_id: &str) -> Vec<Departure> { vec![] }
@@ -15484,9 +15509,9 @@ mod occupancy_engine {
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct OccupancySnapshot {
-        /// Map from station_id -> Vec of occupancy per platform (0.0 = empty, 1.0 = crush)
+        /// Map from `station_id` -> Vec of occupancy per platform (0.0 = empty, 1.0 = crush)
         pub(crate) station_occupancy: HashMap<String, Vec<f64>>,
-        /// Map from line_id -> average train occupancy across all trains on that line
+        /// Map from `line_id` -> average train occupancy across all trains on that line
         pub(crate) line_occupancy: HashMap<String, f64>,
         /// Timestamp of this snapshot (Unix ms)
         pub(crate) timestamp_ms: i64,
@@ -15509,7 +15534,7 @@ mod occupancy_engine {
     pub(crate) static OCCUPANCY: std::sync::LazyLock<Arc<ArcSwap<OccupancySnapshot>>> =
         std::sync::LazyLock::new(|| Arc::new(ArcSwap::new(Arc::new(OccupancySnapshot::empty()))));
 
-    /// Simulate occupancy data (since we lack live TfL feed, we generate realistic estimates)
+    /// Simulate occupancy data (since we lack live `TfL` feed, we generate realistic estimates)
     pub(crate) fn tick_occupancy(stations: &[Station], lines: &[Line]) {
         use std::collections::HashMap;
         let now = Utc::now();
@@ -15666,11 +15691,11 @@ mod disruption_simulator {
                     // Simplified check: see if they share another line
                     let a_lines: HashSet<&str> = stations.iter()
                         .find(|s| &s.id == a)
-                        .map(|s| s.lines.iter().map(|l| l.as_str()).collect())
+                        .map(|s| s.lines.iter().map(String::as_str).collect())
                         .unwrap_or_default();
                     let b_lines: HashSet<&str> = stations.iter()
                         .find(|s| &s.id == b)
-                        .map(|s| s.lines.iter().map(|l| l.as_str()).collect())
+                        .map(|s| s.lines.iter().map(String::as_str).collect())
                         .unwrap_or_default();
                     let shared = a_lines.intersection(&b_lines).count();
                     if shared > 0 {
@@ -15721,6 +15746,8 @@ mod demand_forecaster {
     /// A single demand observation
     #[derive(Debug, Clone)]
     pub(crate) struct DemandObservation {
+        pub(crate) station_id: String,
+        pub(crate) timestamp_ms: i64,
         pub(crate) passenger_count: f64,
     }
 
@@ -15763,7 +15790,7 @@ mod demand_forecaster {
     ) -> (f64, f64) {
         let n = obs.len().min(max_points);
         if n < 2 {
-            return (0.0, obs.last().map(|o| o.passenger_count).unwrap_or(0.0));
+            return (0.0, obs.last().map_or(0.0, |o| o.passenger_count));
         }
         let subset = &obs[obs.len().saturating_sub(n)..];
         let mean_x = subset.len() as f64 / 2.0;
@@ -16070,7 +16097,7 @@ mod carbon_estimator {
 
         let car_equivalent_kg = (tube_km + rail_km + bus_km + walking_distance_km) * CAR_G_PER_KM / 1000.0;
         let walking_equivalent_km = total_g / WALK_G_PER_KM.max(1.0) * 0.0; // walking = 0, so show distance to offset
-        let trees_offset = (total_g / 21000.0).ceil() as u32; // one tree absorbs ~21kg CO₂/year
+        let trees_offset = (total_g / 21_000.0).ceil() as u32; // one tree absorbs ~21kg CO₂/year
 
         CarbonBreakdown {
             total_kg,
@@ -16143,12 +16170,11 @@ mod i18n {
         let lang_idx = SUPPORTED_LANGUAGES.iter().position(|l| **l == lang).unwrap_or(0);
         TRANSLATIONS
             .get(key)
-            .map(|arr| arr[lang_idx].to_string())
-            .unwrap_or_else(|| {
+            .map_or_else(|| {
                 // Fallback: return the key itself
                 crate::logger::log_debug(&format!("i18n: missing translation key '{}'", key));
                 key.to_string()
-            })
+            }, |arr| arr[lang_idx].to_string())
     }
 }
 
@@ -16295,7 +16321,7 @@ mod accessibility_db {
     pub(crate) static ACCESSIBILITY_DATA: std::sync::LazyLock<std::sync::Mutex<HashMap<String, StationAccessibility>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-    /// Initialize from known TfL accessibility data
+    /// Initialize from known `TfL` accessibility data
     pub(crate) fn initialize_accessibility(stations: &[Station]) {
         let mut db = ACCESSIBILITY_DATA.lock().unwrap();
         let known_step_free: std::collections::HashSet<&str> = [
@@ -16446,7 +16472,7 @@ mod data_exporter {
         }
     }
 
-    /// Export to GraphML (XML graph format for Gephi, yEd, etc.)
+    /// Export to `GraphML` (XML graph format for Gephi, yEd, etc.)
     pub(crate) fn export_graphml(lines: &[Line], stations: &[Station]) -> ExportResult {
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -16698,8 +16724,8 @@ mod citizen_reports {
         let report = CitizenReport {
             id: id.clone(),
             report_type: report_type.to_string(),
-            station_id: station_id.map(|s| s.to_string()),
-            station_name: station_name.map(|s| s.to_string()),
+            station_id: station_id.map(ToString::to_string),
+            station_name: station_name.map(ToString::to_string),
             lat,
             lon,
             description: description.to_string(),
@@ -16866,7 +16892,7 @@ mod network_resilience {
         // For degree-based resilience
         let total = station_ids.len() as f64;
         for st_id in &station_ids {
-            let degree = adj.get(st_id).map(|s| s.len()).unwrap_or(0);
+            let degree = adj.get(st_id).map_or(0, HashSet::len);
 
             // Estimate alternative paths via BFS with limited breadth
             let mut alt_paths = 0_usize;
@@ -16980,7 +17006,7 @@ mod fare_calculator {
     pub(crate) fn estimate_fare(stations: &[Station], from_id: &str, to_id: &str) -> FareEstimate {
         let from = stations.iter().find(|s| s.id == from_id);
         let to = stations.iter().find(|s| s.id == to_id);
-        let zones = vec![from.map(|s| s.zone).unwrap_or(1), to.map(|s| s.zone).unwrap_or(1)];
+        let zones = vec![from.map_or(1, |s| s.zone), to.map_or(1, |s| s.zone)];
         let peak = is_peak_time();
         let pf = peak_fare(&zones);
         let opf = off_peak_fare(&zones);
@@ -17621,7 +17647,7 @@ mod webgl_visualization {
                 // Fake elevation based on zone — outer zones = higher
                 let zone = stations.iter()
                     .find(|s| (s.coord.lat - coord.lat).abs() < 0.001 && (s.coord.lon - coord.lon).abs() < 0.001)
-                    .map(|s| s.zone).unwrap_or(3);
+                    .map_or(3, |s| s.zone);
                 (zone as f64 - 1.0) * 100.0
             } else { 0.0 };
             (x, y, z)
@@ -17715,7 +17741,7 @@ mod offline_mode {
     /// Get cache statistics
     pub(crate) fn cache_stats() -> (usize, usize) {
         let cache = OFFLINE_CACHE.lock().unwrap();
-        let total_size: usize = cache.values().map(|v| v.len()).sum();
+        let total_size: usize = cache.values().map(String::len).sum();
         (cache.len(), total_size)
     }
 }
@@ -17915,7 +17941,7 @@ mod weather_integration {
     pub(crate) static WEATHER_STATE: std::sync::LazyLock<Mutex<Option<WeatherForecast>>> =
         std::sync::LazyLock::new(|| Mutex::new(None));
 
-    /// Fetch weather from OpenWeatherMap (stub — would make HTTP request)
+    /// Fetch weather from `OpenWeatherMap` (stub — would make HTTP request)
     pub(crate) async fn fetch_weather(_api_key: &str, lat: f64, lon: f64) -> Option<WeatherForecast> {
         // In production, this would call:
         // GET https://api.openweathermap.org/data/2.5/onecall?lat={lat}&lon={lon}&appid={key}&units=metric
@@ -18193,7 +18219,7 @@ mod ml_predictor {
     }
 
     /// Pre-trained linear model weights (would be loaded from file in production)
-    /// Format: [bias, hour, is_weekend, is_peak, temp_c, precip_mm, wind_ms, line_idx, station_cnt, hist_delay]
+    /// Format: [bias, hour, `is_weekend`, `is_peak`, `temp_c`, `precip_mm`, `wind_ms`, `line_idx`, `station_cnt`, `hist_delay`]
     const MODEL_WEIGHTS: [f64; 10] = [0.5, 0.12, -0.3, 0.8, -0.02, 0.15, 0.1, 0.05, 0.01, 0.4];
 
     fn sigmoid(x: f64) -> f64 {
@@ -18451,8 +18477,8 @@ mod accessibility_route_planner {
                     let next_id = &next_st.id;
 
                     let acc = get_accessibility(next_id);
-                    let step_free = acc.as_ref().map(|a| a.step_free_access == AccessibilityStatus::Available).unwrap_or(false);
-                    let lift = acc.as_ref().map(|a| a.lift_available == AccessibilityStatus::Available).unwrap_or(false);
+                    let step_free = acc.as_ref().map_or(false, |a| a.step_free_access == AccessibilityStatus::Available);
+                    let lift = acc.as_ref().map_or(false, |a| a.lift_available == AccessibilityStatus::Available);
                     let accessible = step_free || lift;
 
                     if require_step_free && !accessible { continue; }
@@ -18480,8 +18506,8 @@ mod accessibility_route_planner {
         while let Some((_, prev, line_name, _accessible)) = visited.get(&current) {
             if let (Some(prev_id), Some(line)) = (prev, line_name) {
                 let acc = get_accessibility(&current);
-                let step_free = acc.as_ref().map(|a| a.step_free_access == AccessibilityStatus::Available).unwrap_or(false);
-                let lift = acc.as_ref().map(|a| a.lift_available == AccessibilityStatus::Available).unwrap_or(false);
+                let step_free = acc.as_ref().map_or(false, |a| a.step_free_access == AccessibilityStatus::Available);
+                let lift = acc.as_ref().map_or(false, |a| a.lift_available == AccessibilityStatus::Available);
 
                 if !step_free && !lift {
                     fully_step_free = false;
@@ -18532,7 +18558,7 @@ mod tfl_live_integration {
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
-    /// TfL API response types (subset of full Unified API)
+    /// `TfL` API response types (subset of full Unified API)
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct TfLLineStatus {
         pub(crate) id: String,
@@ -18578,11 +18604,11 @@ mod tfl_live_integration {
         pub(crate) towards: String,
     }
 
-    /// Global cached TfL status
+    /// Global cached `TfL` status
     pub(crate) static TFL_STATUS_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Vec<TfLLineStatus>>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-    /// Fetch line status from TfL API
+    /// Fetch line status from `TfL` API
     pub(crate) async fn fetch_line_status(api_key: &str) -> Result<Vec<TfLLineStatus>, String> {
         let url = format!(
             "https://api.tfl.gov.uk/Line/Mode/tube,dlr,overground,elizabeth-line/Status?app_key={}",
@@ -18604,7 +18630,7 @@ mod tfl_live_integration {
         }
     }
 
-    /// Fetch arrivals for a given station from TfL API
+    /// Fetch arrivals for a given station from `TfL` API
     pub(crate) async fn fetch_arrivals(station_id: &str, api_key: &str) -> Result<Vec<TfLArrivalPrediction>, String> {
         let url = format!(
             "https://api.tfl.gov.uk/StopPoint/{}/Arrivals?app_key={}",
@@ -18838,7 +18864,7 @@ mod crowd_sourcing {
             status: "pending".into(),
             votes: 0,
             submitted_at_ms: chrono::Utc::now().timestamp_millis(),
-            notes: notes.map(|s| s.to_string()),
+            notes: notes.map(ToString::to_string),
         };
 
         CONTRIBUTIONS.lock().unwrap().push(contrib);
@@ -19465,7 +19491,7 @@ mod crowd_density {
         db.clear();
         for station in stations.iter().filter(|s| s.is_open) {
             let density = fastrand::f64();
-            let capacity = if station.is_interchange { 30000 } else { 12000 };
+            let capacity = if station.is_interchange { 30_000 } else { 12_000 };
             let people = (density * capacity as f64) as u32;
             let level = if density < 0.3 { "quiet".into() }
                 else if density < 0.6 { "busy".into() }
@@ -19502,7 +19528,7 @@ mod crowd_density {
             let drift = fastrand::f64() * 0.1 - 0.05;
             let new_density = (p.density + drift).clamp(0.0, 1.0);
             p.density = (new_density * 100.0).round() / 100.0;
-            let capacity = 15000;
+            let capacity = 15_000;
             p.people_estimate = (new_density * capacity as f64) as u32;
             p.level = if new_density < 0.3 { "quiet".into() }
                 else if new_density < 0.6 { "busy".into() }
@@ -19747,7 +19773,7 @@ mod energy_grid {
 
     pub(crate) fn initialize_energy(station_count: usize, line_count: usize) {
         let mut e = ENERGY.lock().unwrap();
-        e.traction_kwh = line_count as f64 * 45000.0;
+        e.traction_kwh = line_count as f64 * 45_000.0;
         e.stations_kwh = station_count as f64 * 3200.0;
         e.signalling_kwh = station_count as f64 * 450.0;
         e.total_kwh_per_day = e.traction_kwh + e.stations_kwh + e.signalling_kwh;
@@ -20507,7 +20533,7 @@ mod station_amenities {
         let has_ticket = vendors.iter().any(|v| v.vendor_type == "ticket");
         let has_wifi = !crate::wifi_finder::get_hotspots_for_station(station_id).is_empty();
         let audit = crate::accessibility_audit::get_audit(station_id);
-        let has_step_free = audit.map(|a| a.step_free_access).unwrap_or(false);
+        let has_step_free = audit.map_or(false, |a| a.step_free_access);
         let has_bike = !crate::bike_parking::get_for_station(station_id).is_empty();
         let has_taxi = !crate::taxi_ranks::get_for_station(station_id).is_empty();
         let has_emergency = !crate::emergency_services::get_points_for_station(station_id).is_empty();
@@ -21267,7 +21293,7 @@ mod capacity_forecast {
         let mut db = FORECASTS.lock().unwrap();
         db.clear();
         for station in stations.iter().filter(|s| s.is_open).take(100) {
-            let current = if station.is_interchange { fastrand::u32(15000..=30000) } else { fastrand::u32(5000..=15000) };
+            let current = if station.is_interchange { fastrand::u32(15_000..=30_000) } else { fastrand::u32(5000..=15_000) };
             let growth = if station.is_interchange { 1.5 } else { 1.3 };
             let proj_2030 = (current as f64 * growth) as u32;
             let proj_2040 = (proj_2030 as f64 * growth) as u32;
@@ -25290,11 +25316,11 @@ while (true) {
         pub(crate) static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
-        /// Returns a lazily-initialised &'static reqwest::Client shared by all Axum
+        /// Returns a lazily-initialised &'static `reqwest::Client` shared by all Axum
         /// handlers. The client is created on first call and lives for the lifetime of
         /// the process.
         ///
-        /// PERFORMANCE: reqwest::Client uses connection pooling internally. Sharing a
+        /// PERFORMANCE: `reqwest::Client` uses connection pooling internally. Sharing a
         /// single client across all handlers means TCP connections are reused, avoiding
         /// the overhead of TLS handshakes and DNS resolution on every API call. Do NOT
         /// create a new client per request.
@@ -25463,8 +25489,8 @@ while (true) {
 
         pub(crate) static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
 
-        /// Build the HTML \<head> string for the desktop WebView.
-        /// Uses push_str so that Leaflet's `{}` JS syntax never touches format!().
+        /// Build the HTML \<head> string for the desktop `WebView`.
+        /// Uses `push_str` so that Leaflet's `{}` JS syntax never touches format!().
         ///
         /// # Accessibility
         ///
@@ -25926,7 +25952,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        /// TfL Live Status panel
+        /// `TfL` Live Status panel
         #[cfg(feature = "desktop")]
 
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
@@ -26063,7 +26089,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        /// MaaS (Mobility as a Service) panel
+        /// `MaaS` (Mobility as a Service) panel
         #[cfg(feature = "desktop")]
 
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
@@ -26433,7 +26459,7 @@ window.__consoleDupCount = 0;
             }
         }
 
-        /// WiFi speed panel
+        /// `WiFi` speed panel
         #[cfg(feature = "desktop")]
 
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
@@ -26646,10 +26672,10 @@ window.__consoleDupCount = 0;
         }
 
         /// Build the full standalone HTML page for the web application.
-        /// Includes the Leaflet map, all JavaScript (MAP_INIT_JS, MAP_LOOP_JS),
+        /// Includes the Leaflet map, all JavaScript (`MAP_INIT_JS`, `MAP_LOOP_JS`),
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
         /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
-        /// Desktop-only: configure the Dioxus WebView window.
+        /// Desktop-only: configure the Dioxus `WebView` window.
         /// This function uses Dioxus types and is only compiled when `desktop` feature is active.
         #[cfg(feature = "desktop")]
 
@@ -26827,10 +26853,10 @@ window.__consoleDupCount = 0;
         ///
         /// Launched as a separate OS process via --console-child flag. The port is
         /// received via `--port=<N>` CLI argument (set by the parent process when
-        /// spawning). This avoids reliance on CONSOLE_SERVER_PORT, which is process-
-        /// local memory and does NOT survive exec() boundaries.
+        /// spawning). This avoids reliance on `CONSOLE_SERVER_PORT`, which is process-
+        /// local memory and does NOT survive `exec()` boundaries.
         ///
-        /// DESIGN NOTE: This component uses a separate reqwest::Client with a 200ms
+        /// DESIGN NOTE: This component uses a separate `reqwest::Client` with a 200ms
         /// timeout to avoid blocking the parent process's connection pool. It runs
         /// in its OWN Tokio runtime (created implicitly by Dioxus) because the child
         /// process has no access to the parent's runtime.
@@ -26862,7 +26888,7 @@ window.__consoleDupCount = 0;
             // meaningful content immediately instead of a generic placeholder.
             let initial_text: String = {
                 let init_lines: Vec<String> = std::env::args()
-                    .filter_map(|a| a.strip_prefix("--initial-log=").map(|s| s.to_string()))
+                    .filter_map(|a| a.strip_prefix("--initial-log=").map(ToString::to_string))
                     .collect();
                 if init_lines.is_empty() {
                     "Connecting to engine...\n".to_owned()
@@ -27084,7 +27110,7 @@ window.__consoleDupCount = 0;
         /// re-render of the parts of the component tree that read it.
         ///
         /// STATE ARCHITECTURE:
-        ///   - `lines` / `stations` / `tracks` ? synced from the backend AppState via
+        ///   - `lines` / `stations` / `tracks` ? synced from the backend `AppState` via
         ///     HTTP calls to the Axum server running on the same process.
         ///   - `toasts` ? transient popup notifications, self-dismissing after 4s.
         ///   - `construction_mode` / `custom_line_*` ? manual line-drawing mode state.
@@ -27094,7 +27120,7 @@ window.__consoleDupCount = 0;
         ///
         /// IPC WITH MAP: Map operations are performed by calling `dioxus.postMessage()`
         /// from injected JavaScript. The Dioxus side listens for responses from the
-        /// WebView via the eval() channel. See `MAP_INIT_JS` for the initialisation
+        /// `WebView` via the `eval()` channel. See `MAP_INIT_JS` for the initialisation
         /// payload sent when the component mounts.
         ///
         /// PERFORMANCE: All state lives in a single component. There are NO child
@@ -27320,8 +27346,7 @@ window.__consoleDupCount = 0;
                         .crash_log
                         .lock()
                         .ok()
-                        .map(|g| g.clone())
-                        .unwrap_or_else(|| "No crash details available.".to_owned());
+                        .map_or_else(|| "No crash details available.".to_owned(), |g| g.clone());
                     let short_report = format!("\u{2501}\u{2501}\u{2501} ENGINE CRASH \u{2501}\u{2501}\u{2501}\n{}\nFull crash report available via COPY button above.\n\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
                         crash_text_val.lines().take(20).collect::<Vec<_>>().join("\n")
                     );
@@ -27591,10 +27616,10 @@ window.__consoleDupCount = 0;
                                         Some(max_lat),
                                         Some(max_lon),
                                     ) = (
-                                        msg.get("min_lat").and_then(|v| v.as_f64()),
-                                        msg.get("min_lon").and_then(|v| v.as_f64()),
-                                        msg.get("max_lat").and_then(|v| v.as_f64()),
-                                        msg.get("max_lon").and_then(|v| v.as_f64()),
+                                        msg.get("min_lat").and_then(serde_json::Value::as_f64),
+                                        msg.get("min_lon").and_then(serde_json::Value::as_f64),
+                                        msg.get("max_lat").and_then(serde_json::Value::as_f64),
+                                        msg.get("max_lon").and_then(serde_json::Value::as_f64),
                                     ) {
                                         map_bounds.set(Some(LondonBounds {
                                             min_lat,
@@ -27606,8 +27631,8 @@ window.__consoleDupCount = 0;
                                 }
                                 "map_click" => {
                                     if let (Some(lat), Some(lon)) = (
-                                        msg.get("lat").and_then(|v| v.as_f64()),
-                                        msg.get("lng").and_then(|v| v.as_f64()),
+                                        msg.get("lat").and_then(serde_json::Value::as_f64),
+                                        msg.get("lng").and_then(serde_json::Value::as_f64),
                                     ) {
                                         context_menu.set(None);
                                         let picker_opt = journey_picking_mode.read().clone();
@@ -27791,10 +27816,10 @@ window.__consoleDupCount = 0;
                                 }
                                 "map_context" => {
                                     if let (Some(lat), Some(lon), Some(x), Some(y)) = (
-                                        msg.get("lat").and_then(|v| v.as_f64()),
-                                        msg.get("lng").and_then(|v| v.as_f64()),
-                                        msg.get("x").and_then(|v| v.as_i64()),
-                                        msg.get("y").and_then(|v| v.as_i64()),
+                                        msg.get("lat").and_then(serde_json::Value::as_f64),
+                                        msg.get("lng").and_then(serde_json::Value::as_f64),
+                                        msg.get("x").and_then(serde_json::Value::as_i64),
+                                        msg.get("y").and_then(serde_json::Value::as_i64),
                                     ) {
                                         context_menu.set(Some((
                                             Coordinate::new(lat, lon),
@@ -28282,8 +28307,7 @@ window.__consoleDupCount = 0;
                 .crash_log
                 .lock()
                 .ok()
-                .map(|g| g.clone())
-                .unwrap_or_else(|| "No crash details available.".to_owned());
+                .map_or_else(|| "No crash details available.".to_owned(), |g| g.clone());
 
             // let file_menu_display = if *file_menu_open.read() { "block" } else { "none" };
             // let edit_menu_display = if *edit_menu_open.read() { "block" } else { "none" };
@@ -30968,8 +30992,7 @@ window.__consoleDupCount = 0;
                     .crash_log
                     .lock()
                     .ok()
-                    .map(|g| g.clone())
-                    .unwrap_or_else(|| "No explicit trace logs collected.".to_owned())
+                    .map_or_else(|| "No explicit trace logs collected.".to_owned(), |g| g.clone())
             });
             let telemetry_frame = String::new(); // read_crash_telemetry();
 
