@@ -121,6 +121,11 @@ use std::time::Duration;
 // (the crate-root check cannot see re-exports inside nested mod blocks).
 use crossbeam_channel as _;
 use ::geo as _;
+use open as _;
+
+// Silence dev-dependency warning for benchmark crate
+#[cfg(test)]
+use criterion as _;
 
 // ============================================================================
 // GLOBAL MEMORY ALLOCATOR — mimalloc
@@ -527,7 +532,7 @@ static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! 
 };
 
 pub(crate) use config::{LondonBounds, Config};
-pub(crate) use logger::{log_debug, log_error, log_info, log_warn, get_all_logs, accumulate_crash_text, log_trace};
+pub(crate) use logger::{log_debug, log_error, log_info, log_warn, log_trace};
 pub(crate) use primitives::Station;
 pub(crate) use routing::{RailwayTrack, Line};
 pub(crate) use server::AppState;
@@ -4382,7 +4387,7 @@ mod routing {
             }
 
             pub(crate) fn find_nearest_node(&self, coord: &Coordinate) -> Option<usize> {
-                let result = if let Some(ref morton) = self.morton_index {
+                let result = if let Some(morton) = self.morton_index.as_ref() {
                     log_trace(
                         "RoutingGraph::find_nearest_node - using Morton spatial index fast path",
                     );
@@ -7274,7 +7279,7 @@ mod server {
                     conn.prepare("SELECT version FROM schema_version WHERE key = 'app'")?;
                 let stored_version: Option<String> = stmt.query_row([], |row| row.get(0)).ok();
 
-                if let Some(ref ver) = stored_version {
+                if let Some(ver) = stored_version.as_ref() {
                     if ver == CACHE_SCHEMA_VERSION {
                         log_debug(
                             "CacheManager::initialize_tables - schema version matches, caches are valid",
@@ -13196,6 +13201,8 @@ mod server {
 // ============================================================================
 
 #[cfg(feature = "desktop")]
+// run_server is used inside #[cfg(feature = "desktop")] main()
+#[cfg(feature = "desktop")]
 use crate::server::run_server;
 
 /// Desktop entry point — launches the Dioxus desktop window with the embedded `WebView`.
@@ -13208,10 +13215,22 @@ fn main() {
     // --console, the child receives --console-child and launches a
     // lightweight Dioxus window that streams logs from the engine.
     // ----------------------------------------------------------------
+    use crate::logger::stderr_capture::StderrCapture;
+    use crate::logger::{catch_simple, get_log_storage, update_crash_telemetry, get_all_logs, accumulate_crash_text};
+    use crate::primitives::{embedded_stations, Coordinate};
+    use crate::server::{
+        build_spatial_cache, hydrate_network_state, libc_at_exit, load_spatial_cache_mmap,
+        MmapCacheStore, pin_memory_to_ram,
+    };
+    use crate::spatial::TransitNetworkGrid;
+    use chrono::Utc;
+    use std::path::Path;
+    use std::time::Instant;
+
     let child_args: Vec<String> = std::env::args().collect();
     if child_args.iter().any(|a| a == "--console-child") {
         log_info("Console child process detected - launching analytics console");
-        let _stderr_capture = stderr_capture::StderrCapture::start();
+        let _stderr_capture = StderrCapture::start();
         LaunchBuilder::desktop()
             .with_cfg(build_console_window_configuration())
             .launch(ConsoleStandaloneApp);
@@ -14179,7 +14198,7 @@ fn main() {
     // (e.g. [MMDD/HHMMSS.mmm:ERROR:file:line] format) so they appear in the
     // ring buffer and secondary console too.
     log_debug("main - launching Dioxus desktop window");
-    let _stderr_capture = stderr_capture::StderrCapture::start();
+    let _stderr_capture = StderrCapture::start();
     let result = std::panic::catch_unwind(|| {
         LaunchBuilder::desktop()
             .with_cfg(build_desktop_window_configuration(&api_base))
@@ -30648,6 +30667,13 @@ mod tests {
     use crate::spatial::stations_to_bytes;
     use crate::spatial::stations_from_bytes;
     use crate::routing::roundel_svg_for_line;
+    use crate::primitives::Coordinate;
+    use crate::primitives::embedded_stations;
+    use crate::primitives::embedded_rail_segments;
+    use crate::primitives::embedded_residential;
+    use crate::primitives::normalize_line_name;
+    use crate::spatial::TransitNetworkGrid;
+    use crate::routing::GeometryEngine;
     use super::*;
 
     // ========================================================================
