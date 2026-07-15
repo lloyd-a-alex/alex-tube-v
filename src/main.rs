@@ -12393,43 +12393,11 @@ mod server {
             }
         }
 
-        // === Network resilience score ===
-        pub(crate) async fn get_resilience_score_handler() -> Json<ApiResponse<crate::network_resilience::ResilienceReport>> {
-            let report = crate::network_resilience::compute_resilience_report();
-            Json(ApiResponse::success(report))
-        }
-
         // === Multi-city support ===
-
-        pub(crate) async fn get_cities_handler() -> Json<ApiResponse<Vec<crate::city_config::CityInfo>>> {
-            let cities = crate::city_config::get_all_cities();
-            Json(ApiResponse::success(cities))
-        }
 
         // === Fare calculator ===
 
-        pub(crate) async fn calculate_fare_handler(
-            State(state): State<AppState>,
-            Query(params): Query<HashMap<String, String>>,
-        ) -> Json<ApiResponse<crate::fare_calculator::FareEstimate>> {
-            let from = params.get("from").cloned().unwrap_or_default();
-            let to = params.get("to").cloned().unwrap_or_default();
-            let _zones = params.get("zones").and_then(|v| v.parse().ok()).unwrap_or(1);
-            let stations = state.stations.load();
-            let estimate = crate::fare_calculator::estimate_fare(&stations, &from, &to);
-            Json(ApiResponse::success(estimate))
-        }
-
         // === Carbon footprint ===
-
-        pub(crate) async fn get_carbon_handler(
-            Query(params): Query<HashMap<String, String>>,
-        ) -> Json<ApiResponse<crate::carbon_estimator::CarbonReport>> {
-            let distance_km: f64 = params.get("distance").and_then(|v| v.parse().ok()).unwrap_or(5.0);
-            let mode = params.get("mode").cloned().unwrap_or_else(|| "tube".into());
-            let report = crate::carbon_estimator::estimate_carbon(distance_km, &mode);
-            Json(ApiResponse::success(report))
-        }
 
         // === Live departure board ===
         pub(crate) async fn get_departures_handler(
@@ -12441,23 +12409,7 @@ mod server {
         }
 
         // === Service disruption ===
-        pub(crate) async fn get_disruptions_handler() -> Json<ApiResponse<Vec<crate::Disruption>>> {
-            let disruptions = crate::disruption_simulator::get_active_disruptions();
-            Json(ApiResponse::success(disruptions))
-        }
-
         // === Occupancy ===
-
-        pub(crate) async fn get_occupancy_handler(
-            Query(params): Query<HashMap<String, String>>,
-        ) -> Json<ApiResponse<Vec<crate::occupancy_engine::OccupancyReading>>> {
-            let station_id = params.get("station_id");
-            let readings = match station_id {
-                Some(id) => crate::occupancy_engine::get_station_occupancy(id).into_iter().collect(),
-                None => crate::occupancy_engine::get_all_occupancy(),
-            };
-            Json(ApiResponse::success(readings))
-        }
 
         // === Transit deserts ===
         pub(crate) async fn get_deserts_handler(
@@ -12470,39 +12422,11 @@ mod server {
 
         // === POI near station ===
 
-        pub(crate) async fn get_pois_handler(
-            Query(params): Query<HashMap<String, String>>,
-        ) -> Json<ApiResponse<Vec<crate::poi_database::Poi>>> {
-            let station_id = params.get("station_id").cloned().unwrap_or_default();
-            let pois = crate::poi_database::get_pois_for_station(&station_id);
-            Json(ApiResponse::success(pois))
-        }
-
         // === Journey reliability ===
-
-        pub(crate) async fn get_reliability_handler(
-            Query(params): Query<HashMap<String, String>>,
-        ) -> Json<ApiResponse<Vec<crate::journey_reliability::ReliabilityStat>>> {
-            let line_id = params.get("line").cloned().unwrap_or_default();
-            let stats = crate::journey_reliability::get_reliability_for_line(&line_id);
-            Json(ApiResponse::success(stats))
-        }
 
         // === Station popularity ===
 
-        pub(crate) async fn get_popularity_handler() -> Json<ApiResponse<Vec<crate::station_popularity::PopularityEntry>>> {
-            let entries = crate::station_popularity::get_top_stations(50);
-            Json(ApiResponse::success(entries))
-        }
-
         // === Social sharing ===
-
-        pub(crate) async fn create_share_handler(
-            Json(body): Json<crate::social_sharing::ShareRequest>,
-        ) -> Json<ApiResponse<crate::social_sharing::ShareLink>> {
-            let link = crate::social_sharing::create_share(body);
-            Json(ApiResponse::success(link))
-        }
 
         // === Data export ===
         pub(crate) async fn export_data_handler(
