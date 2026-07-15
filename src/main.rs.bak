@@ -1699,7 +1699,7 @@ mod primitives {
                             let radius_deg_lon = 0.0028;
                             let mut polygon = Vec::with_capacity(9);
                             for step in 0..8 {
-                                let angle = f64::from(step) * std::f64::consts::PI / 4.0;
+                                let angle = (step as f64) * std::f64::consts::PI / 4.0;
                                 polygon.push(Coordinate::new(
                                     c.lat + radius_deg_lat * angle.sin(),
                                     c.lon + radius_deg_lon * angle.cos(),
@@ -1916,18 +1916,18 @@ mod primitives {
             Self {
                 lat_e6: (lat * 1_000_000.0)
                     .round()
-                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32,
                 lon_e6: (lon * 1_000_000.0)
                     .round()
-                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32,
+                    .clamp(i32::MIN as f64, i32::MAX as f64) as i32,
             }
         }
 
         /// Converts back to f64 (lat, lon) tuple.
         pub fn to_f64(self) -> (f64, f64) {
             (
-                f64::from(self.lat_e6) / 1_000_000.0,
-                f64::from(self.lon_e6) / 1_000_000.0,
+                self.lat_e6 as f64 / 1_000_000.0,
+                self.lon_e6 as f64 / 1_000_000.0,
             )
         }
 
@@ -2448,8 +2448,8 @@ mod spatial {
             /// Convert quantized coordinate to fixed-point for deterministic routing.
             pub fn to_fixed(self) -> FixedCoord {
                 FixedCoord::from_lat_lon(
-                    f64::from(self.lon_e6) / 1_000_000.0,
-                    f64::from(self.lat_e6) / 1_000_000.0,
+                    self.lon_e6 as f64 / 1_000_000.0,
+                    self.lat_e6 as f64 / 1_000_000.0,
                 )
             }
 
@@ -2460,12 +2460,12 @@ mod spatial {
             #[inline(always)]
             pub fn to_morton_code(self) -> u64 {
                 // Offset to make all coordinates positive (London bounds fit in 31 bits)
-                let x = (i64::from(self.lon_e6) + 180_000_000) as u32;
-                let y = (i64::from(self.lat_e6) + 90_000_000) as u32;
+                let x = (self.lon_e6 as i64 + 180_000_000) as u32;
+                let y = (self.lat_e6 as i64 + 90_000_000) as u32;
 
                 #[inline(always)]
                 fn expand_bits(v: u32) -> u64 {
-                    let mut x = u64::from(v);
+                    let mut x = v as u64;
                     x = (x | (x << 16)) & 0x0000_FFFF_0000_FFFF;
                     x = (x | (x << 8)) & 0x00FF_00FF_00FF_00FF;
                     x = (x | (x << 4)) & 0x0F0F_0F0F_0F0F_0F0F;
@@ -2992,7 +2992,7 @@ mod routing {
                 let radius_deg = radius_meters / EARTH_RADIUS * RAD_TO_DEG;
                 let circle: Vec<Coordinate> = (0..segments)
                     .map(|i| {
-                        let angle = 2.0 * PI * f64::from(i) / f64::from(segments);
+                        let angle = 2.0 * PI * i as f64 / segments as f64;
                         Coordinate::new(
                             center.lat + radius_deg * angle.sin(),
                             center.lon + radius_deg * angle.cos() / (center.lat * DEG_TO_RAD).cos(),
@@ -3601,7 +3601,7 @@ mod routing {
                 *s = s
                     .wrapping_mul(6_364_136_223_846_793_005)
                     .wrapping_add(1_442_695_040_888_963_407);
-                (*s >> 33) as f64 / f64::from(u32::MAX)
+                (*s >> 33) as f64 / (u32::MAX as f64)
             };
 
             for _ in 0..iterations {
@@ -5106,13 +5106,13 @@ out body;"#,
                                 .map_or_else(|| format!("Unnamed Station {}", id_num), ToString::to_string);
 
                             let is_historic = tags
-                                .is_some_and(|t| {
+                                .map_or(false, |t| {
                                     t.get("historic").is_some()
                                         || t.get("disused").is_some()
                                         || t.get("ceremonial").is_some()
                                         || t.get("railway")
                                             .and_then(|v| v.as_str())
-                                            .is_some_and(|s| s == "disused" || s == "abandoned")
+                                            .map_or(false, |s| s == "disused" || s == "abandoned")
                                 });
 
                             let mut station_lines = Vec::new();
@@ -11405,7 +11405,7 @@ mod server {
                 stations
                     .iter()
                     .find(|s| s.id == station_id)
-                    .is_some_and(|s| s.is_historical)
+                    .map_or(false, |s| s.is_historical)
             };
 
             if is_historical {
@@ -11702,7 +11702,7 @@ mod server {
         pub(crate) async fn get_citizen_reports_handler(
             Query(query): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<Vec<crate::citizen_reports::CitizenReport>>> {
-            let include_resolved = query.get("include_resolved").is_some_and(|v| v == "true");
+            let include_resolved = query.get("include_resolved").map_or(false, |v| v == "true");
             Json(ApiResponse::success(crate::citizen_reports::get_reports(include_resolved)))
         }
 
@@ -11953,7 +11953,7 @@ mod server {
         pub(crate) async fn set_offline_mode_handler(
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
-            let enabled = params.get("enabled").is_some_and(|s| s == "true" || s == "1");
+            let enabled = params.get("enabled").map_or(false, |s| s == "true" || s == "1");
             crate::offline_mode::set_offline_mode(enabled);
             Json(ApiResponse::success(format!("Offline mode {}", if enabled { "enabled" } else { "disabled" })))
         }
@@ -12149,7 +12149,7 @@ mod server {
             let lines = state.lines.load().as_ref().clone();
             let from = params.get("from").cloned().unwrap_or_default();
             let to = params.get("to").cloned().unwrap_or_default();
-            let require_step_free = params.get("step_free").is_some_and(|v| v == "true");
+            let require_step_free = params.get("step_free").map_or(false, |v| v == "true");
             match crate::accessibility_route_planner::plan_accessible_route(&from, &to, &stations, &lines, require_step_free) {
                 Some(route) => Json(ApiResponse::success(route)),
                 None => Json(ApiResponse::error("No accessible route found")),
@@ -12230,7 +12230,7 @@ mod server {
             Query(params): Query<HashMap<String, String>>,
         ) -> Json<ApiResponse<String>> {
             let id = params.get("id").cloned().unwrap_or_default();
-            let approve = params.get("approve").is_some_and(|v| v == "true");
+            let approve = params.get("approve").map_or(false, |v| v == "true");
             if crate::crowd_sourcing::vote_contribution(&id, approve) {
                 Json(ApiResponse::success(format!("Voted on {}", id)))
             } else {
@@ -13323,7 +13323,7 @@ mod server {
                     // FNV-1a hash of station name for O(1) identity check
                     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
                     for byte in s.name.as_bytes() {
-                        hash ^= u64::from(*byte);
+                        hash ^= *byte as u64;
                         hash = hash.wrapping_mul(0x10_0000_01b3);
                     }
                     StationPod {
@@ -13993,11 +13993,11 @@ fn main() {
                 pods.iter().map(|pod| Station {
                     id: format!("mmap_{}", pod.name_hash),
                     name: format!("Station#{}", pod.name_hash),
-                    coord: Coordinate { lat: f64::from(pod.coord.y), lon: f64::from(pod.coord.x) },
+                    coord: Coordinate { lat: pod.coord.y as f64, lon: pod.coord.x as f64 },
                     lines: vec![],
                     is_interchange: pod.is_interchange != 0,
                     is_open: true,
-                    zone: i32::from(pod.zone),
+                    zone: pod.zone as i32,
                     is_historical: false,
                 }).collect()
             }
@@ -15421,7 +15421,7 @@ mod realtime_integration {
                 let bearing = dy.atan2(dx).to_degrees();
 
                 // Simulate occupancy based on time of day
-                let hour = f64::from(chrono::Utc::now().hour());
+                let hour = chrono::Utc::now().hour() as f64;
                 let occupancy = if (8.0..=9.5).contains(&hour) {
                     fastrand::f64() * 0.3 + 0.6 // peak: 60-90%
                 } else if (17.0..=18.5).contains(&hour) {
@@ -15538,7 +15538,7 @@ mod occupancy_engine {
     pub(crate) fn tick_occupancy(stations: &[Station], lines: &[Line]) {
         use std::collections::HashMap;
         let now = Utc::now();
-        let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
+        let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
 
         // Base demand curve: morning peak ~8:30, evening peak ~17:30, lull at 3:00
@@ -15562,7 +15562,7 @@ mod occupancy_engine {
         for st in stations {
             if !st.is_open { continue; }
             // Station-level occupancy based on zone + interchange status + randomness
-            let zone_factor = 1.0 - (f64::from(st.zone) - 1.0) * 0.08;
+            let zone_factor = 1.0 - (st.zone as f64 - 1.0) * 0.08;
             let interchange_bonus = if st.is_interchange { 0.3 } else { 0.0 };
             let noise: f64 = fastrand::f64() * 0.2 - 0.1;
             let occ = (base_demand * zone_factor + interchange_bonus + noise).clamp(0.0, 1.0);
@@ -15823,7 +15823,7 @@ mod demand_forecaster {
                 Some(o) if !o.is_empty() => o,
                 _ => {
                     // No data — use synthetic estimate based on zone and interchange
-                    let base = 100.0 + f64::from(st.zone) * 50.0;
+                    let base = 100.0 + (st.zone as f64) * 50.0;
                     if st.is_interchange { base * 1.5 } else { base };
                     continue;
                 }
@@ -15871,14 +15871,14 @@ mod demand_forecaster {
     pub(crate) fn seed_synthetic_demand(stations: &[Station]) {
         use chrono::Utc;
         let now = Utc::now();
-        let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
+        let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
 
         let is_weekend = weekday >= 5;
 
         for st in stations {
             if !st.is_open { continue; }
-            let zone_factor = 1.0 - (f64::from(st.zone) - 1.0) * 0.05;
+            let zone_factor = 1.0 - (st.zone as f64 - 1.0) * 0.05;
             let interchange_bonus = if st.is_interchange { 1.5 } else { 1.0 };
             let base = if is_weekend {
                 30.0 + 70.0 * (-((hour - 14.0).powi(2)) / 36.0).exp()
@@ -16969,7 +16969,7 @@ mod fare_calculator {
     // Peak: 06:30-09:30, 16:00-19:00 weekdays
     fn is_peak_time() -> bool {
         let now = chrono::Utc::now().time();
-        let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
+        let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = chrono::Utc::now().weekday().num_days_from_monday();
         if weekday >= 5 { return false; } // weekends are off-peak
         (6.5..=9.5).contains(&hour) || (16.0..=19.0).contains(&hour)
@@ -17062,7 +17062,7 @@ mod station_popularity {
                 let dist_m = st.coord.distance_to(&other.coord);
                 let dist_km = dist_m / 1000.0;
                 let weight = 1.0 / (dist_km * dist_km + 0.1).max(0.1);
-                let zone_factor = f64::from((6 - other.zone).max(1));
+                let zone_factor = (6 - other.zone).max(1) as f64;
                 let interchange_bonus = if other.is_interchange { 1.5 } else { 1.0 };
                 score += weight * zone_factor * interchange_bonus;
                 denominator += weight;
@@ -17127,7 +17127,7 @@ mod journey_reliability {
         to_id: &str,
     ) -> JourneyReliability {
         let now = chrono::Utc::now();
-        let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
+        let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
         let is_peak = weekday < 5 && ((7.0..=9.5).contains(&hour) || (16.0..=18.5).contains(&hour));
         let is_late = hour >= 22.0 || hour <= 5.0;
@@ -17159,7 +17159,7 @@ mod journey_reliability {
         let reliability = (1.0 - std_dev / expected_min.max(1.0)).clamp(0.0, 1.0);
 
         // On-time probability (within +20%)
-        let on_time = 0.68 + (1.0 - f64::from(u8::from(is_peak))) * 0.12;
+        let on_time = 0.68 + (1.0 - is_peak as u8 as f64) * 0.12;
 
         JourneyReliability {
             from_station: from_id.to_string(),
@@ -17648,7 +17648,7 @@ mod webgl_visualization {
                 let zone = stations.iter()
                     .find(|s| (s.coord.lat - coord.lat).abs() < 0.001 && (s.coord.lon - coord.lon).abs() < 0.001)
                     .map_or(3, |s| s.zone);
-                (f64::from(zone) - 1.0) * 100.0
+                (zone as f64 - 1.0) * 100.0
             } else { 0.0 };
             (x, y, z)
         };
@@ -18105,7 +18105,7 @@ mod deep_analytics {
             }
             if count >= 1000 { break; }
         }
-        total_dist / f64::from(count.max(1)) / 1000.0
+        total_dist / count.max(1) as f64 / 1000.0
     }
 
     pub(crate) fn run_analytics(
@@ -18235,7 +18235,7 @@ mod ml_predictor {
         weather_wind: Option<f64>,
     ) -> DelayPrediction {
         let now = chrono::Utc::now();
-        let hour = f64::from(now.hour()) + f64::from(now.minute()) / 60.0;
+        let hour = now.hour() as f64 + now.minute() as f64 / 60.0;
         let weekday = now.weekday().num_days_from_monday();
         let is_weekend = if weekday >= 5 { 1.0 } else { 0.0 };
         let is_peak = if weekday < 5 && ((7.0..=9.5).contains(&hour) || (16.0..=18.5).contains(&hour)) { 1.0 } else { 0.0 };
@@ -18477,8 +18477,8 @@ mod accessibility_route_planner {
                     let next_id = &next_st.id;
 
                     let acc = get_accessibility(next_id);
-                    let step_free = acc.as_ref().is_some_and(|a| a.step_free_access == AccessibilityStatus::Available);
-                    let lift = acc.as_ref().is_some_and(|a| a.lift_available == AccessibilityStatus::Available);
+                    let step_free = acc.as_ref().map_or(false, |a| a.step_free_access == AccessibilityStatus::Available);
+                    let lift = acc.as_ref().map_or(false, |a| a.lift_available == AccessibilityStatus::Available);
                     let accessible = step_free || lift;
 
                     if require_step_free && !accessible { continue; }
@@ -18506,8 +18506,8 @@ mod accessibility_route_planner {
         while let Some((_, prev, line_name, _accessible)) = visited.get(&current) {
             if let (Some(prev_id), Some(line)) = (prev, line_name) {
                 let acc = get_accessibility(&current);
-                let step_free = acc.as_ref().is_some_and(|a| a.step_free_access == AccessibilityStatus::Available);
-                let lift = acc.as_ref().is_some_and(|a| a.lift_available == AccessibilityStatus::Available);
+                let step_free = acc.as_ref().map_or(false, |a| a.step_free_access == AccessibilityStatus::Available);
+                let lift = acc.as_ref().map_or(false, |a| a.lift_available == AccessibilityStatus::Available);
 
                 if !step_free && !lift {
                     fully_step_free = false;
@@ -18649,7 +18649,7 @@ mod tfl_live_integration {
     /// Generate synthetic TfL-like status data when API is unavailable
     pub(crate) fn synthetic_line_status(lines: &[Line]) -> Vec<TfLLineStatus> {
         let now = chrono::Utc::now();
-        let _hour = f64::from(now.hour());
+        let _hour = now.hour() as f64;
         let _weekday = now.weekday().num_days_from_monday();
 
         lines.iter().map(|line| {
@@ -19492,7 +19492,7 @@ mod crowd_density {
         for station in stations.iter().filter(|s| s.is_open) {
             let density = fastrand::f64();
             let capacity = if station.is_interchange { 30_000 } else { 12_000 };
-            let people = (density * f64::from(capacity)) as u32;
+            let people = (density * capacity as f64) as u32;
             let level = if density < 0.3 { "quiet".into() }
                 else if density < 0.6 { "busy".into() }
                 else if density < 0.85 { "very_busy".into() }
@@ -19529,7 +19529,7 @@ mod crowd_density {
             let new_density = (p.density + drift).clamp(0.0, 1.0);
             p.density = (new_density * 100.0).round() / 100.0;
             let capacity = 15_000;
-            p.people_estimate = (new_density * f64::from(capacity)) as u32;
+            p.people_estimate = (new_density * capacity as f64) as u32;
             p.level = if new_density < 0.3 { "quiet".into() }
                 else if new_density < 0.6 { "busy".into() }
                 else if new_density < 0.85 { "very_busy".into() }
@@ -19705,8 +19705,8 @@ mod accessibility_audit {
             let tactile = fastrand::f64() < 0.9;
             let mut score = 0.0;
             if step_free { score += 40.0; }
-            score += f64::from(lift_count) * 8.0;
-            score += f64::from(escalator_count) * 3.0;
+            score += lift_count as f64 * 8.0;
+            score += escalator_count as f64 * 3.0;
             if ramp { score += 10.0; }
             if toilets { score += 8.0; }
             if audio { score += 7.0; }
@@ -19831,7 +19831,7 @@ mod signal_optimizer {
         for line in lines.iter() {
             let base_headway = if line.is_custom { 600 } else { 120 + fastrand::u32(0..=180) };
             let trains = (line.stations.len() as f64 * 2.5) as u32 + 4;
-            let throughput = (3600.0 / f64::from(base_headway) * f64::from(trains) * 0.8) as u32;
+            let throughput = (3600.0 / base_headway as f64 * trains as f64 * 0.8) as u32;
             let efficiency = 0.6 + fastrand::f64() * 0.35;
             let rec = if efficiency < 0.7 {
                 "Increase frequency during peak hours".into()
@@ -20533,7 +20533,7 @@ mod station_amenities {
         let has_ticket = vendors.iter().any(|v| v.vendor_type == "ticket");
         let has_wifi = !crate::wifi_finder::get_hotspots_for_station(station_id).is_empty();
         let audit = crate::accessibility_audit::get_audit(station_id);
-        let has_step_free = audit.is_some_and(|a| a.step_free_access);
+        let has_step_free = audit.map_or(false, |a| a.step_free_access);
         let has_bike = !crate::bike_parking::get_for_station(station_id).is_empty();
         let has_taxi = !crate::taxi_ranks::get_for_station(station_id).is_empty();
         let has_emergency = !crate::emergency_services::get_points_for_station(station_id).is_empty();
@@ -21113,8 +21113,8 @@ mod accessibility_audit_enh {
             let staff = fastrand::f64() < 0.85;
             let mut score = 0.0;
             if step_free { score += 35.0; }
-            score += f64::from(lift_count) * 8.0;
-            score += f64::from(escalator_count) * 3.0;
+            score += lift_count as f64 * 8.0;
+            score += escalator_count as f64 * 3.0;
             if ramp { score += 8.0; }
             if toilets { score += 7.0; }
             if audio { score += 6.0; }
@@ -21295,8 +21295,8 @@ mod capacity_forecast {
         for station in stations.iter().filter(|s| s.is_open).take(100) {
             let current = if station.is_interchange { fastrand::u32(15_000..=30_000) } else { fastrand::u32(5000..=15_000) };
             let growth = if station.is_interchange { 1.5 } else { 1.3 };
-            let proj_2030 = (f64::from(current) * growth) as u32;
-            let proj_2040 = (f64::from(proj_2030) * growth) as u32;
+            let proj_2030 = (current as f64 * growth) as u32;
+            let proj_2040 = (proj_2030 as f64 * growth) as u32;
             let needs_exp = proj_2040 > current * 2;
             let action = if needs_exp {
                 "Expand station capacity - add platforms or entrances".into()
@@ -27713,7 +27713,7 @@ window.__consoleDupCount = 0;
                                         } else if *isochrone_picking.read() {
                                             isochrone_picking.set(false);
                                             eval(&set_cursor_js(""));
-                                            let mins = f64::from(*isochrone_minutes.read());
+                                            let mins = *isochrone_minutes.read() as f64;
                                             spawn(async move {
                                                 let req = IsochroneRequest {
                                                     lat,
@@ -29072,7 +29072,7 @@ window.__consoleDupCount = 0;
                             tabindex: "0",
                             onclick: move |_| {
                                 context_menu.set(None);
-                                let mins = f64::from(*isochrone_minutes.read());
+                                let mins = *isochrone_minutes.read() as f64;
                                 spawn(async move {
                                     let req = IsochroneRequest { lat: coord.lat, lon: coord.lon, time_minutes: mins, include_walking: true };
                                     if let Some(res) = post_api::<_, IsochroneResponse>("/api/isochrone", &req).await {
