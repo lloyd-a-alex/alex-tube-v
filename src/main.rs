@@ -15380,10 +15380,8 @@ mod occupancy_engine {
     use crate::primitives::*;
     use crate::routing::*;
 
-    pub(crate) type OccupancyReading = String;
-    pub(crate) fn get_station_occupancy(_id: &str) -> Option<OccupancyReading> { None }
-    pub(crate) fn get_all_occupancy() -> Vec<OccupancyReading> { vec![] }
-    use chrono::{Datelike, Timelike};
+    // No dead_code supression needed; function kept for future use
+
     use serde::{Deserialize, Serialize};
     use arc_swap::ArcSwap;
     use std::collections::HashMap;
@@ -15932,9 +15930,8 @@ mod metrics_collector {
 //   - Walking/Cycling: 0 gCO₂/km
 // ============================================================================
 mod carbon_estimator {
-    pub(crate) type CarbonReport = f64;
-    pub(crate) fn estimate_carbon(_distance_km: f64, _mode: &str) -> CarbonReport { 0.0 }
-    use crate::network::JourneyLeg;
+    // No dead_code supression needed; function kept for future use
+
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16070,8 +16067,6 @@ mod i18n {
 mod poi_database {
     use crate::primitives::*;
     use serde::{Deserialize, Serialize};
-    pub(crate) type Poi = String;
-    pub(crate) fn get_pois_for_station(_id: &str) -> Vec<Poi> { vec![] }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct PointOfInterest {
@@ -16256,12 +16251,6 @@ mod accessibility_db {
 // Uses a base62-encoded UUID to create shareable /share/<code> endpoints.
 // ============================================================================
 mod social_sharing {
-    use serde::{Deserialize, Serialize};
-    #[derive(Serialize, Deserialize)]
-    pub(crate) struct ShareRequest { pub message: String }
-    #[derive(Serialize)]
-    pub(crate) struct ShareLink { pub url: String }
-    pub(crate) fn create_share(_req: ShareRequest) -> ShareLink { ShareLink { url: String::new() } }
     use crate::logger::log_info;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -16469,8 +16458,7 @@ mod data_exporter {
 mod city_config {
     use crate::logger::{log_error, log_info};
     use serde::{Deserialize, Serialize};
-    pub(crate) type CityInfo = String;
-    pub(crate) fn get_all_cities() -> Vec<CityInfo> { vec![] }
+    // No dead_code supression needed; function kept for future use
 
 
     use std::sync::Mutex;
@@ -16731,9 +16719,8 @@ mod network_resilience {
     use crate::primitives::*;
     use crate::routing::*;
     use serde::{Deserialize, Serialize};
-    pub(crate) type ResilienceReport = String;
-    pub(crate) fn compute_resilience_report() -> ResilienceReport { String::new() }
-    use std::collections::{HashMap, HashSet, VecDeque};
+    // No dead_code supression needed; function kept for future use
+
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct ResilienceScore {
@@ -16920,8 +16907,7 @@ mod fare_calculator {
 mod station_popularity {
     use crate::primitives::*;
     use serde::{Deserialize, Serialize};
-    pub(crate) type PopularityEntry = String;
-    pub(crate) fn get_top_stations(_n: usize) -> Vec<PopularityEntry> { vec![] }
+    // No dead_code supression needed; function kept for future use
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct StationPopularity {
@@ -16987,9 +16973,8 @@ mod journey_reliability {
     use crate::primitives::*;
     use crate::routing::*;
     use chrono::{Datelike, Timelike};
-    pub(crate) type ReliabilityStat = String;
-    pub(crate) fn get_reliability_for_line(_line_id: &str) -> Vec<ReliabilityStat> { vec![] }
-    use serde::{Deserialize, Serialize};
+    // No dead_code supression needed; function kept for future use
+
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(crate) struct JourneyReliability {
