@@ -15384,6 +15384,7 @@ mod occupancy_engine {
 
     use serde::{Deserialize, Serialize};
     use arc_swap::ArcSwap;
+    use chrono::{Datelike, Timelike};
     use std::collections::HashMap;
     use std::sync::Arc;
     use chrono::Utc;
@@ -15930,8 +15931,7 @@ mod metrics_collector {
 //   - Walking/Cycling: 0 gCO₂/km
 // ============================================================================
 mod carbon_estimator {
-    // No dead_code supression needed; function kept for future use
-
+    use crate::network::JourneyLeg;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16252,6 +16252,7 @@ mod accessibility_db {
 // ============================================================================
 mod social_sharing {
     use crate::logger::log_info;
+    use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -16719,7 +16720,7 @@ mod network_resilience {
     use crate::primitives::*;
     use crate::routing::*;
     use serde::{Deserialize, Serialize};
-    // No dead_code supression needed; function kept for future use
+    use std::collections::{HashMap, HashSet, VecDeque};
 
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16973,7 +16974,7 @@ mod journey_reliability {
     use crate::primitives::*;
     use crate::routing::*;
     use chrono::{Datelike, Timelike};
-    // No dead_code supression needed; function kept for future use
+    use serde::{Deserialize, Serialize};
 
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
