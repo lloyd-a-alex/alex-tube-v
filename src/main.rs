@@ -538,15 +538,10 @@ pub(crate) use routing::{RailwayTrack, Line};
 pub(crate) use server::AppState;
 
 
-#[cfg(feature = "desktop")]
-fn build_console_window_configuration() -> dioxus::desktop::Config { dioxus::desktop::Config::new() }
-#[cfg(feature = "desktop")]
-fn build_desktop_window_configuration(_api_base: &str) -> dioxus::desktop::Config { dioxus::desktop::Config::new() }
-#[cfg(feature = "desktop")]
-#[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
-fn ConsoleStandaloneApp() -> Element { rsx! { div { "Console" } } }
-#[cfg(feature = "desktop")]
-fn app() -> Element { rsx! { div { "App" } } }
+// NOTE: The real `app()`, `ConsoleStandaloneApp()`, and the window-configuration
+// builders live in `ui::components` (the full Dioxus UI, at crate root).
+// `main()` below calls those real implementations directly — the previous
+// root-level stubs that rendered only "App"/"Console" have been removed.
 
 // Consolidated CSS natively inline
 // External CSS files removed per requirements.
@@ -6082,7 +6077,6 @@ mod network {
     use crate::primitives::{Station, Coordinate, DEG_TO_RAD, EARTH_RADIUS};
     use crate::routing::{Line, RailwayTrack};
     use chrono::Utc;
-    pub fn compute_stats() -> NetworkStatsResponse { NetworkStatsResponse::default() }
     pub const fn get_stations_snapshot() -> Vec<Station> { vec![] }
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
@@ -12217,13 +12211,6 @@ mod server {
             Json(ApiResponse::success(strings))
         }
 
-        // === Network stats ===
-
-        pub async fn get_network_stats_handler() -> Json<ApiResponse<crate::network::NetworkStatsResponse>> {
-            let stats = crate::network::compute_stats();
-            Json(ApiResponse::success(stats))
-        }
-
         // === Accessibility DB ===
         pub async fn get_accessibility_db_handler() -> Json<ApiResponse<Vec<crate::accessibility_db::AccessibilityRecord>>> {
             let records = crate::accessibility_db::get_all_records();
@@ -12494,6 +12481,10 @@ mod server {
         use crate::logger::{log_info, log_debug, log_error, log_warn};
         use crate::primitives::{embedded_stations, embedded_rail_segments, Station};
         use crate::spatial::{StationPod, SpatialCoordPod, stations_to_bytes, stations_from_bytes};
+        // Wire up handlers that were previously defined but not imported/registered.
+        use super::handlers::{
+            get_weather_handler, get_construction_handler,
+        };
         use crate::AppError;
         use crate::AppResult;
         use axum::response::IntoResponse;
@@ -12728,6 +12719,12 @@ mod server {
                     .route("/api/signal-priority", get(get_signal_priority_handler))
                     .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
                     .route("/api/capacity-forecast/{station_id}", get(get_capacity_forecast_station_handler))
+                    // Previously-defined handlers that were missing from the router.
+                    // Use distinct paths so they don't collide with the existing
+                    // /api/construction (get_construction_state) and /api/weather
+                    // (get_weather) routes.
+                    .route("/api/construction/projects", get(get_construction_handler))
+                    .route("/api/weather/snapshot", get(get_weather_handler))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -13095,6 +13092,15 @@ mod server {
                 ));
                 Ok(Self { len, mmap })
             }
+
+            /// Zero-copy view of the memory-mapped cache region.
+            /// The returned slice is backed directly by the OS page cache — no
+            /// allocation, parsing, or copying. This is the primary reason the
+            /// `mmap` field is retained: it keeps the kernel-backed region valid
+            /// for the lifetime of the store and exposes it for lock-free reads.
+            pub fn as_bytes(&self) -> &[u8] {
+                &self.mmap
+            }
         }
 
         // ============================================================================
@@ -13210,6 +13216,23 @@ use crate::server::run_server;
 /// For the Shuttle web deployment, see `shuttle_main` instead.
 #[cfg(all(feature = "desktop", not(feature = "shuttle")))]
 fn main() {
+    // =========================================================================
+    // WEBVIEW2 BROWSER ARGUMENTS (process environment) — ALWAYS ON
+    // Set FIRST, before any early-return branch (--console-child, --hydrate,
+    // --cli) so every spawned WebView2 process inherits these flags.
+    // `std::env::set_var` is `unsafe` because a concurrent reader on another
+    // thread would be a data race; at this point in `main()` no other threads
+    // exist, so the write is race-free. The WebView2 child process spawned
+    // later reads this env var when it launches, which is exactly what we want.
+    // The two flags are kept separate so each can be justified/removed alone:
+    //   * --disable-gpu-sandbox : lets software-rendered WebGL run without a GPU.
+    //   * --disable-features=TrackingPrevention : privacy regression kept
+    //     explicitly separate from the GPU workaround for independent review.
+    std::env::set_var(
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+        "--disable-gpu-sandbox --disable-features=TrackingPrevention",
+    );
+
     // ----------------------------------------------------------------
     // Console child window: when the main process spawns a console via
     // --console, the child receives --console-child and launches a
@@ -13232,8 +13255,8 @@ fn main() {
         log_info("Console child process detected - launching analytics console");
         let _stderr_capture = StderrCapture::start();
         LaunchBuilder::desktop()
-            .with_cfg(build_console_window_configuration())
-            .launch(ConsoleStandaloneApp);
+            .with_cfg(crate::ui::components::build_console_window_configuration())
+            .launch(crate::ui::components::ConsoleStandaloneApp);
         drop(_stderr_capture);
         return;
     }
@@ -13351,23 +13374,6 @@ fn main() {
         .ok()
         .and_then(|s| s.parse::<u128>().ok())
         .unwrap_or(0);
-
-    // =========================================================================
-    // WEBVIEW2 BROWSER ARGUMENTS (process environment)
-    // Set ONCE here, on the single main thread, BEFORE the multi-threaded Tokio
-    // runtime is created (below) and before any child processes are spawned.
-    // `std::env::set_var` is `unsafe` because a concurrent reader on another
-    // thread would be a data race; at this point in `main()` no other threads
-    // exist, so the write is race-free. The WebView2 child process spawned later
-    // reads this env var when it launches, which is exactly what we want.
-    // The two flags are kept separate so each can be justified/removed alone:
-    //   * --disable-gpu-sandbox : lets software-rendered WebGL run without a GPU.
-    //   * --disable-features=TrackingPrevention : privacy regression kept
-    //     explicitly separate from the GPU workaround for independent review.
-    std::env::set_var(
-        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-        "--disable-gpu-sandbox --disable-features=TrackingPrevention",
-    );
 
     // =========================================================================
     // BUILD PREAMBLE ? Log the compilation/build context so the secondary
@@ -13675,7 +13681,11 @@ fn main() {
             let cache_path = cache_dir.join("alex-tube-v").join("spatial_cache.bin");
             match MmapCacheStore::new(cache_path.to_str().unwrap_or(""), 1 << 20) {
                 Ok(store) => {
-                    log_info(&format!("main - MmapCacheStore VFS initialized: {} bytes mapped", store.len));
+                    log_info(&format!(
+                        "main - MmapCacheStore VFS initialized: {} bytes mapped ({} readable)",
+                        store.len,
+                        store.as_bytes().len()
+                    ));
                     Some(store)
                 }
                 Err(e) => {
@@ -14201,8 +14211,8 @@ fn main() {
     let _stderr_capture = StderrCapture::start();
     let result = std::panic::catch_unwind(|| {
         LaunchBuilder::desktop()
-            .with_cfg(build_desktop_window_configuration(&api_base))
-            .launch(app);
+            .with_cfg(crate::ui::leaflet::build_desktop_window_configuration(&api_base))
+            .launch(crate::ui::components::app);
     });
     // Drop _stderr_capture here restores the original stderr handle.
     drop(_stderr_capture);
@@ -15227,8 +15237,7 @@ mod occupancy_engine {
 // using probabilistic edge-weight sampling on the routing graph.
 // ============================================================================
 mod disruption_simulator {
-    use crate::primitives::{Disruption, Station};
-    pub const fn get_active_disruptions() -> Vec<Disruption> { vec![] }
+    use crate::primitives::Station;
     use crate::routing::{Line, RoutingGraph};
     use serde::{Deserialize, Serialize};
     use std::collections::HashSet;
@@ -15363,6 +15372,7 @@ mod disruption_simulator {
 // (no external ML deps needed — pure Rust math).
 // ============================================================================
 mod demand_forecaster {
+    use crate::logger::log_trace;
     use crate::primitives::Station;
     use chrono::{Datelike, Timelike};
     use serde::{Deserialize, Serialize};
@@ -15411,23 +15421,35 @@ mod demand_forecaster {
         }
     }
 
-    /// Simple linear regression on the last N observations for a station
+    /// Simple linear regression on the last N observations for a station.
+    /// Uses the actual `timestamp_ms` for the x-axis (time-based trend) rather
+    /// than the array index, so irregular sampling intervals are handled
+    /// correctly. The `station_id` field on each observation is read to anchor
+    /// the per-station log context and to sanity-check against the caller's id.
     fn linear_trend(
         obs: &[DemandObservation],
         max_points: usize,
+        station_id: &str,
     ) -> (f64, f64) {
         let n = obs.len().min(max_points);
+        let obs_station = obs.first().map_or_else(|| station_id.to_string(), |o| o.station_id.clone());
         if n < 2 {
+            log_trace(&format!(
+                "linear_trend({obs_station}) - insufficient points ({n}), returning last value"
+            ));
             return (0.0, obs.last().map_or(0.0, |o| o.passenger_count));
         }
         let subset = &obs[obs.len().saturating_sub(n)..];
-        let mean_x = subset.len() as f64 / 2.0;
+        // Time-based x-axis: milliseconds since the first sample in the window.
+        let t0 = subset.first().map_or(0, |o| o.timestamp_ms);
+        let mean_x: f64 = subset.iter().map(|o| (o.timestamp_ms - t0) as f64).sum::<f64>()
+            / subset.len() as f64;
         let mean_y: f64 = subset.iter().map(|o| o.passenger_count).sum::<f64>() / subset.len() as f64;
 
         let mut num = 0.0_f64;
         let mut den = 0.0_f64;
-        for (i, ob) in subset.iter().enumerate() {
-            let dx = i as f64 - mean_x;
+        for ob in subset {
+            let dx = (ob.timestamp_ms - t0) as f64 - mean_x;
             let dy = ob.passenger_count - mean_y;
             num += dx * dy;
             den += dx * dx;
@@ -15452,12 +15474,25 @@ mod demand_forecaster {
                 _ => {
                     // No data — use synthetic estimate based on zone and interchange
                     let base = f64::from(st.zone).mul_add(50.0, 100.0);
-                    if st.is_interchange { base * 1.5 } else { base };
+                    let estimate = if st.is_interchange { base * 1.5 } else { base };
+                    results.push(StationForecast {
+                        station_id: st.id.clone(),
+                        station_name: st.name.clone(),
+                        current_demand: estimate,
+                        predicted_30min: estimate,
+                        predicted_60min: estimate,
+                        trend: "unknown".to_string(),
+                        confidence: 0.0,
+                    });
                     continue;
                 }
             };
 
-            let (slope, base) = linear_trend(obs, lookback_minutes);
+            let (slope, base) = linear_trend(obs, lookback_minutes, station_id);
+            log_trace(&format!(
+                "forecast_all({station_id}) - {} observations, slope={slope:.4}, base={base:.2}",
+                obs.len()
+            ));
             let current = obs.last().unwrap().passenger_count;
             let pred_30 = slope.mul_add(obs.len() as f64 + 30.0, base).max(0.0);
             let pred_60 = slope.mul_add(obs.len() as f64 + 60.0, base).max(0.0);
@@ -20887,7 +20922,7 @@ mod signal_priority {
 // ============================================================================
 // STATION CAPACITY FORECAST - Predict future capacity needs
 // ============================================================================
-mod capacity_forecast {
+pub(crate) mod capacity_forecast {
     use crate::logger::log_info;
     use crate::primitives::Station;
     use serde::{Deserialize, Serialize};
@@ -20944,7 +20979,7 @@ mod capacity_forecast {
     }
 }
 
-    mod ui {
+    pub(crate) mod ui {
 
     pub fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
 
@@ -24962,7 +24997,6 @@ while (true) {
 
         /// Separate client with a 5-minute timeout for CPU-heavy endpoints
         /// (AI station planning, coverage stats, transit deserts).
-
         pub static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
             std::sync::OnceLock::new();
 
@@ -25102,7 +25136,7 @@ while (true) {
         }
     }
 
-    mod leaflet {
+    pub(crate) mod leaflet {
         use super::get_api_base;
         use super::styles::CONSOLIDATED_UI_STYLES;
         use crate::logger::{log_debug, log_info, log_error};
@@ -25384,7 +25418,6 @@ window.__consoleDupCount = 0;
 
         /// Analytics dashboard panel showing network statistics
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AnalyticsPanel() -> Element {
             let analytics = use_signal(|| String::from("Loading..."));
@@ -25427,7 +25460,6 @@ window.__consoleDupCount = 0;
 
         /// Eco routing panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EcoPanel() -> Element {
             let mut from = use_signal(String::new);
@@ -25486,7 +25518,6 @@ window.__consoleDupCount = 0;
 
         /// Accessibility panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AccessibilityPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -25537,7 +25568,6 @@ window.__consoleDupCount = 0;
 
         /// Delay predictions panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DelayPredictionsPanel() -> Element {
             let result = use_signal(|| String::from("Loading..."));
@@ -25580,7 +25610,6 @@ window.__consoleDupCount = 0;
 
         /// `TfL` Live Status panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn TfLStatusPanel() -> Element {
             let result = use_signal(String::new);
@@ -25623,7 +25652,6 @@ window.__consoleDupCount = 0;
 
         /// Historical timeline panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn HistoryPanel() -> Element {
             let result = use_signal(String::new);
@@ -25666,7 +25694,6 @@ window.__consoleDupCount = 0;
 
         /// Parking availability panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ParkingPanel() -> Element {
             let mut station_id = use_signal(String::new);
@@ -25717,7 +25744,6 @@ window.__consoleDupCount = 0;
 
         /// `MaaS` (Mobility as a Service) panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn MaaSPanel() -> Element {
             let providers = use_signal(|| String::from("Loading..."));
@@ -25754,7 +25780,6 @@ window.__consoleDupCount = 0;
 
         /// Noise monitoring panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NoisePanel() -> Element {
             let noise = use_signal(|| String::from("Loading..."));
@@ -25791,7 +25816,6 @@ window.__consoleDupCount = 0;
 
         /// Air quality panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn AirQualityPanel() -> Element {
             let air = use_signal(|| String::from("Loading..."));
@@ -25828,7 +25852,6 @@ window.__consoleDupCount = 0;
 
         /// Crowd density panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn CrowdDensityPanel() -> Element {
             let crowd = use_signal(|| String::from("Loading..."));
@@ -25865,7 +25888,6 @@ window.__consoleDupCount = 0;
 
         /// Energy grid panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn EnergyPanel() -> Element {
             let energy = use_signal(|| String::from("Loading..."));
@@ -25902,7 +25924,6 @@ window.__consoleDupCount = 0;
 
         /// Night tube panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn NightTubePanel() -> Element {
             let night = use_signal(|| String::from("Loading..."));
@@ -25939,7 +25960,6 @@ window.__consoleDupCount = 0;
 
         /// Construction tracker panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ConstructionPanel() -> Element {
             let construction = use_signal(|| String::from("Loading..."));
@@ -25976,7 +25996,6 @@ window.__consoleDupCount = 0;
 
         /// Departure board panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn DepartureBoardPanel() -> Element {
             let departures = use_signal(|| String::from("Loading..."));
@@ -26013,7 +26032,6 @@ window.__consoleDupCount = 0;
 
         /// Service alerts panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn ServiceAlertsPanel() -> Element {
             let alerts = use_signal(|| String::from("Loading..."));
@@ -26050,7 +26068,6 @@ window.__consoleDupCount = 0;
 
         /// Photo gallery panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn PhotoGalleryPanel() -> Element {
             let photos = use_signal(|| String::from("Loading..."));
@@ -26087,7 +26104,6 @@ window.__consoleDupCount = 0;
 
         /// `WiFi` speed panel
         #[cfg(feature = "desktop")]
-
         #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
         pub fn WifiSpeedPanel() -> Element {
             let speeds = use_signal(|| String::from("Loading..."));
@@ -26338,7 +26354,7 @@ window.__consoleDupCount = 0;
             dioxus::desktop::Config::new()
                 .with_data_directory(local_profile_dir)
                 .with_window(window)
-                .with_custom_head(build_webview_head(api_base))
+                .with_custom_head(super::leaflet::build_webview_head(api_base))
                 .with_custom_protocol("tube".to_owned(), move |request| {
                     // tube:// custom protocol: serves real data to the WebView instead
                     // of an empty 200. Supported paths:
@@ -26403,7 +26419,7 @@ window.__consoleDupCount = 0;
     }
 
     #[cfg(feature = "desktop")]
-    mod components {
+    pub(crate) mod components {
         use super::api_client::{fetch_api, get_api, post_api, post_api_slow};
         use super::js::{scroll_to_bottom_query_js, build_copy_log_js, CLIPBOARD_JS, MAP_INIT_JS, MAP_LOOP_JS, call_window_js_with_json_arg, call_window_js_with_json_and_string, set_cursor_js, call_window_js, call_window_js_with_arg, focus_element_js, map_set_view_js, draw_isochrone_js, set_sat_provider_js};
         use super::leaflet::{AnalyticsPanel, EcoPanel, AccessibilityPanel, DelayPredictionsPanel, TfLStatusPanel, HistoryPanel, ParkingPanel, MaaSPanel, NoisePanel, AirQualityPanel, CrowdDensityPanel, EnergyPanel, NightTubePanel, ConstructionPanel, DepartureBoardPanel, ServiceAlertsPanel, PhotoGalleryPanel, WifiSpeedPanel, CrowdPredictionPanel, AccessibilityAuditEnhPanel, EnergyOptimizationPanel, SignalPriorityPanel, CapacityForecastPanel};

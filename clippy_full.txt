@@ -1,0 +1,670 @@
+warning: empty line after doc comment
+     --> src\main.rs:24964:9
+      |
+24964 | /         /// (AI station planning, coverage stats, transit deserts).
+24965 | |
+      | |_^
+24966 |           pub static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
+      |           -------------------------- the comment documents this static item
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_doc_comments
+      = note: `#[warn(clippy::empty_line_after_doc_comments)]` on by default
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25386:9
+      |
+25386 | /         #[cfg(feature = "desktop")]
+25387 | |
+      | |_^
+25388 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25389 |           pub fn AnalyticsPanel() -> Element {
+      |           --------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = note: `#[warn(clippy::empty_line_after_outer_attr)]` on by default
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25429:9
+      |
+25429 | /         #[cfg(feature = "desktop")]
+25430 | |
+      | |_^
+25431 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25432 |           pub fn EcoPanel() -> Element {
+      |           --------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25488:9
+      |
+25488 | /         #[cfg(feature = "desktop")]
+25489 | |
+      | |_^
+25490 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25491 |           pub fn AccessibilityPanel() -> Element {
+      |           ------------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25539:9
+      |
+25539 | /         #[cfg(feature = "desktop")]
+25540 | |
+      | |_^
+25541 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25542 |           pub fn DelayPredictionsPanel() -> Element {
+      |           ---------------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25582:9
+      |
+25582 | /         #[cfg(feature = "desktop")]
+25583 | |
+      | |_^
+25584 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25585 |           pub fn TfLStatusPanel() -> Element {
+      |           --------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25625:9
+      |
+25625 | /         #[cfg(feature = "desktop")]
+25626 | |
+      | |_^
+25627 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25628 |           pub fn HistoryPanel() -> Element {
+      |           ------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25668:9
+      |
+25668 | /         #[cfg(feature = "desktop")]
+25669 | |
+      | |_^
+25670 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25671 |           pub fn ParkingPanel() -> Element {
+      |           ------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25719:9
+      |
+25719 | /         #[cfg(feature = "desktop")]
+25720 | |
+      | |_^
+25721 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25722 |           pub fn MaaSPanel() -> Element {
+      |           ---------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25756:9
+      |
+25756 | /         #[cfg(feature = "desktop")]
+25757 | |
+      | |_^
+25758 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25759 |           pub fn NoisePanel() -> Element {
+      |           ----------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25793:9
+      |
+25793 | /         #[cfg(feature = "desktop")]
+25794 | |
+      | |_^
+25795 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25796 |           pub fn AirQualityPanel() -> Element {
+      |           ---------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25830:9
+      |
+25830 | /         #[cfg(feature = "desktop")]
+25831 | |
+      | |_^
+25832 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25833 |           pub fn CrowdDensityPanel() -> Element {
+      |           ------------------------ the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25867:9
+      |
+25867 | /         #[cfg(feature = "desktop")]
+25868 | |
+      | |_^
+25869 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25870 |           pub fn EnergyPanel() -> Element {
+      |           ------------------ the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25904:9
+      |
+25904 | /         #[cfg(feature = "desktop")]
+25905 | |
+      | |_^
+25906 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25907 |           pub fn NightTubePanel() -> Element {
+      |           --------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25941:9
+      |
+25941 | /         #[cfg(feature = "desktop")]
+25942 | |
+      | |_^
+25943 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25944 |           pub fn ConstructionPanel() -> Element {
+      |           ------------------------ the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:25978:9
+      |
+25978 | /         #[cfg(feature = "desktop")]
+25979 | |
+      | |_^
+25980 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+25981 |           pub fn DepartureBoardPanel() -> Element {
+      |           -------------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:26015:9
+      |
+26015 | /         #[cfg(feature = "desktop")]
+26016 | |
+      | |_^
+26017 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+26018 |           pub fn ServiceAlertsPanel() -> Element {
+      |           ------------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:26052:9
+      |
+26052 | /         #[cfg(feature = "desktop")]
+26053 | |
+      | |_^
+26054 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+26055 |           pub fn PhotoGalleryPanel() -> Element {
+      |           ------------------------ the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: empty line after outer attribute
+     --> src\main.rs:26089:9
+      |
+26089 | /         #[cfg(feature = "desktop")]
+26090 | |
+      | |_^
+26091 |           #[expect(non_snake_case, reason = "Dioxus component requires CamelCase")]
+26092 |           pub fn WifiSpeedPanel() -> Element {
+      |           --------------------- the attribute applies to this function
+      |
+      = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#empty_line_after_outer_attr
+      = help: if the empty line is unintentional, remove it
+System.Management.Automation.RemoteException
+warning: associated function `get_api_base` is never used
+   --> src\main.rs:603:23
+    |
+590 |     impl Globals {
+    |     ------------ associated function in this implementation
+...
+603 |         pub(crate) fn get_api_base() -> String {
+    |                       ^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+System.Management.Automation.RemoteException
+warning: function `roundel_svg_for_line` is never used
+    --> src\main.rs:6045:12
+     |
+6045 |     pub fn roundel_svg_for_line(line_id: &str) -> Option<String> {
+     |            ^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `compute_stats` is never used
+    --> src\main.rs:6085:12
+     |
+6085 |     pub fn compute_stats() -> NetworkStatsResponse { NetworkStatsResponse::default() }
+     |            ^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_weather_handler` is never used
+     --> src\main.rs:12190:22
+      |
+12190 |         pub async fn get_weather_handler(
+      |                      ^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_network_stats_handler` is never used
+     --> src\main.rs:12222:22
+      |
+12222 |         pub async fn get_network_stats_handler() -> Json<ApiResponse<crate::network::NetworkStatsResponse>> {
+      |                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_construction_handler` is never used
+     --> src\main.rs:12370:22
+      |
+12370 |         pub async fn get_construction_handler() -> Json<ApiResponse<Vec<crate::construction_tracker::ConstructionProject>>> {
+      |                      ^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: field `mmap` is never read
+     --> src\main.rs:13067:24
+      |
+13061 |         pub struct MmapCacheStore {
+      |                    -------------- field in this struct
+...
+13067 |             pub(crate) mmap: memmap2::Mmap,
+      |                        ^^^^
+System.Management.Automation.RemoteException
+warning: function `get_active_disruptions` is never used
+     --> src\main.rs:15231:18
+      |
+15231 |     pub const fn get_active_disruptions() -> Vec<Disruption> { vec![] }
+      |                  ^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: fields `station_id` and `timestamp_ms` are never read
+     --> src\main.rs:15376:20
+      |
+15374 |     pub struct DemandObservation {
+      |                ----------------- fields in this struct
+15375 |     
+15376 |         pub(crate) station_id: String,
+      |                    ^^^^^^^^^^
+15377 |     
+15378 |         pub(crate) timestamp_ms: i64,
+      |                    ^^^^^^^^^^^^
+      |
+      = note: `DemandObservation` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+System.Management.Automation.RemoteException
+warning: type alias `WeatherSnapshot` is never used
+     --> src\main.rs:17518:14
+      |
+17518 |     pub type WeatherSnapshot = String;
+      |              ^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_weather` is never used
+     --> src\main.rs:17519:18
+      |
+17519 |     pub const fn get_weather(_lat: f64, _lon: f64) -> WeatherSnapshot { String::new() }
+      |                  ^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_projects` is never used
+     --> src\main.rs:20107:12
+      |
+20107 |     pub fn get_projects() -> Vec<ConstructionProject> {
+      |            ^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_api_base` is never used
+     --> src\main.rs:20949:12
+      |
+20949 |     pub fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
+      |            ^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `CONSOLIDATED_UI_STYLES` is never used
+     --> src\main.rs:21347:20
+      |
+21347 |         pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> =
+      |                    ^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `copy_to_clipboard_js` is never used
+     --> src\main.rs:21370:16
+      |
+21370 |         pub fn copy_to_clipboard_js(text: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `build_copy_log_js` is never used
+     --> src\main.rs:21392:16
+      |
+21392 |         pub fn build_copy_log_js(text: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `scroll_to_bottom_query_js` is never used
+     --> src\main.rs:21398:16
+      |
+21398 |         pub fn scroll_to_bottom_query_js(selector: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `set_cursor_js` is never used
+     --> src\main.rs:21414:16
+      |
+21414 |         pub fn set_cursor_js(cursor: &str) -> String {
+      |                ^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `call_window_js` is never used
+     --> src\main.rs:21420:16
+      |
+21420 |         pub fn call_window_js(func: &str) -> String {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `call_window_js_with_arg` is never used
+     --> src\main.rs:21426:16
+      |
+21426 |         pub fn call_window_js_with_arg(func: &str, arg: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `focus_element_js` is never used
+     --> src\main.rs:21432:16
+      |
+21432 |         pub fn focus_element_js(selector: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `call_window_js_with_json_arg` is never used
+     --> src\main.rs:21440:16
+      |
+21440 |         pub fn call_window_js_with_json_arg(func: &str, json_arg: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `call_window_js_with_json_and_string` is never used
+     --> src\main.rs:21446:16
+      |
+21446 |         pub fn call_window_js_with_json_and_string(
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `map_set_view_js` is never used
+     --> src\main.rs:21456:16
+      |
+21456 |         pub fn map_set_view_js(lat: f64, lon: f64, zoom: i32) -> String {
+      |                ^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `set_sat_provider_js` is never used
+     --> src\main.rs:21464:16
+      |
+21464 |         pub fn set_sat_provider_js(idx: i32) -> String {
+      |                ^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `draw_isochrone_js` is never used
+     --> src\main.rs:21472:16
+      |
+21472 |         pub fn draw_isochrone_js(poly_json: &str, stations_json: &str, mins: i32) -> String {
+      |                ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `CLIPBOARD_JS` is never used
+     --> src\main.rs:21503:20
+      |
+21503 |         pub static CLIPBOARD_JS: &str = r#"
+      |                    ^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `MAP_INIT_JS` is never used
+     --> src\main.rs:21573:20
+      |
+21573 |         pub static MAP_INIT_JS: &str = r#"
+      |                    ^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `MAP_LOOP_JS` is never used
+     --> src\main.rs:24582:20
+      |
+24582 |         pub static MAP_LOOP_JS: &str = r#"
+      |                    ^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `API_CLIENT` is never used
+     --> src\main.rs:24942:20
+      |
+24942 |         pub static API_CLIENT: std::sync::OnceLock<reqwest::Client> =
+      |                    ^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_api_client` is never used
+     --> src\main.rs:24953:16
+      |
+24953 |         pub fn get_api_client() -> &'static reqwest::Client {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `API_CLIENT_SLOW` is never used
+     --> src\main.rs:24966:20
+      |
+24966 |         pub static API_CLIENT_SLOW: std::sync::OnceLock<reqwest::Client> =
+      |                    ^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_api_client_slow` is never used
+     --> src\main.rs:24969:16
+      |
+24969 |         pub fn get_api_client_slow() -> &'static reqwest::Client {
+      |                ^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `post_api_slow` is never used
+     --> src\main.rs:24980:22
+      |
+24980 |         pub async fn post_api_slow<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
+      |                      ^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `fetch_api` is never used
+     --> src\main.rs:25012:22
+      |
+25012 |         pub async fn fetch_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
+      |                      ^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `post_api` is never used
+     --> src\main.rs:25042:22
+      |
+25042 |         pub async fn post_api<REQ: serde::Serialize, T: serde::de::DeserializeOwned>(
+      |                      ^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `get_api` is never used
+     --> src\main.rs:25075:22
+      |
+25075 |         pub async fn get_api<T: serde::de::DeserializeOwned>(url: &str) -> Option<T> {
+      |                      ^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `LEAFLET_CSS` is never used
+     --> src\main.rs:25114:20
+      |
+25114 |         pub static LEAFLET_CSS: &str = include_str!("../data/leaflet.css");
+      |                    ^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: static `LEAFLET_JS` is never used
+     --> src\main.rs:25117:20
+      |
+25117 |         pub static LEAFLET_JS: &str = include_str!("../data/leaflet.js");
+      |                    ^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `build_webview_head` is never used
+     --> src\main.rs:25130:16
+      |
+25130 |         pub fn build_webview_head(api_base: &str) -> String {
+      |                ^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `AnalyticsPanel` is never used
+     --> src\main.rs:25389:16
+      |
+25389 |         pub fn AnalyticsPanel() -> Element {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `EcoPanel` is never used
+     --> src\main.rs:25432:16
+      |
+25432 |         pub fn EcoPanel() -> Element {
+      |                ^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `AccessibilityPanel` is never used
+     --> src\main.rs:25491:16
+      |
+25491 |         pub fn AccessibilityPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `DelayPredictionsPanel` is never used
+     --> src\main.rs:25542:16
+      |
+25542 |         pub fn DelayPredictionsPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `TfLStatusPanel` is never used
+     --> src\main.rs:25585:16
+      |
+25585 |         pub fn TfLStatusPanel() -> Element {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `HistoryPanel` is never used
+     --> src\main.rs:25628:16
+      |
+25628 |         pub fn HistoryPanel() -> Element {
+      |                ^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `ParkingPanel` is never used
+     --> src\main.rs:25671:16
+      |
+25671 |         pub fn ParkingPanel() -> Element {
+      |                ^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `MaaSPanel` is never used
+     --> src\main.rs:25722:16
+      |
+25722 |         pub fn MaaSPanel() -> Element {
+      |                ^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `NoisePanel` is never used
+     --> src\main.rs:25759:16
+      |
+25759 |         pub fn NoisePanel() -> Element {
+      |                ^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `AirQualityPanel` is never used
+     --> src\main.rs:25796:16
+      |
+25796 |         pub fn AirQualityPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `CrowdDensityPanel` is never used
+     --> src\main.rs:25833:16
+      |
+25833 |         pub fn CrowdDensityPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `EnergyPanel` is never used
+     --> src\main.rs:25870:16
+      |
+25870 |         pub fn EnergyPanel() -> Element {
+      |                ^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `NightTubePanel` is never used
+     --> src\main.rs:25907:16
+      |
+25907 |         pub fn NightTubePanel() -> Element {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `ConstructionPanel` is never used
+     --> src\main.rs:25944:16
+      |
+25944 |         pub fn ConstructionPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `DepartureBoardPanel` is never used
+     --> src\main.rs:25981:16
+      |
+25981 |         pub fn DepartureBoardPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `ServiceAlertsPanel` is never used
+     --> src\main.rs:26018:16
+      |
+26018 |         pub fn ServiceAlertsPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `PhotoGalleryPanel` is never used
+     --> src\main.rs:26055:16
+      |
+26055 |         pub fn PhotoGalleryPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `WifiSpeedPanel` is never used
+     --> src\main.rs:26092:16
+      |
+26092 |         pub fn WifiSpeedPanel() -> Element {
+      |                ^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `CrowdPredictionPanel` is never used
+     --> src\main.rs:26128:16
+      |
+26128 |         pub fn CrowdPredictionPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `AccessibilityAuditEnhPanel` is never used
+     --> src\main.rs:26164:16
+      |
+26164 |         pub fn AccessibilityAuditEnhPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `EnergyOptimizationPanel` is never used
+     --> src\main.rs:26200:16
+      |
+26200 |         pub fn EnergyOptimizationPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `SignalPriorityPanel` is never used
+     --> src\main.rs:26236:16
+      |
+26236 |         pub fn SignalPriorityPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `CapacityForecastPanel` is never used
+     --> src\main.rs:26272:16
+      |
+26272 |         pub fn CapacityForecastPanel() -> Element {
+      |                ^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `build_desktop_window_configuration` is never used
+     --> src\main.rs:26312:16
+      |
+26312 |         pub fn build_desktop_window_configuration(api_base: &str) -> dioxus::desktop::Config {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `show_toast` is never used
+     --> src\main.rs:26439:16
+      |
+26439 |         pub fn show_toast(
+      |                ^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `build_console_window_configuration` is never used
+     --> src\main.rs:26469:16
+      |
+26469 |         pub fn build_console_window_configuration() -> dioxus::desktop::Config {
+      |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+System.Management.Automation.RemoteException
+warning: function `app` is never used
+     --> src\main.rs:26757:16
+      |
+26757 |         pub fn app() -> Element {
+      |                ^^^
+System.Management.Automation.RemoteException
+warning: `alexs-tube-v` (bin "alexs-tube-v") generated 86 warnings
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.90s
+warning: the following packages contain code that will be rejected by a future version of Rust: alexs-tube-v v1.0.0 (C:\Projects\alex tube V)
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 3`
