@@ -365,23 +365,23 @@ where
 
 /// Validate a TfL-style line ID. Line IDs are lowercase alphanumeric with hyphens.
 fn validate_line_id(id: &str) -> AppResult<()> {
-    if id.is_empty() || id.len() > 100 {
+    if id.is_empty() || id.len() > 120 {
         log_debug(&format!(
             "validate_line_id - rejected: empty or too long (len={})",
             id.len()
         ));
         return Err(AppError::Validation(
-            "Line ID must be 1-100 characters".into(),
+            "Line ID must be 1-120 characters".into(),
         ));
     }
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         // Security: do not reflect raw user input in logs (log injection) or error messages (stored XSS)
         log_debug(&format!(
             "validate_line_id - rejected: invalid chars in input (len={})",
             id.len()
         ));
         return Err(AppError::Validation(
-            "Line ID contains invalid characters (only alphanumeric and hyphens allowed)".into(),
+            "Line ID contains invalid characters (only alphanumeric, hyphens and underscores allowed)".into(),
         ));
     }
     Ok(())
@@ -1422,7 +1422,7 @@ mod config {
                 ],
                 max_astar_iterations: 50_000,
                 interchange_penalty_min: 3.5,
-                parallel_offset_m: 80.0,
+                parallel_offset_m: 120.0,
                 catchment_radius_m: 800.0,
                 walk_speed_m_per_min: 80.0,
                 rail_speed_m_per_min: 550.0,
@@ -6062,7 +6062,7 @@ out body;"#
             "dlr" => "ROUNDEL_DLR",
             "tramlink" => "ROUNDEL_TRAMLINK",
             "underground" => "ROUNDEL_UNDERGROUND",
-            "overground" | "london overground" => "ROUNDEL_OVERGROUND",
+            "overground" | "london overground" | "liberty" | "lioness" | "mildmay" | "suffragette" | "weaver" | "windrush" => "ROUNDEL_OVERGROUND",
             "national-rail" | "national rail" => "ROUNDEL_NATIONAL_RAIL",
             "emirates-airline" | "emirates" | "airline" => "ROUNDEL_EMIRATES_AIRLINE",
             _ => return None,
@@ -8899,7 +8899,7 @@ mod server {
         /// and the Dioxus-free UI overlay. This is served at `/` for browser clients.
         /// The JS already has `window.dioxus` fallback, so it works without Dioxus IPC.
         pub fn build_webapp_html() -> String {
-            let head = crate::ui::build_webview_head("");
+            let head = crate::ui::leaflet::build_webview_head("");
             format!(
                 r#"<!DOCTYPE html>
 <html lang="en-GB">
@@ -20983,8 +20983,6 @@ pub(crate) mod capacity_forecast {
 
     pub fn get_api_base() -> String { crate::logger::Globals::get_api_base() }
 
-    pub const fn build_webview_head(_api_base: &str) -> String { String::new() }
-
     mod styles {
         // #[rustfmt::skip] — prevent formatter from parsing the massive CSS string
         // #[cfg(not(clippy))] — exclude 330-line CSS blob from clippy analysis to reduce linter churn
@@ -21148,8 +21146,9 @@ pub static CONSOLIDATED_UI_STYLES: std::sync::LazyLock<String> = std::sync::Lazy
   z-index:99999;padding:10px 24px;background:var(--color-primary);color:#000;
   font-weight:800;font-size:14px;border-radius:0 0 8px 8px;
   text-decoration:none;transition:top .2s ease;
+  display:none !important;visibility:hidden !important;pointer-events:none !important;
 }
-.skip-link:focus{top:0;}
+.skip-link:focus{top:-100% !important;display:none !important;visibility:hidden !important;}
 
 /* --- Focus-Visible Rings ---
    Every interactive element gets a high-contrast cyan ring when
@@ -21976,15 +21975,20 @@ window.initMap = async function() {
         window.map = L.map('map-viewport', {
             zoomControl: false,
             bounceAtZoomLimits: false,
-            wheelDebounceTime: 40,
-            zoomAnimation: true,
-            fadeAnimation: true,
+            wheelDebounceTime: 80,
+            zoomAnimation: false,
+            fadeAnimation: false,
             markerZoomAnimation: false,
             inertia: true,
             inertiaDeceleration: 3000,
             inertiaMaxSpeed: 1500,
             easeLinearity: 0.25,
-            worldCopyJump: false
+            worldCopyJump: false,
+            preferCanvas: true,
+            zoomSnap: 0.5,
+            wheelPxPerZoomLevel: 120,
+            maxZoom: 18,
+            minZoom: 9
         }).setView([51.5074, -0.1278], 12);
 
         window.map.invalidateSize();
@@ -23224,7 +23228,7 @@ window.initMap = async function() {
                 'snaefell-mountain-railway': 'snaefellmountainrailway.jpg',
                 'imrc-crest': 'IMRC-Crest.png'
             };
-            var renderSize = 64;
+            var renderSize = 96;
             var promises = [];
             for (var cat in categories) {
                 var val = categories[cat];
@@ -23652,17 +23656,17 @@ window.initMap = async function() {
 
                 var zoom = this._map.getZoom();
                 var stSize;
-                if (zoom >= 18) stSize = 76;
-                else if (zoom >= 17) stSize = 62;
-                else if (zoom >= 16) stSize = 50;
-                else if (zoom >= 15) stSize = 38;
-                else if (zoom >= 14) stSize = 28;
-                else if (zoom >= 13) stSize = 20;
-                else if (zoom >= 12) stSize = 14;
-                else if (zoom >= 11) stSize = 10;
-                else if (zoom >= 10) stSize = 8;
-                else if (zoom >= 9) stSize = 6;
-                else stSize = 4;
+                if (zoom >= 18) stSize = 120;
+                else if (zoom >= 17) stSize = 100;
+                else if (zoom >= 16) stSize = 80;
+                else if (zoom >= 15) stSize = 60;
+                else if (zoom >= 14) stSize = 46;
+                else if (zoom >= 13) stSize = 32;
+                else if (zoom >= 12) stSize = 24;
+                else if (zoom >= 11) stSize = 17;
+                else if (zoom >= 10) stSize = 13;
+                else if (zoom >= 9) stSize = 10;
+                else stSize = 8;
                 var half = stSize / 2;
                 var colors = { 
                     underground: '#E32017', 
@@ -23812,7 +23816,7 @@ window.initMap = async function() {
                         ctx.arc(drawX, drawY, half * 0.7 + 1.5, 0, Math.PI * 2);
                         ctx.fillStyle = '#000000';
                         ctx.fill();
-                        
+
                         ctx.beginPath();
                         ctx.arc(drawX, drawY, half * 0.7, 0, Math.PI * 2);
                         ctx.fillStyle = '#12141a';
@@ -23826,20 +23830,10 @@ window.initMap = async function() {
                         ctx.fill();
                         this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
                     } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && (!window._roundelImages['national-rail'] || !window._roundelImagesReady) && this.nrLogo.complete) {
-                        ctx.beginPath();
-                        ctx.arc(drawX, drawY, half + 1.5, 0, Math.PI * 2);
-                        ctx.fillStyle = '#000000';
-                        ctx.fill();
-
                         ctx.drawImage(this.nrLogo, drawX - half, drawY - half, stSize, stSize);
                         this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
                     } else {
                         var img = window._roundelImages[st.category];
-                        ctx.beginPath();
-                        ctx.arc(drawX, drawY, half + 1.5, 0, Math.PI * 2);
-                        ctx.fillStyle = '#000000';
-                        ctx.fill();
-
                         if (img && window._roundelImagesReady) {
                             ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
                         } else {
@@ -23998,28 +23992,6 @@ window.initMap = async function() {
             var stationCircleCount = 0;
             var desertErrors = 0;
 
-            // Green circles for stations in view (coverage context) - limit to avoid FPS drop
-            if (window.allStations && window.allStations.length && window._roundelImagesReady) {
-                var stationCircleLimit = 0;
-                for (var si = 0; si < window.allStations.length && stationCircleLimit < 200; si++) {
-                    var stData = window.allStations[si];
-                    if (!stData || !stData.coord) continue;
-                    var stLatLng = [stData.coord.lat, stData.coord.lon];
-                    if (mapBounds.contains(stLatLng)) {
-                        try {
-                            L.circle(stLatLng, {
-                                color: '#00e676', fillColor: '#00e676',
-                                fillOpacity: 0.06, radius: 800,
-                                weight: 1.5, opacity: 0.35, dashArray: '4 4',
-                                pane: 'deserts', interactive: false
-                            }).addTo(window.coverageLayerGroup);
-                            stationCircleCount++;
-                            stationCircleLimit++;
-                        } catch(ex) { console.error('[DESERT][RENDER] station circle error', ex); }
-                    }
-                }
-            }
-
             // Red polygons combined into one GeoJSON FeatureCollection
             var geojsonFeatures = [];
             for (var i = 0; i < window.activeDeserts.length; i++) {
@@ -24094,7 +24066,7 @@ window.initMap = async function() {
 
             var elapsed = (performance.now() - t0).toFixed(1);
             console.log('[DESERT][RENDER] GeoJSON Complete: ' + visibleCount + ' red polygons, ' +
-                stationCircleCount + ' green circles, ' + skippedOutOfBounds + ' out-of-bounds, ' +
+                skippedOutOfBounds + ' out-of-bounds, ' +
                 desertErrors + ' errors, time=' + elapsed + 'ms');
         };
 
@@ -24425,6 +24397,46 @@ window.initMap = async function() {
             if (window.journeyLayer) { try { window.map.removeLayer(window.journeyLayer); } catch(e){} window.journeyLayer = null; }
         };
 
+        // Zoom to a specific line and highlight it on the map
+        window.focusOnLine = function(lineId) {
+            var entry = window.lineLayers ? window.lineLayers[lineId] : null;
+            if (!entry || !entry.polys || entry.polys.length === 0) {
+                console.warn('[focusOnLine] No geometry found for line:', lineId);
+                return;
+            }
+            // Collect allLatLngs from all polylines of this line
+            var allLatLngs = [];
+            entry.polys.forEach(function(poly) {
+                try {
+                    var ll = poly.getLatLngs();
+                    function flatten(arr) {
+                        for (var i = 0; i < arr.length; i++) {
+                            if (Array.isArray(arr[i])) flatten(arr[i]);
+                            else allLatLngs.push(arr[i]);
+                        }
+                    }
+                    flatten(ll);
+                } catch(e) {}
+            });
+            if (allLatLngs.length === 0) return;
+            // Bring line to top of layer stack (higher z-index)
+            entry.polys.forEach(function(poly) {
+                try { poly.bringToFront(); } catch(e) {}
+            });
+            // Zoom to fit the line's bounds
+            var bounds = L.latLngBounds(allLatLngs);
+            window.map.fitBounds(bounds, { padding: [60, 60], animate: true, duration: 0.8 });
+            // Draw a temporary highlight polyline on top
+            if (window._lineHighlight) { try { window.map.removeLayer(window._lineHighlight); } catch(e){} }
+            window._lineHighlight = L.polyline(allLatLngs, {
+                color: '#ffff00', weight: 7, opacity: 0.8, lineJoin: 'round', dashArray: '8, 8', interactive: false
+            }).addTo(window.map);
+            // Auto-remove highlight after 3 seconds
+            setTimeout(function() {
+                if (window._lineHighlight) { try { window.map.removeLayer(window._lineHighlight); } catch(e){} window._lineHighlight = null; }
+            }, 3000);
+        };
+
         window.drawIsochrone = function(polygonLatLngs, stationsData, minutes) {
             if (window.isoLayer) { try { window.map.removeLayer(window.isoLayer); } catch(e){} window.isoLayer = null; }
             if (window.isoStationMarkers) { window.isoStationMarkers.clearLayers(); } else { window.isoStationMarkers = L.layerGroup().addTo(window.map); }
@@ -24676,22 +24688,18 @@ function offsetCoords(coords, offsetM) {
 
 // Check if two polylines share a segment (have overlapping coordinates anywhere)
 function linesShareSegment(coordsA, coordsB, thresholdDeg) {
-    // thresholdDeg: approximate degree threshold for "same point"
-    const thr = thresholdDeg || 0.0005; // ~50 meters
+    const thr = thresholdDeg || 0.002; // ~200 meters for better overlap detection
     // Check for 3+ consecutive shared points anywhere in the lines
     let maxConsecutive = 0;
     let currentConsecutive = 0;
-    // Use the shorter line as the reference for comparison
     const shorter = coordsA.length < coordsB.length ? coordsA : coordsB;
     const longer = coordsA.length < coordsB.length ? coordsB : coordsA;
     
-    // For each point in the shorter line, find matching points in the longer line
     for (let i = 0; i < shorter.length; i++) {
         const a = shorter[i];
         if (!a) continue;
         let foundMatch = false;
-        // Check nearby indices in the longer line (shared segments are usually contiguous)
-        for (let j = Math.max(0, i - 5); j < Math.min(longer.length, i + 20); j++) {
+        for (let j = Math.max(0, i - 10); j < Math.min(longer.length, i + 30); j++) {
             const b = longer[j];
             if (b && Math.abs(a[0] - b[0]) < thr && Math.abs(a[1] - b[1]) < thr) {
                 foundMatch = true;
@@ -24773,7 +24781,16 @@ function computeParallelOffsets(lines) {
     }
     
     // Assign offset indices within each group: center line gets 0, others alternate ±1, ±2, etc.
+    // More sophisticated: order by total length ascending so shorter lines get offset first
     for (const group of groups) {
+        // Sort group members by line length (shorter on outside)
+        group.sort((a, b) => {
+            const lenA = (lines[a].sub_geometries && lines[a].sub_geometries.length > 0)
+                ? lines[a].sub_geometries[0].length : (lines[a].geometry ? lines[a].geometry.length : 0);
+            const lenB = (lines[b].sub_geometries && lines[b].sub_geometries.length > 0)
+                ? lines[b].sub_geometries[0].length : (lines[b].geometry ? lines[b].geometry.length : 0);
+            return lenA - lenB;
+        });
         const center = Math.floor(group.length / 2);
         for (let idx = 0; idx < group.length; idx++) {
             const lineIdx = group[idx];
@@ -24821,7 +24838,7 @@ while (true) {
             let serialized = JSON.stringify({ color: line.color, geom: line.geometry, sub: line.sub_geometries, name: line.name });
             let existing = window.lineLayers[line.id];
             let offsetIdx = parallelOffsets.get(line.id) || 0;
-            let offsetMeters = offsetIdx * 80; // meters between parallel lines (configurable via config.parallel_offset_m)
+            let offsetMeters = offsetIdx * 120; // meters between parallel lines for clear visual separation
 
             if (existing) {
                 if (existing.serialized === serialized) {
@@ -26349,7 +26366,8 @@ window.__consoleDupCount = 0;
                 .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(1280.0, 800.0))
                 .with_resizable(true)
                 .with_decorations(false)
-                .with_transparent(true); // Allows true glassmorphism blending with the map
+                .with_transparent(true) // Allows true glassmorphism blending with the map
+                .with_fullscreen(Some(dioxus::desktop::tao::window::Fullscreen::Borderless(None)));
 
             dioxus::desktop::Config::new()
                 .with_data_directory(local_profile_dir)
@@ -27954,12 +27972,11 @@ window.__consoleDupCount = 0;
                         role: "log"
                     }
 
-                    // Skip Navigation Link ÔÇö visible on Tab focus, lets keyboard users
-                    // jump past the title bar directly to the map content.
-                    a {
-                        class: "skip-link",
-                        href: "#map-viewport",
-                        "Skip to map"
+                    // Skip Navigation Link ÔÇö permanently hidden (not needed for desktop app)
+                    // Kept in DOM for screen-reader compatibility but visually removed.
+                    div {
+                        style: "display: none; visibility: hidden; pointer-events: none;",
+                        tabindex: "-1",
                     }
 
                     // Global keyboard interceptor for Cmd+K and Escape unwinding
@@ -28015,14 +28032,12 @@ window.__consoleDupCount = 0;
                     top: 0; left: 0; right: 0;
                     height: 48px;
                     z-index: 9999;
-                    background: rgba(8, 10, 14, 0.96);
-                    backdrop-filter: blur(12px);
-                    -webkit-backdrop-filter: blur(12px);
+                    background: #08080e;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     padding: 0 12px;
-                    border-bottom: 1px solid rgba(0, 188, 212, 0.25);
+                    border-bottom: 1px solid rgba(0, 188, 212, 0.35);
                     box-shadow: 0 2px 16px rgba(0, 0, 0, 0.6);
                     -webkit-app-region: drag;
                 ",
@@ -28099,6 +28114,7 @@ window.__consoleDupCount = 0;
                                 }
                                 // Edit Menu
                                 div {
+                                    class: "menu-bar-item",
                                     style: "position: relative; display: inline-block;",
                                     button {
                                         style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
@@ -28149,6 +28165,7 @@ window.__consoleDupCount = 0;
                                 }
                                 // View Menu
                                 div {
+                                    class: "menu-bar-item",
                                     style: "position: relative; display: inline-block;",
                                     button {
                                         style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
@@ -28197,6 +28214,7 @@ window.__consoleDupCount = 0;
                                 }
                                 // Tools Menu
                                 div {
+                                    class: "menu-bar-item",
                                     style: "position: relative; display: inline-block;",
                                     button {
                                         style: "background: transparent; border: none; color: rgba(255,255,255,0.6); padding: 4px 8px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; border-radius: 3px; transition: all .15s;",
@@ -28357,50 +28375,6 @@ window.__consoleDupCount = 0;
                                     }
                                 }
                             }
-                            // Spacer
-                            div {
-                                style: "flex: 1;"
-                            }
-                            // Cmd+K hint badge
-                            div {
-                                style: "background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 8px; cursor: pointer;",
-                                onclick: move |_| {
-                                    show_omnibox.set(true);
-                                    omnibox_query.set(String::new());
-                                    omnibox_results.set(Vec::new());
-                                    eval("setTimeout(function(){ var m = document.querySelector('[role=\"dialog\"]'); if(m) window.trapFocus(m); }, 150);");
-                                },
-                                span {
-                                    style: "color: rgba(255,255,255,0.4); font-size: 10px; font-family: 'JetBrains Mono', monospace;",
-                                    "Ctrl+K"
-                                }
-                            }
-                            // Window control buttons
-                            button {
-                                style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 14px;",
-                                onclick: move |_| {
-                                    // Minimize via JavaScript
-                                    eval("window.minimize();");
-                                },
-                                "\u{2014}"
-                            }
-                            button {
-                                style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 16px;",
-                                onclick: move |_| {
-                                    // Maximize/Fullscreen via JavaScript
-                                    eval("window.toggleMaximize();");
-                                },
-                                "\u{25A2}"
-                            }
-                            button {
-                                style: "background: rgba(244,67,54,0.15); border: 1px solid rgba(244,67,54,0.3); border-radius: 4px; width: 28px; height: 28px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #f44336; font-size: 12px; font-weight: bold;",
-                                onclick: move |_| {
-                                    fn quit() { std::process::exit(0); }
-                                    quit();
-                                },
-                                "\u{2717}"
-                            }
-                        }
                     }
 
                     // Cmd+K Omnibox Overlay
@@ -28912,7 +28886,7 @@ window.__consoleDupCount = 0;
                                 bounds_expanded.max_lat = bounds_expanded.max_lat.max(51.75);
                                 bounds_expanded.max_lon = bounds_expanded.max_lon.max(0.45);
 
-                                let req = AiAddStationRequest { bounds: bounds_expanded, max_stations: 0 };
+                                let req = AiAddStationRequest { bounds: bounds_expanded, max_stations: 25 };
                                 if let Some(resp) = post_api_slow::<_, AiAddStationResponse>("/api/ai/add-station", &req).await {
                                     let added = resp.stations.len();
                                     stations.with_mut(|s| s.extend(resp.stations.into_iter()));
@@ -29009,6 +28983,48 @@ window.__consoleDupCount = 0;
                 // B. Basemap Controls — integrated into header right side
                 div {
                     style: "position: relative; z-index: 2; display: flex; align-items: center; gap: 4px; margin-left: auto; -webkit-app-region: no-drag;",
+                    // Window control buttons (top-right, normal Windows style)
+                    button {
+                        style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 30px; height: 30px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 12px; transition: all 0.15s;",
+                        title: "Minimize",
+                        onclick: move |_| {
+                            eval("window.minimize();");
+                        },
+                        "\u{2014}"
+                    }
+                    button {
+                        style: "background: rgba(255,255,255,0.06); border: none; border-radius: 4px; width: 30px; height: 30px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); font-size: 14px; transition: all 0.15s;",
+                        title: "Maximize",
+                        onclick: move |_| {
+                            eval("window.toggleMaximize();");
+                        },
+                        "\u{25A2}"
+                    }
+                    button {
+                        style: "background: rgba(244,67,54,0.08); border: none; border-radius: 4px; width: 30px; height: 30px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: #f44336; font-size: 14px; transition: all 0.15s;",
+                        title: "Close",
+                        onclick: move |_| {
+                            fn quit() { std::process::exit(0); }
+                            quit();
+                        },
+                        "\u{2715}"
+                    }
+                    div { style: "width: 1px; height: 20px; background: rgba(255,255,255,0.1); margin: 0 2px;" }
+                    // Cmd+K hint badge
+                    div {
+                        style: "background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; padding: 2px 8px; cursor: pointer;",
+                        onclick: move |_| {
+                            show_omnibox.set(true);
+                            omnibox_query.set(String::new());
+                            omnibox_results.set(Vec::new());
+                            eval("setTimeout(function(){ var m = document.querySelector('[role=\"dialog\"]'); if(m) window.trapFocus(m); }, 150);");
+                        },
+                        span {
+                            style: "color: rgba(255,255,255,0.4); font-size: 10px; font-family: 'JetBrains Mono', monospace;",
+                            "Ctrl+K"
+                        }
+                    }
+                    div { style: "width: 1px; height: 20px; background: rgba(255,255,255,0.1); margin: 0 4px;" }
                     input {
                         id: "global-search",
                         placeholder: "🔍 Search stations, lines...",
@@ -30273,13 +30289,6 @@ window.__consoleDupCount = 0;
             rsx! {
                 div { id: "logger-wrapper",
                     div {
-                        id: "logger-fab",
-                        onclick: move |_| {
-                            logger_open.set(!open);
-                        },
-                        "Companion Diagnostics"
-                    }
-                    div {
                         id: "logger-panel",
                         class: "{logger_class}",
                         div {
@@ -30459,13 +30468,18 @@ window.__consoleDupCount = 0;
                         }
                     }
                 } else {
+                    // Preserve TfL station order (matches route direction, not alphabetical).
+                    let sorted_stations = line.stations.clone();
                     rsx! {
-                        details { key: "{element_id}", class: "line-dropdown", style: "margin: 6px 0; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px;",
-                            summary { style: "color: {element_color}; cursor: pointer; font-weight: bold; list-style: none; display: flex; align-items: center;",
-                                div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
-                                span { class: "legend-name", style: "flex: 1;", "{element_name}" }
+                        div { key: "{element_id}", class: "line-dropdown", style: "margin: 6px 0; background: rgba(255,255,255,0.03); border-radius: 6px; padding: 6px;",
+                            div { style: "display: flex; align-items: center;",
+                                div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color}; cursor: pointer;" }
+                                span { class: "legend-name", style: "flex: 1; color: {element_color}; font-weight: bold; cursor: pointer;", onclick: move |_| {
+                                    let line_id_js = element_id.clone();
+                                    eval(&format!("window.focusOnLine('{line_id_js}');"));
+                                }, "{element_name}" }
                                 button {
-                                    style: "background: none; border: none; color: #00bcd4; cursor: pointer; font-size: 13px;",
+                                    style: "background: rgba(0,188,212,0.12); border: 1px solid rgba(0,188,212,0.35); color: #00bcd4; cursor: pointer; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; border-radius: 4px; padding: 3px 8px; margin-right: 6px;",
                                     onclick: move |e| {
                                         e.stop_propagation();
                                         if hidden_lines.read().contains(&element_id_toggle) {
@@ -30486,8 +30500,9 @@ window.__consoleDupCount = 0;
                                     "✖"
                                 }
                             }
-                            div { class: "branch-segment", style: "padding-left: 20px; margin-top: 8px;",
-                                {line.stations.iter().enumerate().map(|(st_idx, st)| {
+                            div { style: "margin-top: 6px; padding: 4px 8px; background: rgba(0,188,212,0.06); border: 1px solid rgba(0,188,212,0.18); border-radius: 4px; font-size: 9px; color: #00bcd4; text-transform: uppercase; letter-spacing: 0.5px;", "STATIONS ▾" }
+                            div { class: "branch-segment", style: "padding-left: 12px; margin-top: 6px; max-height: 180px; overflow-y: auto;",
+                                {sorted_stations.iter().enumerate().map(|(st_idx, st)| {
                                     let st_name = st.name.clone();
                                     let lat = st.coord.lat;
                                     let lon = st.coord.lon;
@@ -30496,13 +30511,13 @@ window.__consoleDupCount = 0;
                                         button {
                                             key: "{st_idx}_{st.id}",
                                             class: "station-node-link",
-                                            style: "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;",
+                                            style: if is_interchange { "display: block; background: none; border: none; color: #ffd400; font-weight: 700; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;" } else { "display: block; background: none; border: none; color: #ddd; text-align: left; padding: 3px 0; cursor: pointer; font-size: 12px;" },
                                             onclick: move |_| {
                                                 let js = format!("window.focusOnTrackAndZoom({lat}, {lon}, []);");
                                                 eval(&js);
                                             },
                                             "{st_name}"
-                                            {is_interchange.then(|| rsx! { span { style: "color: #00bcd4; margin-left: 4px; font-size: 10px;", "⇄" } })}
+                                            {is_interchange.then(|| rsx! { span { style: "color: #ffd400; margin-left: 4px; font-size: 10px;", "⇄ interchange" } })}
                                         }
                                     }
                                 })}
@@ -30572,9 +30587,13 @@ window.__consoleDupCount = 0;
                                                 lines_sig.with_mut(|l| {
                                                     l.retain(|line| !custom_ids.contains(&line.id));
                                                 });
+                                                // Clear ALL custom/AI stations completely
                                                 if post_api::<_, bool>("/api/stations/clear", &true).await.is_some() {
                                                     stations_sig.with_mut(|s| {
-                                                        s.retain(|st| !st.id.starts_with("user_station_") && !st.id.starts_with("ai_station_"));
+                                                        s.retain(|st| {
+                                                            let id = &st.id;
+                                                            !id.starts_with("user_station_") && !id.starts_with("ai_station_") && !id.starts_with("proposed_")
+                                                        });
                                                     });
                                                 }
                                             });
@@ -30588,20 +30607,20 @@ window.__consoleDupCount = 0;
                     }
 
                     div { class: "catchment-toggle-container",
-                        div { class: "catchment-toggle-header",
-                            span { "Catchment Overlay (800m+)" }
-                            label { class: "switch",
-                                input {
-                                    r#type: "checkbox",
-                                    "aria-label": "Toggle catchment overlay 800 meter radius",
-                                    checked: *catchment_enabled.read(),
-                                    onchange: move |_| {
-                                        let current = *catchment_enabled.peek();
-                                        catchment_enabled.set(!current);
-                                    }
-                                }
-                                span { class: "slider" }
-                            }
+                        button {
+                            style: if *catchment_enabled.read() {
+                                "width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #f44336; background: rgba(244,67,54,0.18); color: #ff6b6b; font-weight: 700; font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;"
+                            } else {
+                                "width: 100%; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.04); color: #888; font-weight: 700; font-size: 11px; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px;"
+                            },
+                            onclick: move |_| {
+                                let current = *catchment_enabled.peek();
+                                catchment_enabled.set(!current);
+                            },
+                            if *catchment_enabled.read() { "● Transit Deserts: ON" } else { "○ Transit Deserts: OFF" }
+                        }
+                        div { style: "font-size: 9px; color: #666; padding: 4px 2px 0;",
+                            "Red = residential areas >800m from any station."
                         }
                     }
                 }
