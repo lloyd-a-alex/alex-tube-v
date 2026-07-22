@@ -61,6 +61,8 @@ rayon = "1.12"
 bytemuck = { version = "1.25", features = ["derive"] }
 rkyv = { version = "0.7", features = ["validation"] }
 crossbeam-channel = "0.5"
+crossbeam-utils = "0.8"
+rustc-hash = "2"
 
 # Desktop (optional, enabled by default via 'desktop' feature)
 dioxus = { version = "0.5", features = ["fullstack", "axum", "desktop"], optional = true }
@@ -78,6 +80,10 @@ shuttle-axum = { version = "0.49", optional = true }
 # Utility crates for new engine modules (occupancy, disruption, demand, etc.)
 fastrand = "2.4"
 rand = "0.8"
+
+# Memory pinning (mlock on Unix)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }

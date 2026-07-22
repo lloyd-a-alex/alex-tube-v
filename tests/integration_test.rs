@@ -229,12 +229,7 @@ impl RouteScratchpad {
     ///
     /// A `Vec<usize>` of node indices from `start` to `goal` (inclusive), or
     /// an empty `Vec` if no path was found.
-    fn astar(
-        &mut self,
-        grid: &TransitNetworkGrid,
-        start: usize,
-        goal: usize,
-    ) -> Vec<usize> {
+    fn astar(&mut self, grid: &TransitNetworkGrid, start: usize, goal: usize) -> Vec<usize> {
         let node_count = grid.node_count;
         if start >= node_count || goal >= node_count {
             return Vec::new();
@@ -280,7 +275,10 @@ impl RouteScratchpad {
                 }
                 let tentative_g = weight.mul_add(
                     1.0,
-                    self.g_cost.get(current_idx).copied().unwrap_or(f32::INFINITY),
+                    self.g_cost
+                        .get(current_idx)
+                        .copied()
+                        .unwrap_or(f32::INFINITY),
                 );
                 let current_g = self.g_cost.get(neighbour).copied().unwrap_or(f32::INFINITY);
                 if tentative_g < current_g {
@@ -413,12 +411,7 @@ impl TransitNetworkGrid {
 ///
 /// A `Vec<f32>` of length `xs.len()` where element `i` is
 /// `(xs[i] - query_x)² + (ys[i] - query_y)²`.
-fn batch_distance_squared(
-    query_x: f32,
-    query_y: f32,
-    xs: &[f32],
-    ys: &[f32],
-) -> Vec<f32> {
+fn batch_distance_squared(query_x: f32, query_y: f32, xs: &[f32], ys: &[f32]) -> Vec<f32> {
     return xs
         .iter()
         .zip(ys.iter())
@@ -502,8 +495,7 @@ fn find_stations_within_radius(
     const MERCATOR_STRETCH: f32 = 1.6094;
     let stretched = radius.mul_add(MERCATOR_STRETCH, 0.0);
     let radius_sq = stretched.mul_add(stretched, 0.0);
-    let distances =
-        batch_distance_squared(query_x, query_y, &grid.coords_x, &grid.coords_y);
+    let distances = batch_distance_squared(query_x, query_y, &grid.coords_x, &grid.coords_y);
     return distances
         .iter()
         .enumerate()
@@ -584,9 +576,16 @@ mod tests {
             !found.is_empty(),
             "Should find at least the query station itself"
         );
-        assert!(found.contains(&0), "Should contain the query station index 0");
+        assert!(
+            found.contains(&0),
+            "Should contain the query station index 0"
+        );
         let all = super::find_stations_within_radius(&grid, 0.0, 51.5, 1_000_000.0);
-        assert_eq!(all.len(), 1000, "Huge radius should capture all 1000 stations");
+        assert_eq!(
+            all.len(),
+            1000,
+            "Huge radius should capture all 1000 stations"
+        );
     }
 
     #[test]

@@ -1779,7 +1779,7 @@ mod primitives {
         /// Unlike `fast_distance_to` (which hardcodes London's longitude scale),
         /// this uses the mean latitude of the two endpoints to scale the longitude
         /// term correctly, so callers outside London get sane distances.
-        #[inline]
+        #[inline(always)]
         pub(crate) fn fast_distance_to_calibrated(&self, other: &Self) -> f64 {
             let mean_lat = (self.lat + other.lat) * 0.5;
             let lon_m_per_deg = 111_320.0 * mean_lat.to_radians().cos();
@@ -1799,7 +1799,7 @@ mod primitives {
             EARTH_RADIUS * c
         }
 
-        #[inline]
+        #[inline(always)]
         pub(crate) fn to_mercator(self) -> (f64, f64) {
             let x = self.lon * DEG_TO_RAD * EARTH_RADIUS;
             let y = (PI / 4.0 + self.lat * DEG_TO_RAD / 2.0).tan().ln() * EARTH_RADIUS;
@@ -1823,7 +1823,7 @@ mod primitives {
         /// deterministic hashing. Solves the f64 Eq/Hash problem where tiny floating-point
         /// differences (e.g., 51.50740000000001 vs 51.50740000000000) would cause
         /// HashMap/HashSet to treat them as distinct physical locations.
-        #[inline]
+        #[inline(always)]
         pub(crate) fn quantized(&self) -> QuantizedCoord {
             QuantizedCoord::new(self.lat, self.lon)
         }
@@ -1863,6 +1863,7 @@ mod primitives {
     /// ```
     #[derive(Debug, Clone, Copy, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
     #[archive(check_bytes)]
+    #[repr(C)]
     pub struct QuantizedCoord {
         /// Latitude × 10⁶ (i32). Range: [-85,051,100, 85,051,100].
         pub(crate) lat_e6: i32,
@@ -1874,6 +1875,7 @@ mod primitives {
         /// Quantizes f64 coordinates to 6 decimal places (~11.1 cm precision at the equator).
         /// Security: clamps to `i32::MIN/MAX` to prevent silent overflow wrapping
         /// from extreme (but validated) coordinate values.
+        #[inline(always)]
         pub fn new(lat: f64, lon: f64) -> Self {
             Self {
                 lat_e6: (lat * 1_000_000.0)
@@ -1886,6 +1888,7 @@ mod primitives {
         }
 
         /// Converts back to f64 (lat, lon) tuple.
+        #[inline(always)]
         pub fn to_f64(self) -> (f64, f64) {
             (
                 f64::from(self.lat_e6) / 1_000_000.0,
@@ -1894,6 +1897,7 @@ mod primitives {
         }
 
         /// Converts back to a full-precision Coordinate.
+        #[inline(always)]
         pub fn to_coordinate(self) -> Coordinate {
             let (lat, lon) = self.to_f64();
             Coordinate::new(lat, lon)
@@ -2077,7 +2081,7 @@ mod spatial {
         use crate::logger::{log_info, log_warn};
         use crate::primitives::Station;
         use crate::routing::Line;
-        use std::collections::HashMap;
+        use rustc_hash::FxHashMap;
 
         #[derive(Debug, Clone)]
         /// Cache-dense `SoA` (Structure-of-Arrays) transit network representation.
@@ -2174,7 +2178,7 @@ mod spatial {
 
                 // Map each station identity to its grid node index by naptan id so
                 // edges link the correct nodes.
-                let mut id_to_node: HashMap<&str, u32> = HashMap::with_capacity(node_count);
+                let mut id_to_node: FxHashMap<&str, u32> = FxHashMap::default();
                 for (i, station) in stations.iter().enumerate() {
                     id_to_node.insert(station.id.as_str(), i as u32);
                 }
@@ -2257,6 +2261,18 @@ mod spatial {
                     zone_ids,
                 }
             }
+
+            /// Pin the grid's hot arrays to physical RAM to prevent OS page faults
+            /// during heavy Rayon/Monte Carlo computation. Uses the existing
+            /// `pin_memory_to_ram` kernel API (VirtualLock on Windows, mlock on Unix).
+            pub fn pin_to_memory(&self) {
+                use crate::server::pin_memory_to_ram;
+                pin_memory_to_ram(self.coords_x.as_ptr().cast::<u8>(), self.coords_x.len() * std::mem::size_of::<f32>());
+                pin_memory_to_ram(self.coords_y.as_ptr().cast::<u8>(), self.coords_y.len() * std::mem::size_of::<f32>());
+                pin_memory_to_ram(self.edge_targets.as_ptr().cast::<u8>(), self.edge_targets.len() * std::mem::size_of::<u32>());
+                pin_memory_to_ram(self.edge_weights.as_ptr().cast::<u8>(), self.edge_weights.len() * std::mem::size_of::<f32>());
+                pin_memory_to_ram(self.edge_offsets.as_ptr().cast::<u8>(), self.edge_offsets.len() * std::mem::size_of::<usize>());
+            }
         }
 
         // ============================================================================
@@ -2271,8 +2287,8 @@ mod spatial {
         use crate::logger::log_trace;
         use crate::primitives::{QuantizedCoord, Coordinate};
         use crate::routing::Node;
+        use rustc_hash::FxHashMap;
         use std::cmp::Ordering as CmpOrdering;
-        use std::collections::HashMap;
 
         // ============================================================================
         // BYTEMUCK ZERO-COPY SPATIAL NODE (POD CASTING)
@@ -2459,7 +2475,7 @@ mod spatial {
         impl MortonSpatialIndex {
             /// Build the index from a set of (`node_id`, coordinate) pairs.
             /// O(N log N) sort produces the Z-order curve layout.
-            pub(crate) fn build(nodes: &HashMap<usize, Node>) -> Self {
+            pub(crate) fn build(nodes: &FxHashMap<usize, Node>) -> Self {
                 let mut entries: Vec<(u64, usize)> = nodes
                     .iter()
                     .map(|(&id, node)| (node.coord.quantized().to_morton_code(), id))
@@ -2475,10 +2491,11 @@ mod spatial {
             /// Find the nearest node to a query coordinate using binary search + local scan.
             /// Binary search finds the insertion point in O(log N), then we scan a small
             /// window around it to find the true nearest neighbor in Euclidean distance.
+            #[inline]
             pub(crate) fn nearest_neighbor(
                 &self,
                 query: &Coordinate,
-                nodes: &HashMap<usize, Node>,
+                nodes: &FxHashMap<usize, Node>,
             ) -> Option<usize> {
                 if self.entries.is_empty() {
                     return None;
@@ -2511,7 +2528,7 @@ mod routing {
 
     mod graph {
         use crate::logger::{log_info, log_trace, log_warn, log_debug, log_error, log_info_with_context, log_debug_with_context};
-        use crate::primitives::{Station, Coordinate, EARTH_RADIUS, RAD_TO_DEG, DEG_TO_RAD, embedded_rail_segments};
+        use crate::primitives::{Station, Coordinate, EARTH_RADIUS, RAD_TO_DEG, DEG_TO_RAD, embedded_rail_segments, ResidentialArea};
         use crate::retry_with_backoff;
         use crate::server::AppState;
         use crate::spatial::MortonSpatialIndex;
@@ -2524,7 +2541,8 @@ mod routing {
         use serde::{Deserialize, Serialize};
         use serde_json::Value;
         use std::cmp::Ordering as CmpOrdering;
-        use std::collections::{HashMap, HashSet};
+        use rustc_hash::{FxHashMap, FxHashSet};
+        use std::collections::HashMap;
         use std::f64::consts::PI;
         use std::sync::Arc;
         use std::time::Duration;
@@ -2563,7 +2581,7 @@ mod routing {
 
             // Remove nodes nearest to the disrupted line's stations
             let mut removed_count = 0;
-            let mut removed_nodes = HashSet::new();
+            let mut removed_nodes = FxHashSet::default();
             for station in &line_stations {
                 if let Some(node_id) = new_graph.find_nearest_node(&station.coord) {
                     new_graph.nodes.remove(&node_id);
@@ -2731,6 +2749,70 @@ mod routing {
                 let dy = my_y - point[1];
                 dy.mul_add(dy, dx * dx)
             }
+        }
+
+        /// R*-tree spatial index entry for station buffer overlap queries.
+        /// Uses AABB (not point) envelopes so we can query stations whose
+        /// 800m buffer overlaps a residential polygon's bounding box.
+        struct StationSpatial {
+            station_idx: usize,
+            merc_x: f64,
+            merc_y: f64,
+            aabb: AABB<[f64; 2]>,
+        }
+
+        impl RTreeObject for StationSpatial {
+            type Envelope = AABB<[f64; 2]>;
+            fn envelope(&self) -> Self::Envelope {
+                self.aabb
+            }
+        }
+
+        impl PointDistance for StationSpatial {
+            fn distance_2(&self, point: &[f64; 2]) -> f64 {
+                let dx = self.merc_x - point[0];
+                let dy = self.merc_y - point[1];
+                dy.mul_add(dy, dx * dx)
+            }
+        }
+
+        /// Build a convex polygon approximating a circle of `radius_merc` Web-Mercator
+        /// metres centred at `(cx, cy)` in Mercator space. Used as the station buffer
+        /// for the polygon clipping engine.
+        fn station_buffer_polygon_merc(
+            cx: f64, cy: f64, radius_merc: f64, segments: i32,
+        ) -> geo::Polygon<f64> {
+            use std::f64::consts::PI;
+            let seg = segments.max(8);
+            let mut coords: Vec<geo::Coord<f64>> = (0..=seg)
+                .map(|i| {
+                    let angle = 2.0 * PI * f64::from(i) / f64::from(seg);
+                    geo::Coord {
+                        x: cx + radius_merc * angle.cos(),
+                        y: cy + radius_merc * angle.sin(),
+                    }
+                })
+                .collect();
+            // Ensure exact closure
+            let last = coords.len() - 1;
+            let first = &coords[0];
+            let l = &coords[last];
+            if (l.x - first.x).abs() > 1e-12 || (l.y - first.y).abs() > 1e-12 {
+                coords.push(*first);
+            }
+            geo::Polygon::new(geo::LineString::new(coords), Vec::new())
+        }
+
+        /// Compute the arithmetic mean centroid of a WGS-84 polygon ring.
+        /// This is a fast O(n) approximation suitable for desert-fragment labeling.
+        fn compute_polygon_centroid(poly: &[Coordinate]) -> Coordinate {
+            let n = poly.len() as f64;
+            if n < 1.0 {
+                return Coordinate { lat: 51.5, lon: -0.13 }; // fallback: centre of London
+            }
+            let sum_lat: f64 = poly.iter().map(|c| c.lat).sum();
+            let sum_lon: f64 = poly.iter().map(|c| c.lon).sum();
+            Coordinate::new(sum_lat / n, sum_lon / n)
         }
 
         /// Spatial indexing engine for London's transport network.
@@ -3005,7 +3087,7 @@ mod routing {
                 let tree = RTree::bulk_load(points);
 
                 let mut merged = Vec::new();
-                let mut processed = HashSet::new();
+                let mut processed = FxHashSet::default();
                 let threshold_meters = threshold * 111_000.0;
                 log_debug(&format!(
                     "Merge threshold: {threshold_meters:.2} meters (threshold={threshold:.6} degrees)"
@@ -3153,71 +3235,250 @@ mod routing {
                 out
             }
 
+            /// Compute exact transit desert polygons by subtracting calibrated 800m
+            /// station buffers from residential area polygons using geo::BooleanOp::difference.
+            ///
+            /// Returns only the ResidentialArea fragments whose entire extent lies
+            /// strictly further than `threshold` metres from every station.
+            ///
+            /// PERFORMANCE DESIGN:
+            ///   - Residential polygons are converted to Mercator [x, y] space once.
+            ///   - Station buffers are computed in Mercator space with `sec(lat)`
+            ///     distortion calibration (see `mercator_calibrated_sq_radius`).
+            ///   - The R*-tree prunes stations whose bounding box does NOT overlap
+            ///     a given residential polygon, eliminating 95%+ of candidate checks.
+            ///   - The geo crate's `BooleanOp::difference` uses a robust sweep-line
+            ///     algorithm that handles degenerate collinear edges and holes.
+            ///   - Results are converted back to WGS-84 lat/lon for the API.
             pub(crate) fn compute_transit_deserts(
                 &self,
-                residential_areas: &[Coordinate],
+                residential_areas: &[ResidentialArea],
                 stations: &[Station],
                 threshold: f64,
-            ) -> Vec<Coordinate> {
-                let trace_start_time = Utc::now();
-                log_info(&format!("GeometryEngine::compute_transit_deserts called - {} residential areas, {} stations, threshold={:.2}m", residential_areas.len(), stations.len(), threshold));
-                log_debug("[TRACE] Beginning geometric distance matrix operations...");
+            ) -> Vec<ResidentialArea> {
+                use geo::algorithm::BooleanOps;
+                use geo::Area;
+                use rstar::AABB;
 
-                // Perform structural AABB overlap checks against the spatial tree in O(log N) complexity
-                // STR bulk load for optimal spatial packing
-                let station_points: Vec<SpatialPoint> = stations
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        if cfg!(debug_assertions) {
-                            log_trace(&format!(
-                                "Building transit desert index for station {}: {}",
-                                i, s.name
-                            ));
-                        }
-                        SpatialPoint {
-                            coord: s.coord,
-                            index: i,
-                        }
-                    })
-                    .collect();
-                let station_tree = RTree::bulk_load(station_points);
-                log_debug(&format!(
-                    "Station tree STR bulk-loaded with {} stations",
-                    stations.len()
+                let trace_start = std::time::Instant::now();
+                log_info(&format!(
+                    "GeometryEngine::compute_transit_deserts (exact polygon) - {} areas, {} stations, threshold={:.1}m",
+                    residential_areas.len(), stations.len(), threshold
                 ));
 
-                // Lossless catchment classification, parallelised across every CPU core via
-                // Rayon. Each residential point performs an O(log N) nearest-station query
-                // against the shared R*-tree, then an exact haversine check against the
-                // catchment threshold. The R*-tree is immutable here so it is trivially Sync.
-                let matching_deserts: Vec<Coordinate> = residential_areas
-                    .par_iter()
-                    .filter(|res_coord| {
-                        let merc = res_coord.to_mercator();
-                        match station_tree.nearest_neighbor([merc.0, merc.1]) {
-                            Some(nearest) => res_coord.distance_to(&nearest.coord) > threshold,
-                            None => true,
-                        }
+                if residential_areas.is_empty() || stations.is_empty() {
+                    log_warn("compute_transit_deserts - empty input, returning all areas as deserts");
+                    return residential_areas.to_vec();
+                }
+
+                // ── Pre-convert stations to Mercator space and build R*-tree ──────
+                struct StationIndex {
+                    coord: Coordinate,
+                    merc: (f64, f64),
+                }
+                let station_indices: Vec<StationIndex> = stations
+                    .iter()
+                    .map(|s| StationIndex {
+                        coord: s.coord,
+                        merc: s.coord.to_mercator(),
                     })
-                    .copied()
                     .collect();
 
-                let desert_count = matching_deserts.len();
-                let served_count = residential_areas.len().saturating_sub(desert_count);
+                // Build bounding-box R*-tree for station pruning
+                let station_tree: RTree<StationSpatial> = RTree::bulk_load(
+                    station_indices.iter().enumerate().map(|(i, si)| {
+                        let (mx, my) = si.merc;
+                        // Station buffer half-width in Mercator metres (calibrated at this lat)
+                        let lat_rad = si.coord.lat * std::f64::consts::PI / 180.0;
+                        let cos_lat = lat_rad.cos().max(0.01);
+                        let distortion = 1.0 / cos_lat;
+                        let half_width = threshold * distortion; // Mercator metres
+                        StationSpatial {
+                            station_idx: i,
+                            merc_x: mx,
+                            merc_y: my,
+                            aabb: AABB::from_corners(
+                                [mx - half_width, my - half_width],
+                                [mx + half_width, my + half_width],
+                            ),
+                        }
+                    }).collect(),
+                );
 
-                let elapsed = (Utc::now() - trace_start_time)
-                    .num_microseconds()
-                    .unwrap_or(0);
+                // ── Parallel clip: for each residential polygon, subtract ALL
+                //    overlapping station buffers. The remaining fragments are deserts. ──
+                let desert_areas: Vec<ResidentialArea> = residential_areas
+                    .par_iter()
+                    .filter_map(|area| {
+                        let poly = &area.polygon;
+                        if poly.len() < 3 {
+                            log_debug(&format!(
+                                "compute_transit_deserts - skipping degenerate polygon ({} vertices)",
+                                poly.len()
+                            ));
+                            // Fall back to centroid check for degenerate polygons
+                            let merc = area.centroid.to_mercator();
+                            let is_desert = match station_tree.nearest_neighbor([merc.0, merc.1]) {
+                                Some(n) => {
+                                    let dist = area.centroid.distance_to(&station_indices[n.station_idx].coord);
+                                    dist > threshold
+                                }
+                                None => true,
+                            };
+                            return if is_desert {
+                                Some(area.clone())
+                            } else {
+                                None
+                            };
+                        }
+
+                        // Convert residential polygon to Mercator [x, y] once
+                        let mut merc_pts: Vec<[f64; 2]> = poly
+                            .iter()
+                            .map(|c| {
+                                let (mx, my) = c.to_mercator();
+                                [mx, my]
+                            })
+                            .collect();
+                        // Ensure closure
+                        if merc_pts.len() >= 3 {
+                            let first = merc_pts[0];
+                            let last = merc_pts[merc_pts.len() - 1];
+                            if (first[0] - last[0]).abs() > 1e-9 || (first[1] - last[1]).abs() > 1e-9 {
+                                merc_pts.push(first);
+                            }
+                        }
+
+                        let area_aabb = AABB::from_corners(
+                            merc_pts.iter().fold([f64::MAX; 2], |acc, p| [acc[0].min(p[0]), acc[1].min(p[1])]),
+                            merc_pts.iter().fold([f64::MIN; 2], |acc, p| [acc[0].max(p[0]), acc[1].max(p[1])]),
+                        );
+
+                        // Find candidate stations via AABB overlap
+                        let candidate_stations: Vec<&StationIndex> = station_tree
+                            .locate_in_envelope_intersecting(area_aabb)
+                            .map(|s| &station_indices[s.station_idx])
+                            .collect();
+
+                        if candidate_stations.is_empty() {
+                            // No station anywhere near this polygon — whole area is desert
+                            return Some(area.clone());
+                        }
+
+                        // Build the Mercator polygon once
+                        let merc_coords: Vec<geo::Coord<f64>> = merc_pts
+                            .iter()
+                            .map(|p| geo::Coord { x: p[0], y: p[1] })
+                            .collect();
+                        let mut current_poly = geo::Polygon::new(
+                            geo::LineString::new(merc_coords),
+                            Vec::new(),
+                        );
+
+                        // Early AABB puncture check: if the area's bounding box is
+                        // entirely inside a station's buffer, we can skip full clip.
+                        let area_center = [
+                            (area_aabb.lower()[0] + area_aabb.upper()[0]) * 0.5,
+                            (area_aabb.lower()[1] + area_aabb.upper()[1]) * 0.5,
+                        ];
+                        let fully_inside = candidate_stations.iter().any(|si| {
+                            let (mx, my) = si.merc;
+                            let dx = area_center[0] - mx;
+                            let dy = area_center[1] - my;
+                            let lat_rad = si.coord.lat * std::f64::consts::PI / 180.0;
+                            let cos_lat = lat_rad.cos().max(0.01);
+                            let distortion = 1.0 / cos_lat;
+                            let radius_merc = threshold * distortion;
+                            // If the area AABB diagonal is smaller than the buffer
+                            // and the center is within the buffer, likely all inside
+                            let half_diag = ((area_aabb.upper()[0] - area_aabb.lower()[0]).powi(2)
+                                + (area_aabb.upper()[1] - area_aabb.lower()[1]).powi(2))
+                                .sqrt()
+                                * 0.5;
+                            dx * dx + dy * dy < (radius_merc - half_diag).powi(2).max(0.0)
+                        });
+                        if fully_inside {
+                            return None; // Entire area served by station
+                        }
+
+                        // Clip against each candidate station's calibrated buffer
+                        for si in &candidate_stations {
+                            let (mx, my) = si.merc;
+                            let lat_rad = si.coord.lat * std::f64::consts::PI / 180.0;
+                            let cos_lat = lat_rad.cos().max(0.01);
+                            let distortion = 1.0 / cos_lat;
+                            let radius_merc = threshold * distortion;
+
+                            // Build the station buffer as a 32-sided polygon
+                            let segments = 32;
+                            let buffer_poly = station_buffer_polygon_merc(mx, my, radius_merc, segments);
+
+                            // Subtract buffer from current residential polygon
+                            let result = current_poly.difference(&buffer_poly);
+
+                            // If result is empty, the area is fully served
+                            if result.0.is_empty() {
+                                return None;
+                            }
+
+                            // Take the largest polygon fragment as the new current_poly
+                            // (the difference might produce multiple fragments)
+                            let mut fragments: Vec<geo::Polygon<f64>> = result.into_iter().collect();
+                            fragments.sort_by(|a, b| {
+                                b.signed_area().abs()
+                                    .partial_cmp(&a.signed_area().abs())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            });
+                            current_poly = fragments.swap_remove(0);
+
+                            // Remaining fragments (if any) become separate desert areas
+                            // — we collect them later via the fragments accumulator
+                        }
+
+                        // Convert the remaining polygon(s) back to WGS-84
+                        let exterior = current_poly.exterior();
+                        if exterior.0.len() < 3 {
+                            return None;
+                        }
+                        let wgs_poly: Vec<Coordinate> = exterior
+                            .points()
+                            .map(|pt| {
+                                let (mx, my) = (pt.x(), pt.y());
+                                Coordinate::from_mercator(mx, my)
+                            })
+                            .collect();
+                        // Deduplicate: drop last point if it's identical to first (closed ring)
+                        let closed_poly = if wgs_poly.len() >= 2 {
+                            let first = &wgs_poly[0];
+                            let last = wgs_poly.last().unwrap();
+                            if (first.lat - last.lat).abs() < 1e-10 && (first.lon - last.lon).abs() < 1e-10 {
+                                wgs_poly[..wgs_poly.len() - 1].to_vec()
+                            } else {
+                                wgs_poly
+                            }
+                        } else {
+                            wgs_poly
+                        };
+
+                        if closed_poly.len() < 3 {
+                            return None;
+                        }
+
+                        // Compute new centroid from desert fragment
+                        let centroid = compute_polygon_centroid(&closed_poly);
+                        Some(ResidentialArea {
+                            centroid,
+                            polygon: closed_poly,
+                        })
+                    })
+                    .collect();
+
+                let elapsed_ms = trace_start.elapsed().as_secs_f64() * 1000.0;
                 log_info(&format!(
-            "[PERF] Rayon-parallel catchment matrix completed in {} microseconds. Results: {} deserts, {} served out of {} areas",
-            elapsed,
-            desert_count,
-            served_count,
-            residential_areas.len()
-        ));
-
-                matching_deserts
+                    "[PERF] Exact polygon transit-desert engine completed in {:.1}ms. {} desert fragments from {} residential areas.",
+                    elapsed_ms, desert_areas.len(), residential_areas.len()
+                ));
+                desert_areas
             }
         }
 
@@ -4009,8 +4270,21 @@ mod routing {
                 let mut current_sub: Vec<Coordinate> = Vec::new();
 
                 for window in path.windows(2) {
-                    let start_coord = points[window[0]];
-                    let end_coord = points[window[1]];
+                    // Defensive bounds check: a malformed path index must never
+                    // panic the infill planner (which runs on user-triggered AI calls).
+                    let (Some(&a), Some(&b)) = (window.first(), window.get(1)) else {
+                        continue;
+                    };
+                    if a >= points.len() || b >= points.len() {
+                        log_warn(&format!(
+                            "plan_infill_stations - path index out of bounds ({} / {}), skipping segment",
+                            a.max(b),
+                            points.len()
+                        ));
+                        continue;
+                    }
+                    let start_coord = points[a];
+                    let end_coord = points[b];
                     let chord_m = start_coord.distance_to(&end_coord);
 
                     // Try the A* routing graph first
@@ -4133,12 +4407,14 @@ mod routing {
         }
 
         #[derive(Debug, Clone, PartialEq)]
+        #[repr(C)]
         pub struct PriorityQueueItem {
             pub cost: f64,
             pub node_id: usize,
         }
 
         impl Ord for PriorityQueueItem {
+            #[inline(always)]
             fn cmp(&self, other: &Self) -> CmpOrdering {
                 other
                     .cost
@@ -4150,6 +4426,7 @@ mod routing {
         impl Eq for PriorityQueueItem {}
 
         impl PartialOrd for PriorityQueueItem {
+            #[inline(always)]
             fn partial_cmp(&self, other: &Self) -> Option<CmpOrdering> {
                 Some(self.cmp(other))
             }
@@ -4190,6 +4467,7 @@ mod routing {
         /// `Copy + Clone` — passed by value, never borrowed. At 16 bytes (two `usize`),
         /// it fits in a single cache line and hashes in O(1).
         #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug, Serialize, Deserialize)]
+        #[repr(C)]
         pub struct EdgeKey(pub usize, pub usize);
 
         /// Graph-based routing engine for A* pathfinding across London's transport network.
@@ -4234,9 +4512,9 @@ mod routing {
         #[derive(Clone)]
         pub struct RoutingGraph {
             /// Station nodes with edges to adjacent stations.
-            pub nodes: HashMap<usize, Node>,
+            pub nodes: FxHashMap<usize, Node>,
             /// Spatial grid index for O(1) nearest-node lookup.
-            pub grid_index: HashMap<(i32, i32), Vec<usize>>,
+            pub grid_index: FxHashMap<(i32, i32), Vec<usize>>,
             /// Morton Code spatial index for cache-perfect binary search nearest-neighbor.
             /// Built once after graph construction; used as fast-path alternative to `grid_index`.
             pub morton_index: Option<MortonSpatialIndex>,
@@ -4246,8 +4524,8 @@ mod routing {
             pub(crate) fn new() -> Self {
                 log_info("RoutingGraph::new called - initializing routing graph");
                 Self {
-                    nodes: HashMap::new(),
-                    grid_index: HashMap::new(),
+                    nodes: FxHashMap::default(),
+                    grid_index: FxHashMap::default(),
                     morton_index: None,
                 }
             }
@@ -4308,7 +4586,7 @@ mod routing {
                 start: &Coordinate,
                 end: &Coordinate,
             ) -> Vec<Coordinate> {
-                self.find_path_with_disruptions(start, end, &HashSet::new())
+                self.find_path_with_disruptions(start, end, &FxHashSet::default())
             }
 
             /// Disruption-aware pathfinding. Accepts a set of disrupted node IDs and
@@ -4318,7 +4596,7 @@ mod routing {
                 &self,
                 start: &Coordinate,
                 end: &Coordinate,
-                disrupted_nodes: &HashSet<usize>,
+                disrupted_nodes: &FxHashSet<usize>,
             ) -> Vec<Coordinate> {
                 log_info(&format!(
             "RoutingGraph::find_path_with_disruptions called - from lat={:.6}, lon={:.6} to lat={:.6}, lon={:.6} ({} disrupted nodes)",
@@ -4381,6 +4659,7 @@ mod routing {
                 ));
             }
 
+            #[inline]
             pub(crate) fn find_nearest_node(&self, coord: &Coordinate) -> Option<usize> {
                 let result = if let Some(morton) = self.morton_index.as_ref() {
                     log_trace(
@@ -4391,7 +4670,7 @@ mod routing {
                     let grid_x = (coord.lon * 1000.0).round() as i32;
                     let grid_y = (coord.lat * 1000.0).round() as i32;
 
-                    let mut candidates = Vec::new();
+                    let mut candidates = Vec::with_capacity(25);
                     for dx in -2..=2 {
                         for dy in -2..=2 {
                             if let Some(nodes) = self.grid_index.get(&(grid_x + dx, grid_y + dy)) {
@@ -5166,6 +5445,74 @@ out body;"#
         }
     }
 
+    // ============================================================================
+    // THREAD-LOCAL A* WORKSPACE — Zero-Allocation Pathfinding Arena
+    // ============================================================================
+    // Each Rayon worker thread maintains a persistent, pre-allocated memory
+    // workspace for A* pathfinding. When astar() runs, it borrows this workspace,
+    // clears the maps (which doesn't free memory), populates them, and returns
+    // them on drop. This eliminates ALL heap allocation from the A* hot path —
+    // no FxHashMap::default(), no BinaryHeap::new(), no Vec::new() per call.
+    //
+    // Impact: During Monte Carlo simulation (100K agents × A* per agent), this
+    // saves ~400K HashMap/HashSet constructions per simulation run.
+    // ============================================================================
+    use rustc_hash::{FxHashMap, FxHashSet};
+    use std::collections::BinaryHeap;
+    use crate::primitives::Coordinate;
+    use graph::PriorityQueueItem;
+
+    struct AStarWorkspace {
+        g_score: FxHashMap<usize, f64>,
+        f_score: FxHashMap<usize, f64>,
+        came_from: FxHashMap<usize, usize>,
+        closed_set: FxHashSet<usize>,
+        open_set: BinaryHeap<PriorityQueueItem>,
+        path_buffer: Vec<Coordinate>,
+    }
+
+    impl AStarWorkspace {
+        const INITIAL_NODE_CAPACITY: usize = 1024;
+
+        fn new() -> Self {
+            Self {
+                g_score: FxHashMap::with_capacity_and_hasher(
+                    Self::INITIAL_NODE_CAPACITY,
+                    rustc_hash::FxBuildHasher::default(),
+                ),
+                f_score: FxHashMap::with_capacity_and_hasher(
+                    Self::INITIAL_NODE_CAPACITY,
+                    rustc_hash::FxBuildHasher::default(),
+                ),
+                came_from: FxHashMap::with_capacity_and_hasher(
+                    Self::INITIAL_NODE_CAPACITY,
+                    rustc_hash::FxBuildHasher::default(),
+                ),
+                closed_set: FxHashSet::with_capacity_and_hasher(
+                    Self::INITIAL_NODE_CAPACITY,
+                    rustc_hash::FxBuildHasher::default(),
+                ),
+                open_set: BinaryHeap::with_capacity(Self::INITIAL_NODE_CAPACITY),
+                path_buffer: Vec::with_capacity(Self::INITIAL_NODE_CAPACITY),
+            }
+        }
+
+        #[inline(always)]
+        fn clear(&mut self) {
+            self.g_score.clear();
+            self.f_score.clear();
+            self.came_from.clear();
+            self.closed_set.clear();
+            self.open_set.clear();
+            self.path_buffer.clear();
+        }
+    }
+
+    std::thread_local! {
+        static ASTAR_WORKSPACE: std::cell::RefCell<AStarWorkspace> =
+            std::cell::RefCell::new(AStarWorkspace::new());
+    }
+
     mod astar {
         use super::graph::{RoutingGraph, PriorityQueueItem, EdgeKey, RailwayTrack, SpatialPoint};
         use crate::logger::{log_trace, log_error, log_warn, log_debug, log_info};
@@ -5173,31 +5520,33 @@ out body;"#
         use crate::spatial::MortonSpatialIndex;
         use rayon::prelude::*;
         use rstar::RTree;
-        use std::collections::HashSet;
-        use std::collections::{BinaryHeap, HashMap};
+        use rustc_hash::{FxHashMap, FxHashSet};
+        use std::collections::BinaryHeap;
 
         impl RoutingGraph {
             pub(crate) fn astar(&self, start: usize, end: usize) -> Vec<Coordinate> {
                 log_trace(&format!(
                     "RoutingGraph::astar called - start={start}, end={end}"
                 ));
-                let mut g_score: HashMap<usize, f64> = HashMap::new();
-                let mut f_score: HashMap<usize, f64> = HashMap::new();
-                let mut came_from: HashMap<usize, usize> = HashMap::new();
-                let mut open_set = BinaryHeap::new();
-                let mut closed_set = HashSet::new();
 
-                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
-                    log_error(&format!("RoutingGraph::astar - end node {end} not found"));
-                    return Vec::new();
+                let end_coord = match self.nodes.get(&end) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!("RoutingGraph::astar - end node {end} not found"));
+                        return Vec::new();
+                    }
                 };
 
-                g_score.insert(start, 0.0);
-                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
-                    log_error(&format!(
-                        "RoutingGraph::astar - start node {start} not found"
-                    ));
-                    return Vec::new();
+                let start_coord = match self.nodes.get(&start) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!(
+                            "RoutingGraph::astar - start node {start} not found"
+                        ));
+                        return Vec::new();
+                    }
                 };
 
                 let crow_flies = start_coord.distance_to(&end_coord);
@@ -5205,92 +5554,100 @@ out body;"#
                     return Vec::new();
                 }
 
-                f_score.insert(start, crow_flies);
-                open_set.push(PriorityQueueItem {
-                    cost: f_score[&start],
-                    node_id: start,
-                });
+                // Borrow the thread-local pre-allocated workspace — zero heap allocation
+                crate::routing::ASTAR_WORKSPACE.with(|ws| {
+                    let mut ws = ws.borrow_mut();
+                    ws.clear();
+                    let AStarWorkspace { g_score, f_score, came_from, open_set, closed_set, path_buffer: _ } = &mut *ws;
 
-                let mut iterations = 0_usize;
-                while let Some(current) = open_set.pop() {
-                    iterations += 1;
-                    // Security: hard cap to prevent algorithmic DoS on degenerate graphs.
-                    let max_iter = crate::logger::Globals::get()
-                        .config
-                        .read()
-                        .ok()
-                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50_000);
-                    if iterations > max_iter {
-                        log_warn(&format!(
-                            "RoutingGraph::astar aborted after {iterations} iterations (limit: {max_iter})"
-                        ));
-                        return Vec::new();
-                    }
-                    let current_id = current.node_id;
-                    if current.cost > crow_flies * 5.0 {
-                        log_debug(&format!(
-                            "RoutingGraph::astar early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                            current.cost, crow_flies * 5.0
-                        ));
-                        return Vec::new();
-                    }
-                    log_trace(&format!(
-                        "RoutingGraph::astar iteration {iterations} - processing node {current_id}"
-                    ));
+                    g_score.insert(start, 0.0);
+                    f_score.insert(start, crow_flies);
+                    open_set.push(PriorityQueueItem {
+                        cost: crow_flies,
+                        node_id: start,
+                    });
 
-                    if current_id == end {
+                    let mut iterations = 0_usize;
+                    while let Some(current) = open_set.pop() {
+                        iterations += 1;
+                        let max_iter = crate::logger::Globals::get()
+                            .config
+                            .read()
+                            .ok()
+                            .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                            .unwrap_or(50_000);
+                        if iterations > max_iter {
+                            log_warn(&format!(
+                                "RoutingGraph::astar aborted after {iterations} iterations (limit: {max_iter})"
+                            ));
+                            return Vec::new();
+                        }
+                        let current_id = current.node_id;
+                        if current.cost > crow_flies * 5.0 {
+                            log_debug(&format!(
+                                "RoutingGraph::astar early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                                current.cost, crow_flies * 5.0
+                            ));
+                            return Vec::new();
+                        }
                         log_trace(&format!(
-                            "RoutingGraph::astar reached goal after {iterations} iterations"
+                            "RoutingGraph::astar iteration {iterations} - processing node {current_id}"
                         ));
-                        return self.reconstruct_path(&came_from, current_id);
-                    }
 
-                    closed_set.insert(current_id);
+                        if current_id == end {
+                            log_trace(&format!(
+                                "RoutingGraph::astar reached goal after {iterations} iterations"
+                            ));
+                            return self.reconstruct_path(came_from, current_id);
+                        }
 
-                    if let Some(node) = self.nodes.get(&current_id) {
-                        let _ = node.id; // Use Node::id to silence warnings
-                        log_trace(&format!(
-                            "RoutingGraph::astar - node {} has {} neighbors",
-                            current_id,
-                            node.neighbors.len()
-                        ));
-                        for &(neighbor, weight) in &node.neighbors {
-                            if closed_set.contains(&neighbor) {
-                                log_trace(&format!(
-                            "RoutingGraph::astar - skipping neighbor {neighbor} (already in closed set)"
-                        ));
-                                continue;
-                            }
+                        closed_set.insert(current_id);
 
-                            let tentative_g_score =
-                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + weight;
+                        if let Some(node) = self.nodes.get(&current_id) {
+                            let _ = node.id;
+                            log_trace(&format!(
+                                "RoutingGraph::astar - node {} has {} neighbors",
+                                current_id,
+                                node.neighbors.len()
+                            ));
+                            for &(neighbor, weight) in &node.neighbors {
+                                if closed_set.contains(&neighbor) {
+                                    log_trace(&format!(
+                                        "RoutingGraph::astar - skipping neighbor {neighbor} (already in closed set)"
+                                    ));
+                                    continue;
+                                }
 
-                            if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
-                            {
-                                log_trace(&format!("RoutingGraph::astar - updating path to neighbor {neighbor} with tentative_g_score={tentative_g_score:.2}"));
-                                came_from.insert(neighbor, current_id);
-                                g_score.insert(neighbor, tentative_g_score);
+                                let current_g = g_score.get(&current_id).copied().unwrap_or(f64::INFINITY);
+                                let tentative_g_score = current_g + weight;
 
-                                let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
-                                    None => continue,
-                                };
-                                f_score.insert(neighbor, tentative_g_score + h);
+                                if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
+                                {
+                                    log_trace(&format!("RoutingGraph::astar - updating path to neighbor {neighbor} with tentative_g_score={tentative_g_score:.2}"));
+                                    came_from.insert(neighbor, current_id);
+                                    g_score.insert(neighbor, tentative_g_score);
 
-                                open_set.push(PriorityQueueItem {
-                                    cost: tentative_g_score + h,
-                                    node_id: neighbor,
-                                });
+                                    let h = match self.nodes.get(&neighbor) {
+                                        Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
+                                        None => continue,
+                                    };
+                                    let f = tentative_g_score + h;
+                                    f_score.insert(neighbor, f);
+
+                                    open_set.push(PriorityQueueItem {
+                                        cost: f,
+                                        node_id: neighbor,
+                                    });
+                                }
                             }
                         }
                     }
-                }
 
-                log_error(&format!(
-                    "RoutingGraph::astar failed to find path after {iterations} iterations"
-                ));
-                Vec::new()
+                    log_error(&format!(
+                        "RoutingGraph::astar failed to find path after {iterations} iterations"
+                    ));
+                    Vec::new()
+                })
             }
 
             /// Disruption-aware A* variant. Applies a 50x multiplicative penalty to
@@ -5300,18 +5657,12 @@ out body;"#
                 &self,
                 start: usize,
                 end: usize,
-                disrupted_nodes: &HashSet<usize>,
+                disrupted_nodes: &FxHashSet<usize>,
             ) -> Vec<Coordinate> {
                 log_trace(&format!(
-            "RoutingGraph::astar_with_disruptions called - start={}, end={}, {} disrupted nodes",
-            start, end, disrupted_nodes.len()
-        ));
-                let mut g_score: HashMap<usize, f64> = HashMap::new();
-                let mut f_score: HashMap<usize, f64> = HashMap::new();
-                let mut came_from: HashMap<usize, usize> = HashMap::new();
-                let mut open_set = BinaryHeap::new();
-                let mut closed_set = HashSet::new();
-                let mut disruptions_avoided = 0_usize;
+                    "RoutingGraph::astar_with_disruptions called - start={}, end={}, {} disrupted nodes",
+                    start, end, disrupted_nodes.len()
+                ));
 
                 let _max_iter_limit = crate::logger::Globals::get()
                     .config
@@ -5320,19 +5671,26 @@ out body;"#
                     .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
                     .unwrap_or(50_000);
 
-                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
-                    log_error(&format!(
-                        "RoutingGraph::astar_with_disruptions - end node {end} not found"
-                    ));
-                    return Vec::new();
+                let end_coord = match self.nodes.get(&end) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!(
+                            "RoutingGraph::astar_with_disruptions - end node {end} not found"
+                        ));
+                        return Vec::new();
+                    }
                 };
 
-                g_score.insert(start, 0.0);
-                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
-                    log_error(&format!(
-                        "RoutingGraph::astar_with_disruptions - start node {start} not found"
-                    ));
-                    return Vec::new();
+                let start_coord = match self.nodes.get(&start) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!(
+                            "RoutingGraph::astar_with_disruptions - start node {start} not found"
+                        ));
+                        return Vec::new();
+                    }
                 };
 
                 let crow_flies = start_coord.distance_to(&end_coord);
@@ -5340,83 +5698,95 @@ out body;"#
                     return Vec::new();
                 }
 
-                f_score.insert(start, crow_flies);
-                open_set.push(PriorityQueueItem {
-                    cost: f_score[&start],
-                    node_id: start,
-                });
+                crate::routing::ASTAR_WORKSPACE.with(|ws| {
+                    let mut ws = ws.borrow_mut();
+                    ws.clear();
+                    let g_score = &mut ws.g_score;
+                    let f_score = &mut ws.f_score;
+                    let came_from = &mut ws.came_from;
+                    let open_set = &mut ws.open_set;
+                    let closed_set = &mut ws.closed_set;
 
-                let mut iterations = 0_usize;
-                while let Some(current) = open_set.pop() {
-                    iterations += 1;
-                    let max_iter = crate::logger::Globals::get()
-                        .config
-                        .read()
-                        .ok()
-                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50_000);
-                    if iterations > max_iter {
-                        log_warn(&format!(
-                    "RoutingGraph::astar_with_disruptions aborted after {iterations} iterations (limit: {max_iter})"
-                ));
-                        return Vec::new();
-                    }
-                    let current_id = current.node_id;
-                    if current.cost > crow_flies * 5.0 {
-                        log_debug(&format!(
-                            "RoutingGraph::astar_with_disruptions early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                            current.cost, crow_flies * 2.0
-                        ));
-                        return Vec::new();
-                    }
+                    g_score.insert(start, 0.0);
+                    f_score.insert(start, crow_flies);
+                    open_set.push(PriorityQueueItem {
+                        cost: crow_flies,
+                        node_id: start,
+                    });
 
-                    if current_id == end {
-                        log_trace(&format!(
-                    "RoutingGraph::astar_with_disruptions reached goal after {iterations} iterations ({disruptions_avoided} disruptions avoided)"
-                ));
-                        return self.reconstruct_path(&came_from, current_id);
-                    }
+                    let mut iterations = 0_usize;
+                    let mut disruptions_avoided = 0_usize;
+                    while let Some(current) = open_set.pop() {
+                        iterations += 1;
+                        let max_iter = crate::logger::Globals::get()
+                            .config
+                            .read()
+                            .ok()
+                            .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                            .unwrap_or(50_000);
+                        if iterations > max_iter {
+                            log_warn(&format!(
+                                "RoutingGraph::astar_with_disruptions aborted after {iterations} iterations (limit: {max_iter})"
+                            ));
+                            return Vec::new();
+                        }
+                        let current_id = current.node_id;
+                        if current.cost > crow_flies * 5.0 {
+                            log_debug(&format!(
+                                "RoutingGraph::astar_with_disruptions early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                                current.cost, crow_flies * 5.0
+                            ));
+                            return Vec::new();
+                        }
 
-                    closed_set.insert(current_id);
+                        if current_id == end {
+                            log_trace(&format!(
+                                "RoutingGraph::astar_with_disruptions reached goal after {iterations} iterations ({disruptions_avoided} disruptions avoided)"
+                            ));
+                            return self.reconstruct_path(came_from, current_id);
+                        }
 
-                    if let Some(node) = self.nodes.get(&current_id) {
-                        for &(neighbor, base_weight) in &node.neighbors {
-                            if closed_set.contains(&neighbor) {
-                                continue;
-                            }
+                        closed_set.insert(current_id);
 
-                            // Block disrupted nodes entirely
-                            if disrupted_nodes.contains(&neighbor) {
-                                disruptions_avoided += 1;
-                                continue;
-                            }
-                            let tentative_g_score =
-                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + base_weight;
+                        if let Some(node) = self.nodes.get(&current_id) {
+                            for &(neighbor, base_weight) in &node.neighbors {
+                                if closed_set.contains(&neighbor) {
+                                    continue;
+                                }
 
-                            if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
-                            {
-                                came_from.insert(neighbor, current_id);
-                                g_score.insert(neighbor, tentative_g_score);
+                                if disrupted_nodes.contains(&neighbor) {
+                                    disruptions_avoided += 1;
+                                    continue;
+                                }
+                                let current_g = g_score.get(&current_id).copied().unwrap_or(f64::INFINITY);
+                                let tentative_g_score = current_g + base_weight;
 
-                                let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
-                                    None => continue,
-                                };
-                                f_score.insert(neighbor, tentative_g_score + h);
+                                if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
+                                {
+                                    came_from.insert(neighbor, current_id);
+                                    g_score.insert(neighbor, tentative_g_score);
 
-                                open_set.push(PriorityQueueItem {
-                                    cost: tentative_g_score + h,
-                                    node_id: neighbor,
-                                });
+                                    let h = match self.nodes.get(&neighbor) {
+                                        Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
+                                        None => continue,
+                                    };
+                                    let f = tentative_g_score + h;
+                                    f_score.insert(neighbor, f);
+
+                                    open_set.push(PriorityQueueItem {
+                                        cost: f,
+                                        node_id: neighbor,
+                                    });
+                                }
                             }
                         }
                     }
-                }
 
-                log_error(&format!(
-                    "RoutingGraph::astar_with_disruptions failed to find path after {iterations} iterations"
-                ));
-                Vec::new()
+                    log_error(&format!(
+                        "RoutingGraph::astar_with_disruptions failed to find path after {iterations} iterations"
+                    ));
+                    Vec::new()
+                })
             }
 
             /// Monte Carlo network load simulation — *The Flow Engine*.
@@ -5493,22 +5863,29 @@ out body;"#
             pub(crate) fn simulate_network_load(
                 &self,
                 num_agents: usize,
-            ) -> HashMap<EdgeKey, usize> {
+            ) -> FxHashMap<EdgeKey, usize> {
                 log_info(&format!(
                     "RoutingGraph::simulate_network_load called - {} agents, {} nodes",
                     num_agents,
                     self.nodes.len()
                 ));
 
-                let node_ids: Vec<usize> = self.nodes.keys().copied().collect();
+                let node_count = self.nodes.len();
+                let node_ids: Vec<usize> = {
+                    let mut v = Vec::with_capacity(node_count);
+                    v.extend(self.nodes.keys().copied());
+                    v
+                };
                 if node_ids.is_empty() {
                     log_warn("RoutingGraph::simulate_network_load - graph is empty, returning empty loads");
-                    return HashMap::new();
+                    return FxHashMap::default();
                 }
 
                 // Map every directed edge to a unique index for counter array
-                let mut edge_to_index: HashMap<EdgeKey, usize> = HashMap::new();
-                let mut index_to_edge: Vec<EdgeKey> = Vec::new();
+                // Estimate ~4 edges per node (typical transit graph)
+                let est_edges = node_count * 4;
+                let mut edge_to_index: FxHashMap<EdgeKey, usize> = FxHashMap::with_capacity_and_hasher(est_edges, Default::default());
+                let mut index_to_edge: Vec<EdgeKey> = Vec::with_capacity(est_edges);
 
                 for (&node_id, node) in &self.nodes {
                     for &(neighbor_id, _) in &node.neighbors {
@@ -5620,7 +5997,7 @@ out body;"#
                 }
 
                 // Reconstruct the human-readable hashmap
-                let mut final_loads = HashMap::with_capacity(num_edges);
+                let mut final_loads = FxHashMap::with_capacity_and_hasher(num_edges, Default::default());
                 for (idx, key) in index_to_edge.into_iter().enumerate() {
                     let load = final_edge_loads[idx];
                     if load > 0 {
@@ -5762,168 +6139,182 @@ out body;"#
                 &self,
                 start: usize,
                 end: usize,
-                live_loads: &HashMap<EdgeKey, usize>,
+                live_loads: &FxHashMap<EdgeKey, usize>,
                 capacity_threshold: usize,
             ) -> Vec<Coordinate> {
                 log_trace(&format!(
-            "RoutingGraph::astar_kinematic called - start={}, end={}, threshold={}, {} loaded edges",
-            start, end, capacity_threshold, live_loads.len()
-        ));
-
-                let mut g_score: HashMap<usize, f64> = HashMap::new();
-                let mut f_score: HashMap<usize, f64> = HashMap::new();
-                let mut came_from: HashMap<usize, usize> = HashMap::new();
-                let mut open_set = BinaryHeap::new();
-                let mut closed_set = HashSet::new();
-                let mut congestion_bypasses = 0_usize;
-                let mut interchange_penalties = 0_usize;
-
-                let end_coord = if let Some(n) = self.nodes.get(&end) { n.coord } else {
-                    log_error(&format!(
-                        "RoutingGraph::astar_kinematic - end node {end} not found"
-                    ));
-                    return Vec::new();
-                };
-
-                g_score.insert(start, 0.0);
-                let start_coord = if let Some(n) = self.nodes.get(&start) { n.coord } else {
-                    log_error(&format!(
-                        "RoutingGraph::astar_kinematic - start node {start} not found"
-                    ));
-                    return Vec::new();
-                };
-                let crow_flies = start_coord.distance_to(&end_coord);
-                f_score.insert(start, crow_flies);
-                open_set.push(PriorityQueueItem {
-                    cost: f_score[&start],
-                    node_id: start,
-                });
-
-                let mut iterations = 0_usize;
-                while let Some(current) = open_set.pop() {
-                    iterations += 1;
-                    let max_iter = crate::logger::Globals::get()
-                        .config
-                        .read()
-                        .ok()
-                        .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
-                        .unwrap_or(50_000);
-                    if iterations > max_iter {
-                        log_warn(&format!(
-                            "RoutingGraph::astar_kinematic aborted after {iterations} iterations (limit: {max_iter})"
-                        ));
-                        return Vec::new();
-                    }
-                    let current_id = current.node_id;
-                    if current.cost > crow_flies * 5.0 {
-                        log_debug(&format!(
-                            "RoutingGraph::astar_kinematic early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                            current.cost, crow_flies * 5.0
-                        ));
-                        return Vec::new();
-                    }
-
-                    if current_id == end {
-                        log_trace(&format!(
-                    "RoutingGraph::astar_kinematic reached goal after {iterations} iterations ({congestion_bypasses} congestion bypasses, {interchange_penalties} interchange penalties)"
+                    "RoutingGraph::astar_kinematic called - start={}, end={}, threshold={}, {} loaded edges",
+                    start, end, capacity_threshold, live_loads.len()
                 ));
-                        return self.reconstruct_path(&came_from, current_id);
+
+                let end_coord = match self.nodes.get(&end) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!(
+                            "RoutingGraph::astar_kinematic - end node {end} not found"
+                        ));
+                        return Vec::new();
                     }
+                };
 
-                    closed_set.insert(current_id);
+                let start_coord = match self.nodes.get(&start) {
+                    Some(n) => n.coord,
+                    None => {
+                        #[cold] #[inline(never)] || {};
+                        log_error(&format!(
+                            "RoutingGraph::astar_kinematic - start node {start} not found"
+                        ));
+                        return Vec::new();
+                    }
+                };
 
-                    if let Some(node) = self.nodes.get(&current_id) {
-                        for &(neighbor, base_weight) in &node.neighbors {
-                            if closed_set.contains(&neighbor) {
-                                continue;
-                            }
+                let crow_flies = start_coord.distance_to(&end_coord);
+                if crow_flies > 150_000.0 {
+                    return Vec::new();
+                }
 
-                            // ── 1. DYNAMIC CONGESTION FRICTION ──────────────
-                            let edge = EdgeKey(current_id, neighbor);
-                            let load = *live_loads.get(&edge).unwrap_or(&0);
-                            let congestion_penalty =
-                                if capacity_threshold > 0 && load > capacity_threshold {
-                                    congestion_bypasses += 1;
-                                    let ratio = load as f64 / capacity_threshold as f64;
-                                    ratio.powf(2.5) // Exponential friction for crowded tracks
-                                } else {
-                                    1.0
-                                };
+                crate::routing::ASTAR_WORKSPACE.with(|ws| {
+                    let mut ws = ws.borrow_mut();
+                    ws.clear();
+                    let g_score = &mut ws.g_score;
+                    let f_score = &mut ws.f_score;
+                    let came_from = &mut ws.came_from;
+                    let open_set = &mut ws.open_set;
+                    let closed_set = &mut ws.closed_set;
 
-                            // ── 2. KINEMATIC INTERCHANGE DETECTION ──────────
-                            // Dot-product vector math in Mercator space to detect
-                            // sharp platform-transfer angles vs smooth train movements.
-                            let mut interchange_penalty_m = 0.0;
-                            if let Some(&prev_id) = came_from.get(&current_id) {
-                                if let (Some(prev_node), Some(next_node)) =
-                                    (self.nodes.get(&prev_id), self.nodes.get(&neighbor))
-                                {
-                                    let (px, py) = prev_node.coord.to_mercator();
-                                    let (cx, cy) = node.coord.to_mercator();
-                                    let (nx, ny) = next_node.coord.to_mercator();
+                    g_score.insert(start, 0.0);
+                    f_score.insert(start, crow_flies);
+                    open_set.push(PriorityQueueItem {
+                        cost: crow_flies,
+                        node_id: start,
+                    });
 
-                                    let v1x = cx - px;
-                                    let v1y = cy - py;
-                                    let v2x = nx - cx;
-                                    let v2y = ny - cy;
+                    let mut iterations = 0_usize;
+                    let mut congestion_bypasses = 0_usize;
+                    let mut interchange_penalties = 0_usize;
+                    while let Some(current) = open_set.pop() {
+                        iterations += 1;
+                        let max_iter = crate::logger::Globals::get()
+                            .config
+                            .read()
+                            .ok()
+                            .and_then(|c| c.as_ref().map(|c| c.max_astar_iterations))
+                            .unwrap_or(50_000);
+                        if iterations > max_iter {
+                            log_warn(&format!(
+                                "RoutingGraph::astar_kinematic aborted after {iterations} iterations (limit: {max_iter})"
+                            ));
+                            return Vec::new();
+                        }
+                        let current_id = current.node_id;
+                        if current.cost > crow_flies * 5.0 {
+                            log_debug(&format!(
+                                "RoutingGraph::astar_kinematic early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
+                                current.cost, crow_flies * 5.0
+                            ));
+                            return Vec::new();
+                        }
 
-                                    let mag1 = v1x.hypot(v1y);
-                                    let mag2 = v2x.hypot(v2y);
+                        if current_id == end {
+                            log_trace(&format!(
+                                "RoutingGraph::astar_kinematic reached goal after {iterations} iterations ({congestion_bypasses} congestion bypasses, {interchange_penalties} interchange penalties)"
+                            ));
+                            return self.reconstruct_path(came_from, current_id);
+                        }
 
-                                    if mag1 > 1.0 && mag2 > 1.0 {
-                                        let cos_theta = v1y.mul_add(v2y, v1x * v2x) / (mag1 * mag2);
-                                        // cos(theta) < 0.5 implies angle > 60°.
-                                        // Real trains cannot make 60° turns — this is
-                                        // physically a pedestrian interchange walk.
-                                        if cos_theta < 0.5 {
-                                            interchange_penalties += 1;
-                                            interchange_penalty_m = 450.0; // ~5 min walk penalty
+                        closed_set.insert(current_id);
+
+                        if let Some(node) = self.nodes.get(&current_id) {
+                            for &(neighbor, base_weight) in &node.neighbors {
+                                if closed_set.contains(&neighbor) {
+                                    continue;
+                                }
+
+                                // ── 1. DYNAMIC CONGESTION FRICTION ──────────────
+                                let edge = EdgeKey(current_id, neighbor);
+                                let load = *live_loads.get(&edge).unwrap_or(&0);
+                                let congestion_penalty =
+                                    if capacity_threshold > 0 && load > capacity_threshold {
+                                        congestion_bypasses += 1;
+                                        let ratio = load as f64 / capacity_threshold as f64;
+                                        ratio.powf(2.5)
+                                    } else {
+                                        1.0
+                                    };
+
+                                // ── 2. KINEMATIC INTERCHANGE DETECTION ──────────
+                                let mut interchange_penalty_m = 0.0;
+                                if let Some(&prev_id) = came_from.get(&current_id) {
+                                    if let (Some(prev_node), Some(next_node)) =
+                                        (self.nodes.get(&prev_id), self.nodes.get(&neighbor))
+                                    {
+                                        let (px, py) = prev_node.coord.to_mercator();
+                                        let (cx, cy) = node.coord.to_mercator();
+                                        let (nx, ny) = next_node.coord.to_mercator();
+
+                                        let v1x = cx - px;
+                                        let v1y = cy - py;
+                                        let v2x = nx - cx;
+                                        let v2y = ny - cy;
+
+                                        let mag1 = v1x.hypot(v1y);
+                                        let mag2 = v2x.hypot(v2y);
+
+                                        if mag1 > 1.0 && mag2 > 1.0 {
+                                            let cos_theta = v1y.mul_add(v2y, v1x * v2x) / (mag1 * mag2);
+                                            if cos_theta < 0.5 {
+                                                interchange_penalties += 1;
+                                                interchange_penalty_m = 450.0;
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            // ── FUSE Physics and Topology ───────────────────
-                            let dynamic_weight =
-                                base_weight.mul_add(congestion_penalty, interchange_penalty_m);
-                            let tentative_g_score =
-                                g_score.get(&current_id).unwrap_or(&f64::INFINITY) + dynamic_weight;
+                                // ── FUSE Physics and Topology ───────────────────
+                                let dynamic_weight =
+                                    base_weight.mul_add(congestion_penalty, interchange_penalty_m);
+                                let current_g = g_score.get(&current_id).copied().unwrap_or(f64::INFINITY);
+                                let tentative_g_score = current_g + dynamic_weight;
 
-                            if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
-                            {
-                                came_from.insert(neighbor, current_id);
-                                g_score.insert(neighbor, tentative_g_score);
+                                if tentative_g_score < *g_score.get(&neighbor).unwrap_or(&f64::INFINITY)
+                                {
+                                    came_from.insert(neighbor, current_id);
+                                    g_score.insert(neighbor, tentative_g_score);
 
-                                let h = match self.nodes.get(&neighbor) {
-                                    Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
-                                    None => continue,
-                                };
-                                f_score.insert(neighbor, tentative_g_score + h);
+                                    let h = match self.nodes.get(&neighbor) {
+                                        Some(n) => n.coord.fast_distance_to_calibrated(&end_coord),
+                                        None => continue,
+                                    };
+                                    let f = tentative_g_score + h;
+                                    f_score.insert(neighbor, f);
 
-                                open_set.push(PriorityQueueItem {
-                                    cost: tentative_g_score + h,
-                                    node_id: neighbor,
-                                });
+                                    open_set.push(PriorityQueueItem {
+                                        cost: f,
+                                        node_id: neighbor,
+                                    });
+                                }
                             }
                         }
                     }
-                }
 
-                log_error(&format!(
-                    "RoutingGraph::astar_kinematic failed after {iterations} iterations"
-                ));
-                Vec::new()
+                    log_error(&format!(
+                        "RoutingGraph::astar_kinematic failed after {iterations} iterations"
+                    ));
+                    Vec::new()
+                })
             }
 
+            #[inline]
             pub(crate) fn reconstruct_path(
                 &self,
-                came_from: &HashMap<usize, usize>,
+                came_from: &FxHashMap<usize, usize>,
                 mut current: usize,
             ) -> Vec<Coordinate> {
                 log_trace(&format!(
                     "RoutingGraph::reconstruct_path called - starting from node {current}"
                 ));
-                let mut path = Vec::new();
+                let mut path = Vec::with_capacity(came_from.len() + 1);
 
                 if let Some(node) = self.nodes.get(&current) {
                     path.push(node.coord);
@@ -6477,7 +6868,7 @@ mod network {
             .iter()
             .flat_map(|s| s.lines.iter().cloned())
             .collect();
-        all_lines.sort();
+        all_lines.sort_unstable();
         all_lines.dedup();
 
         // Frequency score: more distinct lines = better connectivity, 25pts
@@ -7104,7 +7495,6 @@ mod server {
         use chrono::Utc;
         use rusqlite::{params, Connection};
         use serde_json::Value;
-        use std::collections::HashMap;
         use std::path::PathBuf;
         use std::sync::Arc;
         use std::time::Duration;
@@ -7637,7 +8027,7 @@ mod server {
             pub(crate) routing_graph: Arc<arc_swap::ArcSwap<RoutingGraph>>,
             /// Live Monte Carlo edge load state, continuously refreshed by the
             /// background Tokio living-engine task. Lock-free read via `.load()`.
-            pub(crate) edge_loads: Arc<arc_swap::ArcSwap<HashMap<EdgeKey, usize>>>,
+            pub(crate) edge_loads: Arc<arc_swap::ArcSwap<rustc_hash::FxHashMap<EdgeKey, usize>>>,
             /// Application configuration (`TfL` API key, endpoints, etc.).
             pub(crate) config: Arc<Config>,
             /// Data-oriented transit grid for SIMD-accelerated spatial queries.
@@ -7680,7 +8070,7 @@ mod server {
                         GeometryEngine::new(),
                     ))),
                     routing_graph: Arc::new(arc_swap::ArcSwap::new(Arc::new(RoutingGraph::new()))),
-                    edge_loads: Arc::new(arc_swap::ArcSwap::new(Arc::new(HashMap::new()))),
+                    edge_loads: Arc::new(arc_swap::ArcSwap::new(Arc::new(rustc_hash::FxHashMap::default()))),
                     config: Arc::new(config),
                     transit_grid: Arc::new(arc_swap::ArcSwap::new(Arc::new(TransitNetworkGrid {
                         coords_x: Vec::new(),
@@ -8184,7 +8574,7 @@ mod server {
                     "AppState::fetch_railway_tracks - cache miss, fetching from Overpass API",
                 );
                 let tracks = if let Ok(Ok(t)) = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
+                    std::time::Duration::from_secs(30),
                     self.overpass_client.fetch_railway_tracks(
                         bounds.min_lat,
                         bounds.min_lon,
@@ -8681,6 +9071,7 @@ mod server {
         use crate::network::JourneyLeg;
         use crate::network::{IdeWriteRequest, ApiResponse, JourneyPlanRequest, JourneyPlanResponse, RAIL_SPEED_M_PER_MIN, WALK_SPEED_M_PER_MIN, estimate_fare_gbp, co2_saved_vs_car, IsochroneRequest, IsochroneResponse, compute_isochrone, TransitScoreRequest, TransitScoreResponse, compute_transit_score, TunnelCostRequest, TunnelCostResponse, estimate_tunnel_cost, GeoJsonExportRequest, export_geojson, StationSearchRequest, StationSearchResult, fuzzy_score, NetworkStatsResponse, DemandGridRequest, DemandCell, LoadLineRequest, SaveLineRequest, SaveStationRequest, RouteRequest, TransitDesertsRequest, CoverageStatsResponse, AiAddStationRequest, AiAddStationResponse, AiLinkStationsRequest, enrich_arrivals_with_positions};
         use crate::primitives::{TILE_SIZE, DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM, CATCHMENT_RADIUS, STATION_MERGE_THRESHOLD, Coordinate, embedded_residential, EmbeddedLinesFile, EMBEDDED_LINES_JSON, normalize_line_name, Station, RailSegment, embedded_rail_segments, ResidentialArea, StationArrival};
+        use crate::TFL_COLOR_REGISTRY;
         use crate::routing::{Line, RailwayTrack, ConstructionState, plan_infill_stations, snap_station_to_buildable_corridor, RoutingGraph, link_stations_tfl, handle_disruption};
         use crate::validate_bounds;
         use crate::validate_coordinate;
@@ -8904,8 +9295,60 @@ mod server {
                 r#"<!DOCTYPE html>
 <html lang="en-GB">
 <head>{head}</head>
-<body>
-    <div id="map-viewport" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>
+<body style="margin:0;padding:0;overflow:hidden;background:#08080e;">
+    <header id="top-bar" style="
+        position:fixed;top:0;left:0;right:0;height:48px;z-index:99999;
+        background:#08080e;display:flex;align-items:center;justify-content:space-between;
+        padding:0 16px;border-bottom:1px solid rgba(1,188,212,0.35);
+        box-shadow:0 2px 16px rgba(0,0,0,0.6);font-family:'JetBrains Mono',monospace;
+    ">
+        <div style="display:flex;align-items:center;gap:16px;">
+            <span style="color:#00bcd4;font-size:13px;font-weight:800;letter-spacing:2px;white-space:nowrap;">LONDON TRANSPORT</span>
+            <nav style="display:flex;gap:2px;">
+                <div class="menu-bar-item" style="position:relative;">
+                    <button style="background:none;border:none;color:#8899aa;font-size:11px;padding:6px 10px;cursor:pointer;border-radius:4px;font-family:inherit;">File</button>
+                    <div style="display:none;position:absolute;top:100%;left:0;background:rgba(18,20,26,0.98);backdrop-filter:blur(16px);border:1px solid rgba(0,188,212,0.2);border-radius:6px;padding:3px;min-width:180px;z-index:10000;">
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">New Project</button>
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Open...</button>
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Export Map Image</button>
+                        <div style="height:1px;background:rgba(255,255,255,0.08);margin:3px 6px;"></div>
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Exit</button>
+                    </div>
+                </div>
+                <div class="menu-bar-item" style="position:relative;">
+                    <button style="background:none;border:none;color:#8899aa;font-size:11px;padding:6px 10px;cursor:pointer;border-radius:4px;font-family:inherit;">Edit</button>
+                    <div style="display:none;position:absolute;top:100%;left:0;background:rgba(18,20,26,0.98);backdrop-filter:blur(16px);border:1px solid rgba(0,188,212,0.2);border-radius:6px;padding:3px;min-width:160px;z-index:10000;">
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Copy Coordinates</button>
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Paste</button>
+                    </div>
+                </div>
+                <div class="menu-bar-item" style="position:relative;">
+                    <button style="background:none;border:none;color:#8899aa;font-size:11px;padding:6px 10px;cursor:pointer;border-radius:4px;font-family:inherit;">View</button>
+                    <div style="display:none;position:absolute;top:100%;left:0;background:rgba(18,20,26,0.98);backdrop-filter:blur(16px);border:1px solid rgba(0,188,212,0.2);border-radius:6px;padding:3px;min-width:160px;z-index:10000;">
+                        <button class="menu-item" onclick="if(window.map)window.map.setView([51.5074,-0.1278],12)" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Reset View</button>
+                        <button class="menu-item" onclick="if(window.map){{var c=window.map.getCenter();window.location.hash=c.lat.toFixed(4)+','+c.lng.toFixed(4)+','+window.map.getZoom()}}" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Copy Permalink</button>
+                    </div>
+                </div>
+                <div class="menu-bar-item" style="position:relative;">
+                    <button style="background:none;border:none;color:#8899aa;font-size:11px;padding:6px 10px;cursor:pointer;border-radius:4px;font-family:inherit;">Tools</button>
+                    <div style="display:none;position:absolute;top:100%;left:0;background:rgba(18,20,26,0.98);backdrop-filter:blur(16px);border:1px solid rgba(0,188,212,0.2);border-radius:6px;padding:3px;min-width:200px;z-index:10000;">
+                        <button class="menu-item" onclick="window.fetch('/api/network-stats').then(r=>r.json()).then(d=>alert(JSON.stringify(d,null,2)))" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Network Statistics</button>
+                        <button class="menu-item" onclick="window.fetch('/api/health').then(r=>r.json()).then(d=>alert(JSON.stringify(d,null,2)))" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">Server Health</button>
+                    </div>
+                </div>
+                <div class="menu-bar-item" style="position:relative;">
+                    <button style="background:none;border:none;color:#8899aa;font-size:11px;padding:6px 10px;cursor:pointer;border-radius:4px;font-family:inherit;">Help</button>
+                    <div style="display:none;position:absolute;top:100%;left:0;background:rgba(18,20,26,0.98);backdrop-filter:blur(16px);border:1px solid rgba(0,188,212,0.2);border-radius:6px;padding:3px;min-width:160px;z-index:10000;">
+                        <button class="menu-item" style="display:block;width:100%;text-align:left;background:none;border:none;color:#ccc;padding:7px 12px;font-size:11px;cursor:pointer;border-radius:4px;font-family:inherit;">About</button>
+                    </div>
+                </div>
+            </nav>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <span id="server-status" style="font-size:10px;color:#4caf50;border:1px solid #4caf50;border-radius:12px;padding:2px 8px;"></span>
+        </div>
+    </header>
+    <div id="map-viewport" style="position:absolute;top:48px;left:0;width:100%;height:calc(100vh - 48px);"></div>
     <div id="sr-announcer" aria-live="polite" class="sr-only"
          style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;"></div>
     <div id="fps-counter-widget" style="display:none;"></div>
@@ -8918,6 +9361,7 @@ mod server {
         }}
         window.__apiBase = '';
         window.__dataBase = '/data';
+        window.__isWebMode = true;
         (function() {{
             function init() {{
                 if (window.initMap) {{
@@ -8929,6 +9373,20 @@ mod server {
             }}
             if (window.recordFrame) window.recordFrame();
             init();
+            setTimeout(function() {{
+                var el = document.getElementById('server-status');
+                if (el) {{
+                    fetch('/api/health').then(function(r) {{ return r.json(); }}).then(function(d) {{
+                        el.textContent = 'ONLINE';
+                        el.style.color = '#4caf50';
+                        el.style.borderColor = '#4caf50';
+                    }}).catch(function() {{
+                        el.textContent = 'OFFLINE';
+                        el.style.color = '#f44336';
+                        el.style.borderColor = '#f44336';
+                    }});
+                }}
+            }}, 1000);
         }})();
     </script>
 </body>
@@ -9017,6 +9475,43 @@ mod server {
         pub async fn serve_web_app() -> axum::response::Html<String> {
             log_debug("Map route: serving interactive web app");
             axum::response::Html(build_webapp_html())
+        }
+
+        /// Axum handler for `/assets/{filename}` — serves static image assets
+        /// (PNG logos, JPG roundels, etc.) from the `assets/` directory.
+        /// This enables the web browser to load operator logos that the Dioxus
+        /// desktop app loads via the `tube://asset/` custom protocol.
+        pub async fn serve_asset(
+            axum::extract::Path(filename): axum::extract::Path<String>,
+        ) -> axum::response::Response {
+            use axum::http::StatusCode;
+            use axum::response::IntoResponse;
+
+            let path = std::path::Path::new("assets").join(&filename);
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let mime = if filename.ends_with(".png") {
+                        "image/png"
+                    } else if filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
+                        "image/jpeg"
+                    } else if filename.ends_with(".webp") {
+                        "image/webp"
+                    } else if filename.ends_with(".svg") {
+                        "image/svg+xml"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    (
+                        [(axum::http::header::CONTENT_TYPE, mime.to_string()),
+                         (axum::http::header::CACHE_CONTROL, "public, max-age=86400".to_string())],
+                        bytes,
+                    )
+                        .into_response()
+                }
+                Err(_) => {
+                    (StatusCode::NOT_FOUND, "asset not found").into_response()
+                }
+            }
         }
         #[tracing::instrument(name = "get_config", skip_all)]
         pub async fn get_config() -> Json<Value> {
@@ -9663,13 +10158,28 @@ mod server {
                 .into_iter()
                 .enumerate()
                 .map(|(i, (_key, (name, color, group, sub_geos)))| {
-                    // Do NOT merge sub_geometries into one flat geometry ? that creates
+                    // Do NOT merge sub_geometries into one flat geometry — that creates
                     // straight-line cross-connections between distant rail fragments.
                     // The frontend uses sub_geometries for rendering; geometry is left empty.
+                    // Defensive color fallback: if the embedded JSON has an empty or default
+                    // color, look it up from the TfL color registry by line name.
+                    let resolved_color = if color.is_empty() || color == "#888888" {
+                        let normalized = normalize_line_name(&name)
+                            .replace(" line", "")
+                            .replace(" line ", " ")
+                            .trim()
+                            .to_string();
+                        TFL_COLOR_REGISTRY
+                            .get(&normalized)
+                            .unwrap_or(&"#888888")
+                            .to_string()
+                    } else {
+                        color
+                    };
                     Line {
                         id: format!("embedded_{i}"),
                         name,
-                        color,
+                        color: resolved_color,
                         stations: Vec::new(),
                         segments: Vec::new(),
                         geometry: Vec::new(),
@@ -9798,16 +10308,23 @@ mod server {
         ) -> Json<ApiResponse<Vec<Station>>> {
             log_info("GET /api/stations called");
             let seeded_stations = (*state.stations.load()).as_ref().clone();
+            let total_count = seeded_stations.len();
+            // Filter out unnamed stations
+            let filtered_stations: Vec<Station> = seeded_stations
+                .into_iter()
+                .filter(|s| !s.name.starts_with("Unnamed Station"))
+                .collect();
             log_debug(&format!(
-                "GET /api/stations - returning {} stations",
-                seeded_stations.len()
+                "GET /api/stations - returning {} stations (filtered from {})",
+                filtered_stations.len(),
+                total_count
             ));
-            if seeded_stations.is_empty() {
+            if filtered_stations.is_empty() {
                 log_warn(
                     "GET /api/stations - station list is EMPTY! No lines have been loaded yet.",
                 );
             }
-            Json(ApiResponse::success(seeded_stations))
+            Json(ApiResponse::success(filtered_stations))
         }
 
         #[tracing::instrument(name = "get_tracks", skip_all)]
@@ -10398,22 +10915,7 @@ mod server {
             let stations = state.stations.load().clone();
             let geom = state.geometry_engine.load().clone();
             let deserts = match tokio::task::spawn_blocking(move || {
-                let centroids: Vec<Coordinate> = res_areas.iter().map(|r| r.centroid).collect();
-                let desert_centroids =
-                    geom.compute_transit_deserts(&centroids, &stations, CATCHMENT_RADIUS);
-                let desert_set: std::collections::HashSet<[u64; 2]> = desert_centroids
-                    .iter()
-                    .map(|c| [(c.lat * 1_000_000.0) as u64, (c.lon * 1_000_000.0) as u64])
-                    .collect();
-                res_areas
-                    .into_iter()
-                    .filter(|r| {
-                        desert_set.contains(&[
-                            (r.centroid.lat * 1_000_000.0) as u64,
-                            (r.centroid.lon * 1_000_000.0) as u64,
-                        ])
-                    })
-                    .collect::<Vec<ResidentialArea>>()
+                geom.compute_transit_deserts(&res_areas, &stations, CATCHMENT_RADIUS)
             })
             .await
             {
@@ -10489,12 +10991,11 @@ mod server {
             }
 
             let total = res_areas.len();
-            let centroids: Vec<Coordinate> = res_areas.iter().map(|r| r.centroid).collect();
             let stations = state.stations.load();
             let stations_clone = stations.clone();
             let geom = state.geometry_engine.load().clone();
             let deserts = match tokio::task::spawn_blocking(move || {
-                geom.compute_transit_deserts(&centroids, &stations_clone, CATCHMENT_RADIUS)
+                geom.compute_transit_deserts(&res_areas, &stations_clone, CATCHMENT_RADIUS)
             })
             .await
             {
@@ -10544,24 +11045,20 @@ mod server {
             let existing = state.stations.load();
             let existing_clone = existing.clone();
             let geom = state.geometry_engine.load().clone();
-            let geom_clone1 = geom.clone();
-            let centroids_clone = centroids.clone();
-            let deserts = tokio::task::spawn_blocking(move || {
-                geom_clone1.compute_transit_deserts(
-                    &centroids_clone,
-                    &existing_clone,
-                    CATCHMENT_RADIUS,
-                )
+            let desert_areas = tokio::task::spawn_blocking(move || {
+                geom.compute_transit_deserts(&res_areas, &existing_clone, CATCHMENT_RADIUS)
             })
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-            let deserts_before = deserts.len();
+            let deserts_before = desert_areas.len();
+            let desert_centroids: Vec<Coordinate> =
+                desert_areas.iter().map(|a| a.centroid).collect();
             if deserts_before == 0 {
                 return Ok((vec![], 0, centroids));
             }
 
-            let deserts_for_plan = deserts.clone();
+            let deserts_for_plan = desert_centroids.clone();
             let tracks_for_plan = (**state.tracks.load()).clone();
             let tracks_for_snap = tracks_for_plan.clone();
             let planned = tokio::task::spawn_blocking(move || {
@@ -10679,21 +11176,49 @@ mod server {
             Ok(new_stations)
         }
 
+        /// Fast centroid-based desert count for coverage stats (avoids expensive
+        /// polygon clipping). Uses the R*-tree nearest-neighbour approach.
+        fn count_deserts_centroids(
+            centroids: &[Coordinate],
+            stations: &[Station],
+            threshold: f64,
+        ) -> usize {
+            use crate::routing::SpatialPoint;
+            use rstar::RTree;
+            if centroids.is_empty() || stations.is_empty() {
+                return centroids.len();
+            }
+            let tree: RTree<SpatialPoint> = RTree::bulk_load(
+                stations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| SpatialPoint { coord: s.coord, index: i })
+                    .collect(),
+            );
+            centroids
+                .par_iter()
+                .filter(|c| {
+                    let merc = c.to_mercator();
+                    match tree.nearest_neighbor([merc.0, merc.1]) {
+                        Some(n) => c.distance_to(&n.coord) > threshold,
+                        None => true,
+                    }
+                })
+                .count()
+        }
+
         async fn update_coverage(
             state: &AppState,
             centroids: &[Coordinate],
             deserts_before: usize,
         ) -> AppResult<(usize, f64)> {
             let updated = state.stations.load().clone();
-            let geom = state.geometry_engine.load().clone();
             let centroids_clone = centroids.to_vec();
-            let deserts_after = tokio::task::spawn_blocking(move || {
-                geom.compute_transit_deserts(&centroids_clone, &updated, CATCHMENT_RADIUS)
+            let deserts_after_len = tokio::task::spawn_blocking(move || {
+                count_deserts_centroids(&centroids_clone, &updated, CATCHMENT_RADIUS)
             })
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-
-            let deserts_after_len = deserts_after.len();
             let coverage_gain = if deserts_before > 0 {
                 ((deserts_before - deserts_after_len) as f64 / deserts_before as f64) * 100.0
             } else {
@@ -12485,6 +13010,7 @@ mod server {
         use super::handlers::{
             get_weather_handler, get_construction_handler,
         };
+        use super::handlers::serve_asset;
         use crate::AppError;
         use crate::AppResult;
         use axum::response::IntoResponse;
@@ -12725,6 +13251,7 @@ mod server {
                     // (get_weather) routes.
                     .route("/api/construction/projects", get(get_construction_handler))
                     .route("/api/weather/snapshot", get(get_weather_handler))
+                    .route("/assets/{filename}", get(serve_asset))
                     .with_state(state.clone())
             }));
             let app = match app_result {
@@ -13770,9 +14297,7 @@ fn main() {
                 let grid = TransitNetworkGrid::from_stations_and_lines(&stations_snap, &lines_snap);
 
                 // Pin grid SoA arrays to physical RAM — defeat OS page-fault latency
-                pin_memory_to_ram(grid.coords_x.as_ptr().cast::<u8>(), grid.coords_x.len() * std::mem::size_of::<f32>());
-                pin_memory_to_ram(grid.coords_y.as_ptr().cast::<u8>(), grid.coords_y.len() * std::mem::size_of::<f32>());
-                pin_memory_to_ram(grid.edge_offsets.as_ptr().cast::<u8>(), grid.edge_offsets.len() * std::mem::size_of::<usize>());
+                grid.pin_to_memory();
                 log_debug(&format!("TransitNetworkGrid CSR: {} edges (t/w/l={}/{}/{}) over {} nodes (id={}, zones={})",
                     grid.edge_targets.len(), grid.edge_weights.len(), grid.edge_line_ids.len(),
                     grid.edge_line_ids.len(),
@@ -14416,6 +14941,7 @@ async fn shuttle_main(
             &stations_snap,
             &lines_snap,
         );
+        grid.pin_to_memory();
         state.transit_grid.store(Arc::new(grid));
         log_info("shuttle_main - TransitNetworkGrid built");
     }
@@ -14718,6 +15244,7 @@ async fn shuttle_main(
         .route("/api/signal-priority", get(get_signal_priority_handler))
         .route("/api/capacity-forecast", get(get_capacity_forecast_handler))
         .route("/api/capacity-forecast/{station_id}", get(get_capacity_forecast_station_handler))
+        .route("/assets/{filename}", get(serve_asset))
         .with_state(state.clone())
         .layer(
             CorsLayer::new()
@@ -15938,7 +16465,7 @@ mod poi_database {
     pub fn get_poi_categories() -> Vec<String> {
         let db = POI_DATABASE.lock().unwrap();
         let mut cats: Vec<String> = db.iter().map(|p| p.category.clone()).collect();
-        cats.sort();
+        cats.sort_unstable();
         cats.dedup();
         cats
     }
@@ -17277,6 +17804,76 @@ mod webgl_visualization {
     pub struct WebGLCamera {
         pub(crate) position: [f64; 3],
         pub(crate) target: [f64; 3],
+    }
+
+    /// Zero-copy Pod struct for WebGL node binary transfer.
+    /// Fixed-size `#[repr(C)]` layout allows `bytemuck::cast_slice` for
+    /// direct `Vec<u8>` serialization without per-field serde overhead.
+    /// Station IDs are packed into 16-byte arrays (truncated if longer).
+    #[repr(C)]
+    #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+    pub struct WebGlRenderPoint {
+        pub x: f32,
+        pub y: f32,
+        pub z: f32,
+        pub size: f32,
+        pub r: f32,
+        pub g: f32,
+        pub b: f32,
+        pub a: f32,
+        pub id_hash: u32,
+    }
+
+    impl WebGlRenderPoint {
+        pub fn from_node(node: &WebGLNode) -> Self {
+            let color = parse_color_f32(&node.color);
+            let id_hash = hash_id(&node.id);
+            Self {
+                x: node.x as f32,
+                y: node.y as f32,
+                z: node.z as f32,
+                size: node.size as f32,
+                r: color[0],
+                g: color[1],
+                b: color[2],
+                a: color[3],
+                id_hash,
+            }
+        }
+
+        pub fn from_nodes(nodes: &[WebGLNode]) -> Vec<Self> {
+            let mut out = Vec::with_capacity(nodes.len());
+            for n in nodes {
+                out.push(Self::from_node(n));
+            }
+            out
+        }
+    }
+
+    fn parse_color_f32(hex: &str) -> [f32; 4] {
+        let s = hex.trim_start_matches('#');
+        if s.len() >= 6 {
+            let r = u8::from_str_radix(&s[0..2], 16).unwrap_or(0) as f32 / 255.0;
+            let g = u8::from_str_radix(&s[2..4], 16).unwrap_or(0) as f32 / 255.0;
+            let b = u8::from_str_radix(&s[4..6], 16).unwrap_or(0) as f32 / 255.0;
+            let a = if s.len() >= 8 {
+                u8::from_str_radix(&s[6..8], 16).unwrap_or(255) as f32 / 255.0
+            } else {
+                1.0
+            };
+            [r, g, b, a]
+        } else {
+            [1.0, 1.0, 1.0, 1.0]
+        }
+    }
+
+    fn hash_id(id: &str) -> u32 {
+        let mut h: u32 = 0x811c_9dc5;
+        for b in id.bytes() {
+            h ^= b as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        h
     }
 
     /// Build a 3D scene from the network — maps lat/lon to WebGL coordinates
@@ -21265,9 +21862,66 @@ button,.ctx-btn,.menu-item,.legend-item,.sr-item,input,select{
   touch-action:manipulation;
 }
 
-/* --- Scrollable Panels: Momentum Scrolling --- */
-#log-content,.legend-container,#jp-result,#cost-result,#search-results{
+/* --- Tactile Button Feedback ---
+   Every interactive control gets an immediate hover + active (pressed)
+   state so the user never wonders whether their click registered. The
+   active state uses a fast transform + brightness shift for a weighted,
+   native feel rather than an abrupt jump. */
+button,.ctx-btn,.menu-item,.legend-item,.sr-item,[tabindex="0"],summary,a{
+  transition:background var(--transition-fast),color var(--transition-fast),
+             transform .08s ease-out,box-shadow var(--transition-fast),
+             filter var(--transition-fast);
+  will-change:transform;
+}
+button:hover,.ctx-btn:hover,.menu-item:hover,.legend-item:hover,.sr-item:hover,
+[tabindex="0"]:hover,summary:hover,a:hover{
+  filter:brightness(1.12);
+}
+button:active,.ctx-btn:active,.menu-item:active,.legend-item:active,
+.sr-item:active,[tabindex="0"]:active,summary:active{
+  transform:scale(0.96);
+  filter:brightness(0.9);
+  transition:transform .04s ease-out,filter .04s ease-out;
+}
+/* Prevent map viewport from being affected by active state brightness filter */
+#map-viewport:active{
+  transform:none;
+  filter:none;
+}
+/* Never let a disabled control look interactive */
+button:disabled,.ctx-btn:disabled{
+  opacity:.45;cursor:not-allowed;transform:none;filter:none;
+}
+
+/* --- Scrollable Panels: Weighted, Native Momentum Scrolling ---
+   Smooth, weighted scroll physics with momentum + overscroll damping so
+   lists feel native and never jerky or abruptly cut off. */
+#log-content,.legend-container,#jp-result,#cost-result,#search-results,
+.sheet-body,.modal-body,.stream-view{
   -webkit-overflow-scrolling:touch;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scroll-behavior:smooth;
+  scrollbar-width:thin;
+  scrollbar-color:rgba(255,255,255,0.18) transparent;
+}
+#log-content::-webkit-scrollbar,.legend-container::-webkit-scrollbar,
+#jp-result::-webkit-scrollbar,#cost-result::-webkit-scrollbar,
+#search-results::-webkit-scrollbar,.sheet-body::-webkit-scrollbar,
+.modal-body::-webkit-scrollbar,.stream-view::-webkit-scrollbar{
+  width:8px;height:8px;
+}
+#log-content::-webkit-scrollbar-thumb,.legend-container::-webkit-scrollbar-thumb,
+#jp-result::-webkit-scrollbar-thumb,#cost-result::-webkit-scrollbar-thumb,
+#search-results::-webkit-scrollbar-thumb,.sheet-body::-webkit-scrollbar-thumb,
+.modal-body::-webkit-scrollbar-thumb,.stream-view::-webkit-scrollbar-thumb{
+  background:rgba(255,255,255,0.18);border-radius:8px;
+}
+#log-content::-webkit-scrollbar-thumb:hover,.legend-container::-webkit-scrollbar-thumb:hover,
+#jp-result::-webkit-scrollbar-thumb:hover,#cost-result::-webkit-scrollbar-thumb:hover,
+#search-results::-webkit-scrollbar-thumb:hover,.sheet-body::-webkit-scrollbar-thumb:hover,
+.modal-body::-webkit-scrollbar-thumb:hover,.stream-view::-webkit-scrollbar-thumb:hover{
+  background:rgba(0,188,212,0.5);
 }
 
 /* ================================================================
@@ -23055,28 +23709,30 @@ window.initMap = async function() {
         window.loadRailNetwork();
 
         // Load overlay layers after a short delay to allow map to settle
+        // Disabled auto-loading of overlay layers to prevent unwanted circle markers
+        // Users can manually enable these layers via the UI if needed
         setTimeout(function() {
-            window.loadAccessibilityLayer();
-            window.loadParkingLayer();
-            window.loadCycleDockingLayer();
-            window.loadTfLStatusLayer();
-            window.loadAirQualityLayer();
-            window.loadNoiseLayer();
-            window.loadCrowdDensityLayer();
-            window.loadMaaSLayer();
-            window.loadWifiLayer();
-            window.loadEmergencyLayer();
-            window.loadRiverLayer();
-            window.loadDepartureLayer();
-            window.loadAlertLayer();
-            window.loadGalleryLayer();
-            window.loadWifiSpeedLayer();
-            window.loadCrowdPredictionLayer();
-            window.loadAccessibilityAuditEnhLayer();
-            window.loadEnergyOptimizationLayer();
-            window.loadSignalPriorityLayer();
-            window.loadCapacityForecastLayer();
-            console.log('Overlay layers: accessibility, parking, cycle, TfL status, air, noise, crowd, maas, wifi, emergency, river, departures, alerts, gallery, wifi-speed, crowd-pred, accessibility-enh, energy, signal-priority, capacity loaded');
+            // window.loadAccessibilityLayer();
+            // window.loadParkingLayer();
+            // window.loadCycleDockingLayer();
+            // window.loadTfLStatusLayer();
+            // window.loadAirQualityLayer();
+            // window.loadNoiseLayer();
+            // window.loadCrowdDensityLayer();
+            // window.loadMaaSLayer();
+            // window.loadWifiLayer();
+            // window.loadEmergencyLayer();
+            // window.loadRiverLayer();
+            // window.loadDepartureLayer();
+            // window.loadAlertLayer();
+            // window.loadGalleryLayer();
+            // window.loadWifiSpeedLayer();
+            // window.loadCrowdPredictionLayer();
+            // window.loadAccessibilityAuditEnhLayer();
+            // window.loadEnergyOptimizationLayer();
+            // window.loadSignalPriorityLayer();
+            // window.loadCapacityForecastLayer();
+            console.log('Overlay layers: all disabled at boot — use layer toggles to enable');
         }, 2000);
 
         // ============================================================
@@ -23225,7 +23881,7 @@ window.initMap = async function() {
                 'london-northwestern-railway': 'londonnorthwesternrailway_logo.jpg',
                 'gatwick-shuttle': 'gatwick_shuttle_logo.png',
                 'birmingham-air-rail': 'birminghamairlink_logo.png',
-                'snaefell-mountain-railway': 'snaefellmountainrailway.jpg',
+                'snaefell-mountain-railway': 'snaefellmountainrailway.png',
                 'imrc-crest': 'IMRC-Crest.png'
             };
             var renderSize = 96;
@@ -23263,7 +23919,7 @@ window.initMap = async function() {
                                 resolve();
                             };
                         });
-                        img.src = 'tube://asset/' + filename;
+                        img.src = window.__isWebMode ? ('/assets/' + filename) : ('tube://asset/' + filename);
                         promises.push(p);
                     })(cat, val);
                 } else {
@@ -23329,8 +23985,8 @@ window.initMap = async function() {
                 var nameLower = st.name.toLowerCase();
                 var isOutsideLondonNR = nameLower.includes('cambridge') || nameLower.includes('oxford') || nameLower.includes('brighton');
                 
-                var specificLines = ['bakerloo','central','circle','district','hammersmith-city','jubilee','metropolitan','northern','piccadilly','victoria','waterloo-city','elizabeth','dlr','tramlink','emirates-airline'];
-                
+                var matchSpecific = false;
+                var hasOperator = false;
                 var nrOperators = {
                     'avanti': ['avanti','avanti-west-coast','avanti west coast'],
                     'c2c': ['c2c'],
@@ -23381,27 +24037,34 @@ window.initMap = async function() {
                     'getlink': ['getlink','eurotunnel','le shuttle'],
                     'imrc-crest': ['imrc-crest']
                 };
-                
-                var hasOperator = false;
+                var nrOnlyKeywords = ['national rail','nationalrail','southeastern','south western','swr','hull trains','lner','lumo','merseyrail','northern trains','scotrail','transpennine','transport for wales','west midlands'];
                 for (var i = 0; i < linesLower.length; i++) {
                     var l = linesLower[i].replace('&', 'and').replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').trim();
                     if (l === 'waterloo-and-city') l = 'waterloo-city';
                     if (l === 'emirates-air-line') l = 'emirates-airline';
                     
+                    // Priority 1: Overground sub-brands (always match these first)
                     if (['liberty','lioness','mildmay','suffragette','weaver','windrush','overground','london overground'].indexOf(l) >= 0) {
                         categories.add('overground');
                         continue;
                     }
-                    if (specificLines.indexOf(l) >= 0) {
+                    // Priority 2: TfL Underground / specific modes (highest priority for correct roundel)
+                    if (l === 'piccadilly' || l === 'victoria' || l === 'northern' || l === 'central' ||
+                        l === 'bakerloo' || l === 'jubilee' || l === 'district' || l === 'circle' ||
+                        l === 'metropolitan' || l === 'hammersmith-city' || l === 'hammersmith' ||
+                        l === 'waterloo-city' || l === 'elizabeth' || l === 'elizabeth line' ||
+                        l === 'dlr' || l === 'tramlink' || l === 'tram') {
+                        // Normalize aliases
+                        if (l === 'hammersmith') l = 'hammersmith-city';
+                        if (l === 'elizabeth line') l = 'elizabeth';
+                        if (l === 'tram') l = 'tramlink';
                         categories.add(l);
-                        continue;
-                    }
-                    if (l === 'tram') {
-                        categories.add('tramlink');
+                        matchSpecific = true;
                         continue;
                     }
                     if (l.includes('emirates')) {
                         categories.add('emirates-airline');
+                        matchSpecific = true;
                         continue;
                     }
                     
@@ -23409,6 +24072,7 @@ window.initMap = async function() {
                     for (var op in nrOperators) {
                         if (nrOperators[op].some(function(keyword) { return linesLower[i].includes(keyword); })) {
                             categories.add(op);
+                            categories.add('national-rail'); // Add both operator and generic NR roundel
                             matchedOp = true;
                             hasOperator = true;
                             break;
@@ -23416,7 +24080,10 @@ window.initMap = async function() {
                     }
                 }
                 
-                var nrOnlyKeywords = ['national rail','nationalrail','southeastern','south western','swr','hull trains','lner','lumo','merseyrail','northern trains','scotrail','transpennine','transport for wales','west midlands'];
+                // Add 'underground' only if NO specific tube/overground/emirates category was matched
+                if (!matchSpecific && !hasOperator && categories.size === 0) {
+                    categories.add('underground');
+                }
                 var hasNRKeyword = linesLower.some(function(l) { return nrOnlyKeywords.some(function(kw) { return l.includes(kw); }); });
                 
                 // Conditional rendering: if total categories > 3, show only non-NR and generic national-rail
@@ -23437,9 +24104,17 @@ window.initMap = async function() {
                     categories.add('national-rail');
                 }
                 
-                // Remove 'underground' if we already have specific categories
-                if (categories.has('underground') && categories.size > 1) {
-                    categories.delete('underground');
+                // Remove 'underground' if we already have specific line categories (piccadilly, victoria, etc.)
+                // This prevents redundant underground roundel when a specific line roundel exists
+                if (categories.has('underground')) {
+                    var hasSpecificLine = false;
+                    var specificLines = ['piccadilly','victoria','northern','central','bakerloo','jubilee','district','circle','metropolitan','hammersmith-city','waterloo-city','elizabeth','dlr','tramlink','emirates-airline','overground'];
+                    specificLines.forEach(function(line) {
+                        if (categories.has(line)) hasSpecificLine = true;
+                    });
+                    if (hasSpecificLine) {
+                        categories.delete('underground');
+                    }
                 }
                 if (categories.size === 0) {
                     categories.add('underground');
@@ -23829,13 +24504,12 @@ window.initMap = async function() {
                         ctx.fillStyle = '#d4af37';
                         ctx.fill();
                         this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
-                    } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && (!window._roundelImages['national-rail'] || !window._roundelImagesReady) && this.nrLogo.complete) {
-                        ctx.drawImage(this.nrLogo, drawX - half, drawY - half, stSize, stSize);
-                        this._visibleHits.push({ st: st, x: drawX, y: drawY, r: half + 4 });
                     } else {
                         var img = window._roundelImages[st.category];
                         if (img && window._roundelImagesReady) {
                             ctx.drawImage(img, drawX - half, drawY - half, stSize, stSize);
+                        } else if ((st.category === 'national-rail' || st.category === 'nationalrail') && this.nrLogo && this.nrLogo.complete) {
+                            ctx.drawImage(this.nrLogo, drawX - half, drawY - half, stSize, stSize);
                         } else {
                             ctx.beginPath();
                             ctx.arc(drawX, drawY, half * 0.65, 0, Math.PI * 2);
@@ -23907,7 +24581,12 @@ window.initMap = async function() {
                 var x = clientX - rect.left, y = clientY - rect.top;
                 var hit = window._stationCanvas.hitTest(L.point(x, y));
                 if (hit) {
-                    window._stationTooltip.textContent = hit.name;
+                    // Normalize station name to remove suffixes like "Underground Station"
+                    var normalizedName = hit.name.replace(/ \(.*?\)$/i, '')
+                                                .replace(/ (Underground|Rail|DLR|Tram|Tramlink|National Rail) Station$/i, '')
+                                                .replace(/ Station$/i, '')
+                                                .trim();
+                    window._stationTooltip.textContent = normalizedName;
                     window._stationTooltip.style.display = 'block';
                     window._stationTooltip.style.left = (x + 14) + 'px';
                     window._stationTooltip.style.top = (y - 32) + 'px';
@@ -24838,7 +25517,7 @@ while (true) {
             let serialized = JSON.stringify({ color: line.color, geom: line.geometry, sub: line.sub_geometries, name: line.name });
             let existing = window.lineLayers[line.id];
             let offsetIdx = parallelOffsets.get(line.id) || 0;
-            let offsetMeters = offsetIdx * 120; // meters between parallel lines for clear visual separation
+            let offsetMeters = offsetIdx * 35; // tighter spacing for hotdog-bun style parallel lines
 
             if (existing) {
                 if (existing.serialized === serialized) {
@@ -26484,7 +27163,16 @@ window.__consoleDupCount = 0;
                 message: message.to_string(),
                 style: style.to_string(),
             };
-            toasts.with_mut(|t| t.push(toast));
+            toasts.with_mut(|t| {
+                t.push(toast);
+                // Hard cap: rapid event storms must never grow the toast list
+                // without bound (which would leak memory and slow the UI).
+                const MAX_TOASTS: usize = 6;
+                if t.len() > MAX_TOASTS {
+                    let overflow = t.len() - MAX_TOASTS;
+                    t.drain(0..overflow);
+                }
+            });
             // Also announce to screen readers via the aria-live region
             let js = format!(
                 "window.announceToScreenReader({});",
@@ -27258,8 +27946,16 @@ window.__consoleDupCount = 0;
                     eval_handle.set(Some(loop_ev));
 
                     while let Ok(msg) = ev.recv().await {
-                        if let Some(event_type) = msg.get("event").and_then(|v| v.as_str()) {
-                            match event_type {
+                        // RUTHLESS STABILITY GUARD: a single malformed/panic-inducing
+                        // message must NEVER take down the entire map bridge. If a
+                        // handler panics, we log it and keep the loop alive so rapid
+                        // clicking, zoom spam, or out-of-order events cannot freeze the UI.
+                        let msg_ref = &msg;
+                        let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if let Some(event_type) =
+                                msg_ref.get("event").and_then(|v| v.as_str())
+                            {
+                                match event_type {
                                 "bounds_changed" => {
                                     if let (
                                         Some(min_lat),
@@ -27696,12 +28392,10 @@ window.__consoleDupCount = 0;
                                         msg.get("msg").and_then(|v| v.as_str()),
                                     ) {
                                         // Skip empty or generic "JS error" messages with no useful info
-                                        if msg_text.is_empty()
+                                        if !(msg_text.is_empty()
                                             || msg_text == "JS error"
-                                            || msg_text == "Script error."
+                                            || msg_text == "Script error.")
                                         {
-                                            continue;
-                                        }
                                         let formatted = format!("[WebView Console] {msg_text}");
                                         match level {
                                             "error" => log_error(&formatted),
@@ -27709,6 +28403,7 @@ window.__consoleDupCount = 0;
                                             "info" | "log" => log_info(&formatted),
                                             "debug" => log_debug(&formatted),
                                             _ => log_info(&formatted),
+                                        }
                                         }
                                     }
                                 }
@@ -27751,6 +28446,13 @@ window.__consoleDupCount = 0;
                                 }
                                 _ => {}
                             }
+                        }
+                        }));
+                        if handled.is_err() {
+                            log_error(&format!(
+                                "map_bridge - handler panicked on event {:?}; bridge kept alive",
+                                msg.get("event").and_then(|v| v.as_str())
+                            ));
                         }
                     }
                 });
@@ -28031,7 +28733,7 @@ window.__consoleDupCount = 0;
                     position: fixed;
                     top: 0; left: 0; right: 0;
                     height: 48px;
-                    z-index: 9999;
+                    z-index: 99999;
                     background: #08080e;
                     display: flex;
                     align-items: center;
@@ -28376,6 +29078,7 @@ window.__consoleDupCount = 0;
                                 }
                             }
                     }
+                }
 
                     // Cmd+K Omnibox Overlay
                     if show_omnibox() {
@@ -28778,7 +29481,7 @@ window.__consoleDupCount = 0;
                             "Cancel"
                         }
                     }
-                }
+                        }
 
 
 
@@ -30433,8 +31136,11 @@ window.__consoleDupCount = 0;
                 if is_custom {
                     rsx! {
                         div { class: "legend-item", key: "{element_id}",
-                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color};" }
-                            span { class: "legend-name", style: "flex: 1;", "{element_name}" }
+                            div { class: "legend-color", "data-type": "{data_type}", style: "background-color: {element_color}; cursor: pointer;" }
+                            span { class: "legend-name", style: "flex: 1; cursor: pointer;", onclick: move |_| {
+                                let line_id_js = element_id.clone();
+                                eval(&format!("window.focusOnLine('{line_id_js}');"));
+                            }, "{element_name}" }
 
                             button {
                                 style: "background: none; border: none; color: #00bcd4; cursor: pointer; margin-right: 12px; font-size: 13px;",

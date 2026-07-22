@@ -4,6 +4,7 @@
 
 # Rust build artifacts
 /target/
+/src/target/
 /target_new/
 **/*.rs.bk
 

@@ -5,7 +5,9 @@
     clippy::float_arithmetic,
     clippy::single_call_fn,
     clippy::missing_trait_methods,
-    reason = "benchmark-only file: float math is intentional, single-use bench fns are required by criterion, and default trait methods are not needed here"
+    reason = "benchmark-only file: float math is intentional, 
+    single-use bench fns are required by criterion, 
+    and default trait methods are not needed here"
 )]
 
 extern crate alloc;
@@ -176,17 +178,9 @@ impl Scratchpad {
         if let Some(val) = self.g_cost.get_mut(start) {
             *val = 0.0;
         }
-        let dx = grid
-            .coords_x
-            .get(start)
-            .copied()
-            .unwrap_or(0.0)
+        let dx = grid.coords_x.get(start).copied().unwrap_or(0.0)
             - grid.coords_x.get(goal).copied().unwrap_or(0.0);
-        let dy = grid
-            .coords_y
-            .get(start)
-            .copied()
-            .unwrap_or(0.0)
+        let dy = grid.coords_y.get(start).copied().unwrap_or(0.0)
             - grid.coords_y.get(goal).copied().unwrap_or(0.0);
         self.heap.push(AStarNode {
             f_cost: dx.hypot(dy),
@@ -217,8 +211,12 @@ impl Scratchpad {
                 if *self.closed.get(neighbour).unwrap_or(&true) {
                     continue;
                 }
-                let tentative_g =
-                    self.g_cost.get(current_idx).copied().unwrap_or(f32::INFINITY) + weight;
+                let tentative_g = self
+                    .g_cost
+                    .get(current_idx)
+                    .copied()
+                    .unwrap_or(f32::INFINITY)
+                    + weight;
                 let current_g = self.g_cost.get(neighbour).copied().unwrap_or(f32::INFINITY);
                 if tentative_g < current_g {
                     if let Some(val) = self.came_from.get_mut(neighbour) {
@@ -227,17 +225,9 @@ impl Scratchpad {
                     if let Some(val) = self.g_cost.get_mut(neighbour) {
                         *val = tentative_g;
                     }
-                    let h_dx = grid
-                        .coords_x
-                        .get(neighbour)
-                        .copied()
-                        .unwrap_or(0.0)
+                    let h_dx = grid.coords_x.get(neighbour).copied().unwrap_or(0.0)
                         - grid.coords_x.get(goal).copied().unwrap_or(0.0);
-                    let h_dy_val = grid
-                        .coords_y
-                        .get(neighbour)
-                        .copied()
-                        .unwrap_or(0.0)
+                    let h_dy_val = grid.coords_y.get(neighbour).copied().unwrap_or(0.0)
                         - grid.coords_y.get(goal).copied().unwrap_or(0.0);
                     self.heap.push(AStarNode {
                         f_cost: tentative_g + h_dx.hypot(h_dy_val),
