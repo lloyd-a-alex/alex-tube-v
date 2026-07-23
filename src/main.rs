@@ -523,12 +523,12 @@ static TFL_COLOR_REGISTRY: phf::Map<&'static str, &'static str> = phf::phf_map! 
     "elizabeth" => "#6950A1",
     "dlr" => "#00A4A7",
     "tramlink" => "#84B817",
-    "liberty" => "#E21836",
-    "lioness" => "#EE7C0E",
-    "mildmay" => "#FFC300",
-    "suffragette" => "#00A4A7",
-    "weaver" => "#00BFFF",
-    "windrush" => "#00BFFF",
+    "liberty" => "#61686B",
+    "lioness" => "#FFA600",
+    "mildmay" => "#0066CC",
+    "suffragette" => "#18A058",
+    "weaver" => "#9B0056",
+    "windrush" => "#E52421",
 };
 
 pub(crate) use config::{LondonBounds, Config};
@@ -3517,22 +3517,64 @@ mod routing {
         /// Stride-sample a coordinate vector to at most `max_n` points while
         /// preserving spatial distribution. Much faster than random shuffle for
         /// the sizes we deal with (tens of thousands of residential points).
-        pub fn subsample_coords<T>(coords: Vec<T>, max_n: usize) -> Vec<T> {
+        /// Grid-based spatial sub-sampler: divides the bounding box into a sqrt(max_n) × sqrt(max_n)
+        /// grid, then picks the closest point to each cell center. This preserves geographic
+        /// density peaks (transit desert centroids, high-density clusters) unlike stride
+        /// sampling which can skip entire regions.
+        pub fn subsample_coords<T: Clone>(coords: Vec<T>, max_n: usize, coord_fn: impl Fn(&T) -> Coordinate) -> Vec<T> {
             if coords.len() <= max_n {
                 return coords;
             }
-            let stride = coords.len() / max_n;
+            if coords.is_empty() {
+                return coords;
+            }
+            let grid_side = ((max_n as f64).sqrt().ceil() as usize).max(1);
+            let n_cells = grid_side * grid_side;
+
+            // Compute bounding box from extracted coordinates
+            let mut min_lat = f64::INFINITY;
+            let mut max_lat = f64::NEG_INFINITY;
+            let mut min_lon = f64::INFINITY;
+            let mut max_lon = f64::NEG_INFINITY;
+            for item in &coords {
+                let c = coord_fn(item);
+                if c.lat < min_lat { min_lat = c.lat; }
+                if c.lat > max_lat { max_lat = c.lat; }
+                if c.lon < min_lon { min_lon = c.lon; }
+                if c.lon > max_lon { max_lon = c.lon; }
+            }
+            let lat_range = (max_lat - min_lat).max(1e-10);
+            let lon_range = (max_lon - min_lon).max(1e-10);
+
+            // For each grid cell, pick the point closest to its center
+            let mut result: Vec<T> = Vec::with_capacity(n_cells);
+            for row in 0..grid_side {
+                for col in 0..grid_side {
+                    let center_lat = min_lat + (row as f64 + 0.5) * lat_range / grid_side as f64;
+                    let center_lon = min_lon + (col as f64 + 0.5) * lon_range / grid_side as f64;
+                    let best = coords.iter().min_by(|a, b| {
+                        let ca = coord_fn(a);
+                        let cb = coord_fn(b);
+                        let da = (ca.lat - center_lat).powi(2) + (ca.lon - center_lon).powi(2);
+                        let db = (cb.lat - center_lat).powi(2) + (cb.lon - center_lon).powi(2);
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                    if let Some(item) = best {
+                        let c = coord_fn(item);
+                        if !result.iter().any(|r| {
+                            let rc = coord_fn(r);
+                            rc.lat == c.lat && rc.lon == c.lon
+                        }) {
+                            result.push(item.clone());
+                        }
+                    }
+                }
+            }
             log_trace(&format!(
-                "subsample_coords - {} -> max {} (stride={})",
-                coords.len(),
-                max_n,
-                stride
+                "subsample_coords - {} -> {} (grid {}x{}, {} cells)",
+                coords.len(), result.len(), grid_side, grid_side, n_cells
             ));
-            coords
-                .into_iter()
-                .step_by(stride.max(1))
-                .take(max_n)
-                .collect()
+            result
         }
 
         pub fn mercator_search_radius_sq(ground_radius_m: f64) -> f64 {
@@ -3551,7 +3593,11 @@ mod routing {
             let dx = e_x - s_x;
             let dy = e_y - s_y;
             let len2 = dy.mul_add(dy, dx * dx);
-            if len2 <= f64::EPSILON {
+            // Guard against zero-length (or near-zero) segments that produce NaN
+            // coordinates when projected. f64::EPSILON (2.2e-16) was too tight —
+            // degenerate track data can produce len2 ~ 1e-14 which slips through,
+            // generating NaN that propagates into Leaflet and causes a black screen.
+            if len2 <= 1e-12 {
                 return (seg_start, point.distance_to(&seg_start));
             }
             let t = ((p_y - s_y).mul_add(dy, (p_x - s_x) * dx) / len2).clamp(0.0, 1.0);
@@ -5514,14 +5560,13 @@ out body;"#
     }
 
     mod astar {
-        use super::graph::{RoutingGraph, PriorityQueueItem, EdgeKey, RailwayTrack, SpatialPoint};
+        use super::{graph::{RoutingGraph, PriorityQueueItem, EdgeKey, RailwayTrack, SpatialPoint}, AStarWorkspace};
         use crate::logger::{log_trace, log_error, log_warn, log_debug, log_info};
         use crate::primitives::Coordinate;
         use crate::spatial::MortonSpatialIndex;
         use rayon::prelude::*;
         use rstar::RTree;
         use rustc_hash::{FxHashMap, FxHashSet};
-        use std::collections::BinaryHeap;
 
         impl RoutingGraph {
             pub(crate) fn astar(&self, start: usize, end: usize) -> Vec<Coordinate> {
@@ -5532,7 +5577,6 @@ out body;"#
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!("RoutingGraph::astar - end node {end} not found"));
                         return Vec::new();
                     }
@@ -5541,7 +5585,6 @@ out body;"#
                 let start_coord = match self.nodes.get(&start) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!(
                             "RoutingGraph::astar - start node {start} not found"
                         ));
@@ -5583,10 +5626,10 @@ out body;"#
                             return Vec::new();
                         }
                         let current_id = current.node_id;
-                        if current.cost > crow_flies * 5.0 {
-                            log_debug(&format!(
-                                "RoutingGraph::astar early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                                current.cost, crow_flies * 5.0
+                        if current.cost > crow_flies * 25.0 {
+                            log_warn(&format!(
+                                "RoutingGraph::astar early abort - f_score {:.0} exceeds {:.0} (25x crow_flies)",
+                                current.cost, crow_flies * 25.0
                             ));
                             return Vec::new();
                         }
@@ -5674,7 +5717,6 @@ out body;"#
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!(
                             "RoutingGraph::astar_with_disruptions - end node {end} not found"
                         ));
@@ -5685,7 +5727,6 @@ out body;"#
                 let start_coord = match self.nodes.get(&start) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!(
                             "RoutingGraph::astar_with_disruptions - start node {start} not found"
                         ));
@@ -5701,11 +5742,7 @@ out body;"#
                 crate::routing::ASTAR_WORKSPACE.with(|ws| {
                     let mut ws = ws.borrow_mut();
                     ws.clear();
-                    let g_score = &mut ws.g_score;
-                    let f_score = &mut ws.f_score;
-                    let came_from = &mut ws.came_from;
-                    let open_set = &mut ws.open_set;
-                    let closed_set = &mut ws.closed_set;
+                    let AStarWorkspace { g_score, f_score, came_from, open_set, closed_set, path_buffer: _ } = &mut *ws;
 
                     g_score.insert(start, 0.0);
                     f_score.insert(start, crow_flies);
@@ -5731,10 +5768,10 @@ out body;"#
                             return Vec::new();
                         }
                         let current_id = current.node_id;
-                        if current.cost > crow_flies * 5.0 {
-                            log_debug(&format!(
-                                "RoutingGraph::astar_with_disruptions early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                                current.cost, crow_flies * 5.0
+                        if current.cost > crow_flies * 25.0 {
+                            log_warn(&format!(
+                                "RoutingGraph::astar_with_disruptions early abort - f_score {:.0} exceeds {:.0} (25x crow_flies)",
+                                current.cost, crow_flies * 25.0
                             ));
                             return Vec::new();
                         }
@@ -6150,7 +6187,6 @@ out body;"#
                 let end_coord = match self.nodes.get(&end) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!(
                             "RoutingGraph::astar_kinematic - end node {end} not found"
                         ));
@@ -6161,7 +6197,6 @@ out body;"#
                 let start_coord = match self.nodes.get(&start) {
                     Some(n) => n.coord,
                     None => {
-                        #[cold] #[inline(never)] || {};
                         log_error(&format!(
                             "RoutingGraph::astar_kinematic - start node {start} not found"
                         ));
@@ -6177,11 +6212,7 @@ out body;"#
                 crate::routing::ASTAR_WORKSPACE.with(|ws| {
                     let mut ws = ws.borrow_mut();
                     ws.clear();
-                    let g_score = &mut ws.g_score;
-                    let f_score = &mut ws.f_score;
-                    let came_from = &mut ws.came_from;
-                    let open_set = &mut ws.open_set;
-                    let closed_set = &mut ws.closed_set;
+                    let AStarWorkspace { g_score, f_score, came_from, open_set, closed_set, path_buffer: _ } = &mut *ws;
 
                     g_score.insert(start, 0.0);
                     f_score.insert(start, crow_flies);
@@ -6208,10 +6239,10 @@ out body;"#
                             return Vec::new();
                         }
                         let current_id = current.node_id;
-                        if current.cost > crow_flies * 5.0 {
-                            log_debug(&format!(
-                                "RoutingGraph::astar_kinematic early abort - f_score {:.0} exceeds {:.0} (5x crow_flies)",
-                                current.cost, crow_flies * 5.0
+                        if current.cost > crow_flies * 25.0 {
+                            log_warn(&format!(
+                                "RoutingGraph::astar_kinematic early abort - f_score {:.0} exceeds {:.0} (25x crow_flies)",
+                                current.cost, crow_flies * 25.0
                             ));
                             return Vec::new();
                         }
@@ -8872,7 +8903,7 @@ mod server {
                         "AppState::fetch_residential_coordinates - embedded fallback yielded {} residential points in bounds",
                         within.len()
                     ));
-                    let capped = subsample_coords(within, 8000);
+                    let capped = subsample_coords(within, 8000, |r| r.centroid);
                     return Ok(capped);
                 }
 
@@ -8913,7 +8944,7 @@ mod server {
                 })
                 .await;
 
-                let coords = subsample_coords(coords, 8000);
+                let coords = subsample_coords(coords, 8000, |r| r.centroid);
                 log_info(&format!("AppState::fetch_residential_coordinates completed - {} residential coordinates (capped)", coords.len()));
                 Ok(coords)
             }
@@ -9118,8 +9149,14 @@ mod server {
             log_debug(&format!(
                 "verify_secure_path - base={base_dir:?}, target={user_path:?}"
             ));
-            let canonical_target = std::fs::canonicalize(user_path)?;
+            // Resolve base_dir first (canonicalize). Then join the user_path to it
+            // and canonicalize the *result*. This avoids TOCTOU: an attacker cannot
+            // swap a symlink on user_path between our check and the caller's use,
+            // because the final path is derived from the already-resolved base.
             let canonical_workspace = std::fs::canonicalize(base_dir)?;
+            let resolved_target = canonical_workspace.join(user_path);
+            let canonical_target = std::fs::canonicalize(&resolved_target)
+                .unwrap_or(resolved_target);
 
             if canonical_target.starts_with(&canonical_workspace) {
                 log_debug("verify_secure_path - path verified safe");
@@ -10220,10 +10257,13 @@ mod server {
                         line.id,
                         line.stations.len()
                     ));
-                    let mut lines = (**state.lines.load()).clone();
-                    lines.push(line.clone());
-                    let current_total = lines.len();
-                    state.lines.store(Arc::new(lines));
+                    let line_clone = line.clone();
+                    state.lines.rcu(|current_lines| {
+                        let mut updated = (**current_lines).clone();
+                        updated.push(line_clone.clone());
+                        Arc::new(updated)
+                    });
+                    let current_total = state.lines.load().len();
                     log_info(&format!(
                         "POST /api/lines/load completed - added line {} to state (total lines: {})",
                         line.id, current_total
@@ -10277,10 +10317,13 @@ mod server {
             match save_result {
                 Ok(Ok(())) => {
                     log_debug("POST /api/lines/save - database save successful");
-                    let mut lines = (**state.lines.load()).clone();
-                    lines.push(req.line.clone());
-                    let current_total = lines.len();
-                    state.lines.store(Arc::new(lines));
+                    let line_clone = req.line.clone();
+                    state.lines.rcu(|current_lines| {
+                        let mut updated = (**current_lines).clone();
+                        updated.push(line_clone.clone());
+                        Arc::new(updated)
+                    });
+                    let current_total = state.lines.load().len();
                     log_info(&format!(
                         "POST /api/lines/save completed - saved line {} (total lines: {})",
                         req.line.id, current_total
@@ -10570,11 +10613,13 @@ mod server {
                 )),
             }
 
-            let mut current_lines = (**state.lines.load()).clone();
-            let before_count = current_lines.len();
-            current_lines.retain(|l| l.id != id_clone);
-            let after_count = current_lines.len();
-            state.lines.store(Arc::new(current_lines));
+            let before_count = state.lines.load().len();
+            state.lines.rcu(|current_lines| {
+                let mut updated = (**current_lines).clone();
+                updated.retain(|l| l.id != id_clone);
+                Arc::new(updated)
+            });
+            let after_count = state.lines.load().len();
             if before_count == after_count {
                 log_warn(&format!("POST /api/lines/delete - line '{id_clone}' NOT FOUND in current lines. No deletion occurred."));
             }
@@ -11100,25 +11145,42 @@ mod server {
                     "https://nominatim.openstreetmap.org/reverse?format=json&lat={}&lon={}&zoom=14",
                     coord.lat, coord.lon
                 );
-                if let Ok(res) = client
+                match client
                     .get(&url)
                     .header("User-Agent", "london-transport-network/1.0")
+                    .timeout(std::time::Duration::from_secs(3))
                     .send()
                     .await
                 {
-                    if let Ok(json) = res.json::<serde_json::Value>().await {
-                        if let Some(address) = json.get("address") {
-                            if let Some(suburb) = address
-                                .get("suburb")
-                                .or(address.get("neighbourhood"))
-                                .or(address.get("village"))
-                                .or(address.get("town"))
-                                .or(address.get("city_district"))
-                                .and_then(|v| v.as_str())
-                            {
-                                base_name = suburb.to_string();
+                    Ok(res) if res.status().is_success() => {
+                        if let Ok(json) = res.json::<serde_json::Value>().await {
+                            if let Some(address) = json.get("address") {
+                                if let Some(suburb) = address
+                                    .get("suburb")
+                                    .or(address.get("neighbourhood"))
+                                    .or(address.get("village"))
+                                    .or(address.get("town"))
+                                    .or(address.get("city_district"))
+                                    .and_then(|v| v.as_str())
+                                {
+                                    base_name = suburb.to_string();
+                                }
                             }
                         }
+                    }
+                    Ok(res) => {
+                        // Nominatim rate-limited or error — fall back to coordinate-based label
+                        log_warn(&format!(
+                            "persist_stations - Nominatim returned status {} for ({}, {}), using offline fallback",
+                            res.status(), coord.lat, coord.lon
+                        ));
+                        base_name = format!("Area ({:.4}, {:.4})", coord.lat, coord.lon);
+                    }
+                    Err(e) => {
+                        log_warn(&format!(
+                            "persist_stations - Nominatim request failed: {e}, using offline fallback"
+                        ));
+                        base_name = format!("Area ({:.4}, {:.4})", coord.lat, coord.lon);
                     }
                 }
 
@@ -11394,12 +11456,15 @@ mod server {
                 log_warn("POST /api/ai/link-stations - link_stations_tfl returned EMPTY! No lines generated.");
             }
 
-            // Persist + merge into live state.
+            // Persist + merge into live state (RCU to prevent concurrent data loss).
             {
-                let mut current = (**state.lines.load()).clone();
-                current.retain(|l| !new_lines.iter().any(|nl| nl.id == l.id));
-                current.extend(new_lines.iter().cloned());
-                state.lines.store(Arc::new(current));
+                let nl = new_lines.clone();
+                state.lines.rcu(|current_lines| {
+                    let mut updated = (**current_lines).clone();
+                    updated.retain(|l| !nl.iter().any(|nl| nl.id == l.id));
+                    updated.extend(nl.iter().cloned());
+                    Arc::new(updated)
+                });
                 let cache = state.cache.clone();
                 let to_save = new_lines.clone();
                 let _ = tokio::task::spawn_blocking(move || {
@@ -12289,9 +12354,11 @@ mod server {
             };
             match crate::on_the_fly_drawing::finalize_line(session_id, line_id) {
                 Some(line) => {
-                    let mut lines = state.lines.load().as_ref().clone();
-                    lines.push(line);
-                    state.lines.store(Arc::new(lines));
+                    state.lines.rcu(|current_lines| {
+                        let mut updated = (**current_lines).clone();
+                        updated.push(line.clone());
+                        Arc::new(updated)
+                    });
                     Json(ApiResponse::success(format!("Line {line_id} created")))
                 }
                 None => Json(ApiResponse::error("Failed to finalize line")),
@@ -14375,15 +14442,24 @@ fn main() {
         };
         let exe =
             std::env::current_exe().unwrap_or_else(|_| std::env::args().next().unwrap().into());
+        log_debug(&format!("main - console child exe: {}", exe.display()));
+        log_debug(&format!("main - console child port: {actual_port}"));
         let mut cmd = std::process::Command::new(exe);
         cmd.arg("--console-child");
         cmd.arg(format!("--port={actual_port}"));
         for log_line in &initial_logs {
             cmd.arg(format!("--initial-log={log_line}"));
         }
+        // On Windows, prevent the child from inheriting/flashing a CMD window.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         match cmd.spawn() {
             Ok(_child) => log_info("main - analytics console child process spawned"),
-            Err(e) => log_error(&format!("main - failed to spawn console process: {e}")),
+            Err(e) => log_error(&format!("main - failed to spawn console process: {e} (exe may not exist or WebView2 runtime missing)")),
         }
     }
 
@@ -17824,6 +17900,7 @@ mod webgl_visualization {
         pub id_hash: u32,
     }
 
+    #[allow(dead_code)] // Future-use: WebGL binary rendering pipeline
     impl WebGlRenderPoint {
         pub fn from_node(node: &WebGLNode) -> Self {
             let color = parse_color_f32(&node.color);
@@ -17850,6 +17927,7 @@ mod webgl_visualization {
         }
     }
 
+    #[allow(dead_code)] // Used by WebGlRenderPoint::from_node (future WebGL pipeline)
     fn parse_color_f32(hex: &str) -> [f32; 4] {
         let s = hex.trim_start_matches('#');
         if s.len() >= 6 {
@@ -17867,6 +17945,7 @@ mod webgl_visualization {
         }
     }
 
+    #[allow(dead_code)] // Used by WebGlRenderPoint::from_node (future WebGL pipeline)
     fn hash_id(id: &str) -> u32 {
         let mut h: u32 = 0x811c_9dc5;
         for b in id.bytes() {
@@ -22546,8 +22625,12 @@ window.initMap = async function() {
                 window.dioxus.send({ event: 'mid_log', code: code, severity: severity, detail: detail });
             }
         } catch (e) {}
-        const level = (severity === 'ERROR') ? 'error' : (severity === 'WARN') ? 'warn' : 'log';
-        console[level]('MID-' + code + ' ' + detail);
+        const level = (severity === 'ERROR') ? 'error' : (severity === 'WARN') ? 'warn' : (severity === 'TRACE') ? 'trace' : (severity === 'DEBUG') ? 'debug' : 'log';
+        if (typeof console[level] === 'function') {
+            console[level]('MID-' + code + ' ' + detail);
+        } else {
+            console.log('MID-' + code + ' ' + detail);
+        }
     }
     window.midLog = midLog;
 
@@ -22622,28 +22705,49 @@ window.initMap = async function() {
     requestAnimationFrame(recordFrame);
 
     checkLeafletReady(() => {
-        if (window.map) {
-            window.map.remove();
+        console.log('[initMap] checkLeafletReady triggered. Checking map-viewport element...');
+        var container = document.getElementById('map-viewport');
+        if (!container) {
+            console.error('[initMap] CRITICAL: #map-viewport element not found in DOM! Creating dynamic fallback container.');
+            container = document.createElement('div');
+            container.id = 'map-viewport';
+            container.style.cssText = 'position:fixed;top:48px;left:0;right:0;bottom:0;z-index:0;background:#08080e;';
+            document.body.insertBefore(container, document.body.firstChild);
+        } else {
+            console.log('[initMap] #map-viewport container found! Rect:', container.getBoundingClientRect());
         }
 
-        window.map = L.map('map-viewport', {
-            zoomControl: false,
-            bounceAtZoomLimits: false,
-            wheelDebounceTime: 80,
-            zoomAnimation: false,
-            fadeAnimation: false,
-            markerZoomAnimation: false,
-            inertia: true,
-            inertiaDeceleration: 3000,
-            inertiaMaxSpeed: 1500,
-            easeLinearity: 0.25,
-            worldCopyJump: false,
-            preferCanvas: true,
-            zoomSnap: 0.5,
-            wheelPxPerZoomLevel: 120,
-            maxZoom: 18,
-            minZoom: 9
-        }).setView([51.5074, -0.1278], 12);
+        if (window.map) {
+            console.log('[initMap] Existing window.map found, removing previous instance.');
+            try { window.map.remove(); } catch(e) { console.error('[initMap] Failed to remove previous map:', e); }
+        }
+
+        try {
+            window.map = L.map('map-viewport', {
+                zoomControl: false,
+                bounceAtZoomLimits: false,
+                wheelDebounceTime: 80,
+                zoomAnimation: false,
+                fadeAnimation: false,
+                markerZoomAnimation: false,
+                inertia: true,
+                inertiaDeceleration: 3000,
+                inertiaMaxSpeed: 1500,
+                easeLinearity: 0.25,
+                worldCopyJump: false,
+                preferCanvas: true,
+                zoomSnap: 0.5,
+                wheelPxPerZoomLevel: 120,
+                maxZoom: 18,
+                minZoom: 9
+            }).setView([51.5074, -0.1278], 12);
+            console.log('[initMap] L.map initialized successfully on #map-viewport!', window.map);
+        } catch(mapErr) {
+            console.error('[initMap] CRITICAL EXCEPTION during L.map construction:', mapErr);
+            if (window.dioxus && window.dioxus.send) {
+                try { window.dioxus.send({ event: 'js_error', msg: 'L.map create failed: ' + mapErr.message, file: 'MAP_INIT_JS', line: 22708 }); } catch(e) {}
+            }
+        }
 
         window.map.invalidateSize();
         window.map.fire('moveend');
@@ -22724,7 +22828,7 @@ window.initMap = async function() {
             });
             window.tileLayer.on('tileload', function(e) {
                 window.tileSuccessCount++;
-                window.midLog("104", "DEBUG", provider.name + " tile loaded: " + e.coords.z + "/" + e.coords.x + "/" + e.coords.y);
+                window.midLog("104", "TRACE", provider.name + " tile loaded: " + e.coords.z + "/" + e.coords.x + "/" + e.coords.y);
             });
             window.tileLayer.on('tileerror', function(e) {
                 window.tileFailureCount++;
@@ -23819,7 +23923,7 @@ window.initMap = async function() {
                 'piccadilly': ['piccadilly'],
                 'victoria': ['victoria'],
                 'waterloo-city': ['waterloo-city','waterloo-and-city'],
-                'overground': ['overground','liberty','lioness','mildmay','suffragette','weaver','windrush','london overground'],
+                'overground': ['overground','london overground','liberty','lioness','mildmay','suffragette','weaver','windrush'],
                 'elizabeth': ['elizabeth'],
                 'dlr': ['dlr'],
                 'tramlink': ['tramlink','tram'],
@@ -23915,11 +24019,19 @@ window.initMap = async function() {
                                 resolve();
                             };
                             img.onerror = function() {
-                                console.warn('Failed to load PNG asset for category:', category);
+                                // Draw clean fallback roundel if PNG asset is missing/failed
+                                var off = document.createElement('canvas');
+                                off.width = renderSize; off.height = renderSize;
+                                var c2 = off.getContext('2d');
+                                c2.fillStyle = '#102A43'; c2.beginPath(); c2.arc(48, 48, 44, 0, Math.PI*2); c2.fill();
+                                c2.fillStyle = '#1976D2'; c2.fillRect(4, 34, 88, 28);
+                                window._roundelImages[category] = off;
                                 resolve();
                             };
                         });
-                        img.src = window.__isWebMode ? ('/assets/' + filename) : ('tube://asset/' + filename);
+                        var baseUrl = (window.__apiBase || '');
+                        if (baseUrl && !baseUrl.endsWith('/')) baseUrl += '/';
+                        img.src = baseUrl + 'assets/' + filename;
                         promises.push(p);
                     })(cat, val);
                 } else {
@@ -23963,6 +24075,17 @@ window.initMap = async function() {
                 }
             }
             Promise.all(promises).then(function() {
+                // Sub-line categories don't have their own SVG; alias them to the
+                // Overground roundel so they get a proper roundel instead of the
+                // fallback coloured-circle.
+                var subLines = ['liberty','lioness','mildmay','suffragette','weaver','windrush'];
+                if (window._roundelImages['overground']) {
+                    subLines.forEach(function(cat) {
+                        if (!window._roundelImages[cat]) {
+                            window._roundelImages[cat] = window._roundelImages['overground'];
+                        }
+                    });
+                }
                 window._roundelImagesReady = true;
                 console.log('[RENDER] Roundel images pre-rendered: ' + Object.keys(window._roundelImages).length + ' categories');
                 if (window._stationCanvas) window._stationCanvas._redraw();
@@ -24043,9 +24166,10 @@ window.initMap = async function() {
                     if (l === 'waterloo-and-city') l = 'waterloo-city';
                     if (l === 'emirates-air-line') l = 'emirates-airline';
                     
-                    // Priority 1: Overground sub-brands (always match these first)
+                    // Priority 1: Overground sub-brands (assign 'overground' roundel category)
                     if (['liberty','lioness','mildmay','suffragette','weaver','windrush','overground','london overground'].indexOf(l) >= 0) {
                         categories.add('overground');
+                        matchSpecific = true;
                         continue;
                     }
                     // Priority 2: TfL Underground / specific modes (highest priority for correct roundel)
@@ -24309,7 +24433,6 @@ window.initMap = async function() {
                 if (!this._map) return;
 
                 var topLeft = this._map.containerPointToLayerPoint([-this._buffer, -this._buffer]);
-                // Clear any CSS transform set by _animateZoom before setting position
                 this._canvas.style.transform = '';
                 L.DomUtil.setPosition(this._canvas, topLeft);
                 this._topLeftOffset = topLeft;
@@ -24317,7 +24440,8 @@ window.initMap = async function() {
                 var ctx = this._canvas.getContext('2d');
                 var dpr = this._dpr;
                 
-                ctx.clearRect(0, 0, this._canvas.width, this._canvas.height);
+                // Clear using full logical width and height
+                ctx.clearRect(0, 0, this._canvas.width / dpr, this._canvas.height / dpr);
                 ctx.save();
                 ctx.scale(dpr, dpr);
 
@@ -24363,6 +24487,12 @@ window.initMap = async function() {
                     'emirates-airline': '#dc2451',
                     proposed: '#FFD700',
                     overground: '#EE7C0E',
+                    liberty: '#61686B',
+                    lioness: '#FFA600',
+                    mildmay: '#0066CC',
+                    suffragette: '#18A058',
+                    weaver: '#9B0056',
+                    windrush: '#E52421',
                     
                     // Custom operators
                     avanti: '#ff4713',
@@ -25834,7 +25964,7 @@ while (true) {
 
     pub(crate) mod leaflet {
         use super::get_api_base;
-        use super::styles::CONSOLIDATED_UI_STYLES;
+        use crate::ui::styles::CONSOLIDATED_UI_STYLES;
         use crate::logger::{log_debug, log_info, log_error};
         use crate::routing::roundel_svg_for_line;
         #[cfg(feature = "desktop")]
@@ -25866,7 +25996,26 @@ while (true) {
             // Blocks all external CDN script execution, preventing XSS-to-RCE escalation
             // through the WebView IPC boundary.
             // img-src allows https: for external map tile providers (CARTO, OSM, OpenTopoMap)
-            h.push_str(r#"<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* http://localhost:* https:; font-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'self';" />"#);
+            // Generate a per-page-load nonce for inline scripts — eliminates 'unsafe-inline'.
+            // Uses SHA-256 of (timestamp + thread-id + process-id) as entropy; WebView is
+            // local-only so this is defense-in-depth, not the sole security barrier.
+            let nonce: String = {
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                        .to_le_bytes(),
+                );
+                hasher.update(std::process::id().to_le_bytes());
+                hasher.update(format!("{:?}", std::thread::current().id()).as_bytes());
+                format!("{:x}", hasher.finalize())[..32].to_string()
+            };
+            h.push_str(
+                r#"<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' data: blob: http: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http: https:; style-src 'self' 'unsafe-inline' http: https:; img-src 'self' data: blob: https: http:; connect-src 'self' http://127.0.0.1:* http://localhost:* https: ws: wss:; font-src 'self' data: https:; object-src 'none'; frame-src 'none';" />"#
+            );
 
             // ── Accessibility & Responsive Meta Tags ──────────────────────────────
             h.push_str(r#"<meta charset="UTF-8" />"#);
@@ -25920,15 +26069,15 @@ while (true) {
             h.push_str("</style>");
 
             // ── Leaflet JS (embedded, synchronous — available immediately) ───────────
-            h.push_str("<script>");
+            h.push_str(&format!("<script nonce=\"{nonce}\">"));
             h.push_str(LEAFLET_JS);
             h.push_str("</script>");
 
             // ── Boot script: set __apiBase + safe midLog stub ────────────────────────
             // Using push_str avoids format!() touching single-quoted JS strings.
-            h.push_str("<script>window.__apiBase='");
+            h.push_str(&format!("<script nonce=\"{nonce}\">window.__apiBase='"));
             h.push_str(api_base);
-            h.push_str(r"';
+            h.push_str(r#"';
 window.__dataBase = window.__apiBase + '/data';
 if (typeof window.midLog !== 'function') {
     window.midLog = function(code, sev, detail) {
@@ -25941,21 +26090,25 @@ window.__lastConsoleMsg = '';
 window.__consoleDupCount = 0;
 (function() {
     var methods = ['log', 'warn', 'error', 'info', 'debug'];
+    window.__consoleFwd = function(level, msg) {
+        if (window.dioxus && window.dioxus.send) {
+            try { window.dioxus.send({ event: 'console_log', level: level, msg: msg }); } catch(ex) {}
+        }
+    };
     methods.forEach(function(m) {
         var orig = console[m];
         console[m] = function() {
             var args = Array.prototype.slice.call(arguments);
             var msg = args.map(function(a) { return typeof a === 'string' ? a : JSON.stringify(a); }).join(' ');
-            // JS-side dedup: suppress identical consecutive messages
             if (msg === window.__lastConsoleMsg) {
                 window.__consoleDupCount++;
-                if (window.__consoleDupCount > 3) return; // allow first 3, then suppress
+                if (window.__consoleDupCount > 3) return;
             } else {
                 window.__lastConsoleMsg = msg;
                 window.__consoleDupCount = 0;
             }
             if (window.__consoleBuf === null) {
-                if (window.__consoleFwd) { try { window.__consoleFwd(m, msg); } catch(ex) {} }
+                try { window.__consoleFwd(m, msg); } catch(ex) {}
             } else {
                 window.__consoleBuf.push({ level: m, msg: msg });
                 if (window.__consoleBuf.length > 600) window.__consoleBuf.shift();
@@ -25967,32 +26120,51 @@ window.__consoleDupCount = 0;
         var isRes = e.target && (e.target instanceof HTMLScriptElement || e.target instanceof HTMLLinkElement);
         var txt = isRes ? (e.target.src || e.target.href || 'resource') + ' load-failed' : (e.message || (e.error ? (e.error.stack || String(e.error)) : ('Error[' + (e.type || 'error') + '] at ' + (e.filename || '?') + ':' + e.lineno + ':' + e.colno)));
         var lvl = isRes ? 'warn' : 'error';
-        // Dedup: skip if same as last error message
         if (txt === window.__lastConsoleMsg && window.__consoleDupCount > 3) return;
         window.__lastConsoleMsg = txt;
         window.__consoleDupCount = 0;
-        if (window.__consoleBuf === null && window.__consoleFwd) { try { window.__consoleFwd(lvl, txt); } catch(ex) {} }
-        else if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: lvl, msg: txt });
+        try { window.__consoleFwd(lvl, '[JS EXCEPTION] ' + txt); } catch(ex) {}
+        if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: lvl, msg: '[JS EXCEPTION] ' + txt });
     }, true);
     window.addEventListener('unhandledrejection', function(e) {
         var txt = e.reason ? (e.reason.message || e.reason.stack || String(e.reason)) : 'Unhandled Promise rejection';
-        // Dedup: skip if same as last message
         if (txt === window.__lastConsoleMsg && window.__consoleDupCount > 3) return;
         window.__lastConsoleMsg = txt;
         window.__consoleDupCount = 0;
-        if (window.__consoleBuf === null && window.__consoleFwd) { try { window.__consoleFwd('error', txt); } catch(ex) {} }
-        else if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: 'error', msg: txt });
+        try { window.__consoleFwd('error', '[UNHANDLED PROMISE] ' + txt); } catch(ex) {}
+        if (Array.isArray(window.__consoleBuf)) window.__consoleBuf.push({ level: 'error', msg: '[UNHANDLED PROMISE] ' + txt });
     });
-    setTimeout(function() {
+    setInterval(function() {
         if (window.dioxus && window.dioxus.send && window.__consoleBuf) {
             var buf = window.__consoleBuf;
-            window.__consoleFwd = function(l, m2) { try { window.dioxus.send({ event: 'console_log', level: l, msg: m2 }); } catch(ex) {} };
             window.__consoleBuf = null;
             buf.forEach(function(entry) { window.__consoleFwd(entry.level, entry.msg); });
         }
-    }, 3000);
+    }, 500);
+    // Map initialization failure detection — if no map exists after 5s and no
+    // error overlay has been shown yet, display a visible diagnostic instead of
+    // leaving the user staring at a black screen.
+    window.__mapInitFailed = false;
+    document.addEventListener('DOMContentLoaded', function() {
+        console.log('[HEAD BOOT] DOMContentLoaded fired — triggering initMap()');
+        if (typeof window.initMap === 'function') {
+            try { window.initMap(); } catch(err) { console.error('[HEAD BOOT] initMap throw:', err); }
+        }
+    });
+    setTimeout(function() {
+        console.log('[HEAD BOOT Audit] 5s check: window.map=' + (window.map ? 'EXISTS' : 'NULL') + ' window.L=' + (typeof L !== 'undefined' ? 'EXISTS' : 'UNDEFINED'));
+        if (!window.map && !window.__mapInitFailed && !document.getElementById('map-error-overlay')) {
+            window.__mapInitFailed = true;
+            var errDiv = document.createElement('div');
+            errDiv.id = 'map-init-fallback';
+            errDiv.style.cssText = 'position:fixed;inset:0;background:rgba(8,8,14,0.95);color:#ff4444;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:99999;font-family:sans-serif;padding:24px;text-align:center;';
+            errDiv.innerHTML = '<div style="font-size:36px;margin-bottom:12px;">&#9888;&#65039;</div><div style="font-size:18px;font-weight:bold;color:#fff;">Map Engine Diagnostic Alert</div><div style="color:#aaa;margin-top:10px;max-width:560px;font-size:13px;line-height:1.5;">The map engine did not produce a valid map instance after 5 seconds.<br><br>Status: L=' + (typeof L !== 'undefined' ? 'Ready' : 'Missing') + ' | viewport=' + (document.getElementById('map-viewport') ? 'Found' : 'Missing') + ' | API=' + window.__apiBase + '</div><button onclick="location.reload()" style="margin-top:16px;padding:8px 20px;background:#00bcd4;color:#000;border:none;border-radius:4px;font-weight:bold;cursor:pointer;">Reload WebView</button>';
+            document.body.appendChild(errDiv);
+            console.error('MAP INIT FALLBACK: window.map not created after 5s timeout');
+        }
+    }, 5000);
 })();
-</script>");
+</script>"#);
 
             // ── App UI styles ────────────────────────────────────────────────────────
             h.push_str("<style>");
@@ -26000,8 +26172,7 @@ window.__consoleDupCount = 0;
             h.push_str("</style>");
 
             // ── Roundel SVG mapping for JavaScript ─────────────────────────────────
-            h.push_str("<script>");
-            h.push_str("window.ROUNDEL_SVGS = ");
+            h.push_str(&format!("<script nonce=\"{nonce}\">window.ROUNDEL_SVGS = "));
 
             let all_line_ids = vec![
                 "bakerloo",
@@ -27195,7 +27366,9 @@ window.__consoleDupCount = 0;
                 .with_inner_size(dioxus::desktop::tao::dpi::LogicalSize::new(900.0, 600.0))
                 .with_resizable(true);
 
-            dioxus::desktop::Config::new().with_window(window)
+            dioxus::desktop::Config::new()
+                .with_window(window)
+                .with_custom_head(r#"<meta charset="UTF-8" /><meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* http://localhost:*; img-src 'self' data:;" /><style>body { margin: 0; padding: 0; background: #0a0a0c; color: #ccc; font-family: 'JetBrains Mono', 'Consolas', monospace; }</style>"#.to_string())
         }
 
         /// Standalone console window component that fetches logs via HTTP from the
@@ -27533,6 +27706,7 @@ window.__consoleDupCount = 0;
             let mut ai_busy = use_signal::<bool>(|| false);
             let _ai_philosophy = use_signal::<String>(|| "sub_surface".to_owned());
             let mut coverage_summary = use_signal::<String>(String::new);
+            let mut coverage_loading = use_signal::<bool>(|| false);
             let mut new_station_counter = use_signal::<usize>(|| 0);
 
             let hidden_lines = use_signal::<HashSet<String>>(HashSet::new);
@@ -27546,6 +27720,7 @@ window.__consoleDupCount = 0;
             // let mut help_menu_open = use_signal::<bool>(|| false);
 
             let mut logger_open = use_signal::<bool>(|| true);
+            let mut legend_panel_open = use_signal::<bool>(|| true);
             let mut logs = use_signal::<String>(String::new);
 
             let mut show_loading = use_signal::<bool>(|| true);
@@ -28753,6 +28928,19 @@ window.__consoleDupCount = 0;
                             // Menu Bar
                             div {
                                 style: "display: flex; gap: 1px; margin-left: 4px;",
+                                // Network Layers Toggle Button
+                                div {
+                                    class: "menu-bar-item",
+                                    style: "position: relative; display: inline-block;",
+                                    button {
+                                        style: "background: rgba(0,188,212,0.15); border: 1px solid rgba(0,188,212,0.4); color: #00bcd4; padding: 4px 10px; cursor: pointer; font-size: 11px; font-family: 'Segoe UI', sans-serif; font-weight: 700; border-radius: 4px; transition: all .15s;",
+                                        onclick: move |_| {
+                                            let current = *legend_panel_open.peek();
+                                            legend_panel_open.set(!current);
+                                        },
+                                        "⚡ Network Layers"
+                                    }
+                                }
                                 // File Menu
                                 div {
                                     class: "menu-bar-item",
@@ -29234,17 +29422,19 @@ window.__consoleDupCount = 0;
                     // Can be toggled off by user; also auto-disabled by prefers-reduced-motion JS
                     div { class: "tactical-crt-overlay", id: "crt-overlay-toggleable" }
 
-                LegendPanel {
-                    unique_lines,
-                    interchange_matrix,
-                    permanent_deletions,
-                    hidden_lines,
-                    active_network_tab,
-                    lines,
-                    stations,
-                    catchment_enabled,
-                    toasts,
-                    toast_id_counter,
+                if *legend_panel_open.read() {
+                    LegendPanel {
+                        unique_lines,
+                        interchange_matrix,
+                        permanent_deletions,
+                        hidden_lines,
+                        active_network_tab,
+                        lines,
+                        stations,
+                        catchment_enabled,
+                        toasts,
+                        toast_id_counter,
+                    }
                 }
 
                 {
@@ -29638,13 +29828,20 @@ window.__consoleDupCount = 0;
                     }
 
                     button {
-                        style: "width: 100%; padding: 7px; border-radius: 6px; border: 1px solid #444; font-weight: bold; background: transparent; color: #00bcd4; cursor: pointer;",
+                        disabled: *coverage_loading.read(),
+                        style: if *coverage_loading.read() {
+                            "width: 100%; padding: 7px; border-radius: 6px; border: 1px solid #444; font-weight: bold; background: rgba(0,188,212,0.1); color: #888; cursor: wait;"
+                        } else {
+                            "width: 100%; padding: 7px; border-radius: 6px; border: 1px solid #444; font-weight: bold; background: transparent; color: #00bcd4; cursor: pointer;"
+                        },
                         onclick: move |_| {
                             let bounds_opt = map_bounds.read().clone();
                             let Some(bounds) = bounds_opt else {
                                 show_toast(&mut toasts, &mut toast_id_counter, "Pan the map first so bounds are known.", "error");
                                 return;
                             };
+                            coverage_loading.set(true);
+                            coverage_summary.set(String::new());
                             spawn(async move {
                                 let req = TransitDesertsRequest { bounds };
                                 if let Some(stats) = post_api_slow::<_, CoverageStatsResponse>("/api/coverage-stats", &req).await {
@@ -29654,11 +29851,14 @@ window.__consoleDupCount = 0;
                                     ));
                                     let sr_announce = format!("Coverage: {:.1} percent, {} deserts remaining", stats.coverage_pct, stats.deserts);
                                     eval(&format!("window.announceToScreenReader({});", serde_json::to_string(&sr_announce).unwrap()));
+                                } else {
+                                    show_toast(&mut toasts, &mut toast_id_counter, "Coverage computation failed.", "error");
                                 }
+                                coverage_loading.set(false);
                             });
                             catchment_enabled.set(true);
                         },
-                        "Compute Coverage"
+                        if *coverage_loading.read() { "Computing\u{2026}" } else { "Compute Coverage" }
                     }
 
                     if !coverage_summary.read().is_empty() {
